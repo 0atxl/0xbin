@@ -1,0 +1,28 @@
+{
+  "name": "0xbin-web",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "lint": "tsc -b --pretty false",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "vitest run",
+    "test:e2e": "node ./scripts/e2e-placeholder.mjs"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "latest",
+    "react": "latest",
+    "react-dom": "latest",
+    "vite": "latest"
+  },
+  "devDependencies": {
+    "@types/react": "latest",
+    "@types/react-dom": "latest",
+    "prettier": "latest",
+    "typescript": "latest",
+    "vitest": "latest"
+  }
+}

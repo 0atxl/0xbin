@@ -1,0 +1,22 @@
+# Go
+/bin/
+*.test
+*.out
+coverage.out
+
+# Node and Vite
+web/node_modules/
+web/dist/
+web/coverage/
+web/.vite/
+
+# Local runtime data and environment overrides
+/data/
+.env
+.env.*
+!.env.example
+
+# Editor and operating-system files
+.DS_Store
+.idea/
+.vscode/
