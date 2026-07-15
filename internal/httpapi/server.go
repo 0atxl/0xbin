@@ -22,10 +22,14 @@ type Server struct {
 
 // NewServer creates the HTTP server. Database readiness is deliberately not
 // wired until Step 2.
-func NewServer(cfg config.Config) *Server {
+func NewServer(cfg config.Config, readiness ...func(context.Context) error) *Server {
+	var ready func(context.Context) error
+	if len(readiness) > 0 {
+		ready = readiness[0]
+	}
 	return &Server{server: &http.Server{
 		Addr:              cfg.ListenAddr,
-		Handler:           NewHandler(),
+		Handler:           NewHandler(ready),
 		ReadHeaderTimeout: cfg.ReadHeaderTimeout,
 		ReadTimeout:       cfg.ReadTimeout,
 		WriteTimeout:      cfg.WriteTimeout,
@@ -44,10 +48,14 @@ func (s *Server) Shutdown(ctx context.Context) error {
 }
 
 // NewHandler creates the root router and its foundational middleware.
-func NewHandler() http.Handler {
+func NewHandler(readiness ...func(context.Context) error) http.Handler {
+	var ready func(context.Context) error
+	if len(readiness) > 0 {
+		ready = readiness[0]
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health/live", live)
-	mux.HandleFunc("GET /health/ready", notReady)
+	mux.HandleFunc("GET /health/ready", func(w http.ResponseWriter, r *http.Request) { notReady(w, r, ready) })
 	mux.HandleFunc("/api/", apiNotFound)
 	mux.HandleFunc("/api", apiNotFound)
 	mux.HandleFunc("/", notFound)
@@ -58,7 +66,11 @@ func live(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-func notReady(w http.ResponseWriter, r *http.Request) {
+func notReady(w http.ResponseWriter, r *http.Request, ready func(context.Context) error) {
+	if ready != nil && ready(r.Context()) == nil {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+		return
+	}
 	writeError(w, http.StatusServiceUnavailable, "service_not_ready", "Service is not ready", requestIDFromContext(r.Context()))
 }
 

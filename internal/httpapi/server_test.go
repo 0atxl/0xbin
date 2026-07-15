@@ -34,6 +34,15 @@ func TestHealthEndpoints(t *testing.T) {
 	})
 }
 
+func TestReadinessUsesDatabaseCheck(t *testing.T) {
+	t.Parallel()
+	recorder := httptest.NewRecorder()
+	NewHandler(func(context.Context) error { return nil }).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/health/ready", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", recorder.Code)
+	}
+}
+
 func TestUnknownAPIRouteReturnsJSONError(t *testing.T) {
 	t.Parallel()
 	recorder := httptest.NewRecorder()

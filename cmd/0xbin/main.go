@@ -13,6 +13,7 @@ import (
 
 	"github.com/0atxl/0xbin/internal/config"
 	"github.com/0atxl/0xbin/internal/httpapi"
+	"github.com/0atxl/0xbin/internal/storage/sqlite"
 )
 
 func main() {
@@ -27,13 +28,18 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	store, err := sqlite.Open(context.Background(), cfg.DataDir)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
 
 	listener, err := net.Listen("tcp", cfg.ListenAddr)
 	if err != nil {
 		return fmt.Errorf("listen on %q: %w", cfg.ListenAddr, err)
 	}
 
-	server := httpapi.NewServer(cfg)
+	server := httpapi.NewServer(cfg, store.Ping)
 	serveErr := make(chan error, 1)
 	go func() {
 		serveErr <- server.Serve(listener)

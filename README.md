@@ -34,6 +34,14 @@ later steps of [the implementation plan](docs/IMPLEMENTATION_PLAN.md).
 Docker packaging is a project requirement and is scheduled for Implementation
 Step 12; no runtime image is provided by this foundation baseline.
 
+## SQLite
+
+0xbin uses the pure-Go `modernc.org/sqlite` driver, so local and container
+builds do not require CGo. The embedded schema uses SQLite `STRICT` tables,
+which require SQLite 3.37 or newer. Future atomic consume operations use
+`RETURNING`, available since SQLite 3.35. The bundled driver must therefore
+provide SQLite 3.37 or newer.
+
 ## Licence
 
 0xbin is released under the [MIT License](LICENSE).
