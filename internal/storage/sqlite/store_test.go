@@ -149,6 +149,55 @@ func TestCreateMapsOnlySlugPrimaryKeyToCollision(t *testing.T) {
 	}
 }
 
+func TestDeleteExpiredBatchRemovesOnlyExpiredRows(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store, err := Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	now := time.Date(2026, time.July, 16, 12, 0, 0, 0, time.UTC)
+	for _, newPaste := range []paste.NewPaste{
+		testNewPaste("oldbrightotter", now.Add(-2*time.Hour), now),
+		testNewPaste("stalequickwren", now.Add(-time.Hour), now),
+		testNewPaste("activecalmfox", now.Add(time.Hour), now),
+	} {
+		if _, err := store.Create(ctx, newPaste); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	deleted, err := store.DeleteExpiredBatch(ctx, now, 1)
+	if err != nil || deleted != 1 {
+		t.Fatalf("DeleteExpiredBatch() = %d, %v; want 1, nil", deleted, err)
+	}
+	deleted, err = store.DeleteExpiredBatch(ctx, now, 10)
+	if err != nil || deleted != 1 {
+		t.Fatalf("DeleteExpiredBatch() = %d, %v; want 1, nil", deleted, err)
+	}
+	deleted, err = store.DeleteExpiredBatch(ctx, now, 10)
+	if err != nil || deleted != 0 {
+		t.Fatalf("DeleteExpiredBatch() = %d, %v; want 0, nil", deleted, err)
+	}
+	if _, err := store.GetActive(ctx, "activecalmfox", now); err != nil {
+		t.Fatalf("active paste was removed: %v", err)
+	}
+}
+
+func TestDeleteExpiredBatchRejectsInvalidLimit(t *testing.T) {
+	t.Parallel()
+	store, err := Open(context.Background(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, err := store.DeleteExpiredBatch(context.Background(), time.Now(), 0); err == nil {
+		t.Fatal("DeleteExpiredBatch() error = nil")
+	}
+}
+
 func testNewPaste(slug string, expiresAt, createdAt time.Time) paste.NewPaste {
 	content := "content"
 	return paste.NewPaste{

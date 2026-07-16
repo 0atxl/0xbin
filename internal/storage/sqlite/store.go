@@ -201,6 +201,31 @@ func (s *Store) GetActive(ctx context.Context, slug string, now time.Time) (past
 	return result, nil
 }
 
+// DeleteExpiredBatch physically removes at most limit rows whose expiry has
+// passed. Read-time expiry remains the access-control boundary.
+func (s *Store) DeleteExpiredBatch(ctx context.Context, now time.Time, limit int) (int64, error) {
+	if limit < 1 {
+		return 0, fmt.Errorf("delete limit must be positive")
+	}
+	result, err := s.db.ExecContext(ctx, `
+		DELETE FROM pastes
+		WHERE rowid IN (
+			SELECT rowid
+			FROM pastes
+			WHERE expires_at <= ?
+			ORDER BY expires_at
+			LIMIT ?
+		)`, now.UTC().Unix(), limit)
+	if err != nil {
+		return 0, fmt.Errorf("delete expired pastes: %w", err)
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("count deleted expired pastes: %w", err)
+	}
+	return count, nil
+}
+
 // Close releases the database connection.
 func (s *Store) Close() error { return s.db.Close() }
 

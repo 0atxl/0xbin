@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/0atxl/0xbin/internal/cleanup"
 	"github.com/0atxl/0xbin/internal/config"
 	"github.com/0atxl/0xbin/internal/httpapi"
 	"github.com/0atxl/0xbin/internal/paste"
@@ -44,6 +45,21 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	worker, err := cleanup.NewWorker(store, cleanup.DefaultInterval, cleanup.DefaultTimeout, cleanup.DefaultBatchSize, cleanup.DefaultMaxBatches, time.Now, slog.Default())
+	if err != nil {
+		return err
+	}
+	cleanupCtx, stopCleanup := context.WithCancel(context.Background())
+	_ = worker.RunOnce(cleanupCtx)
+	cleanupDone := make(chan struct{})
+	go func() {
+		worker.Run(cleanupCtx)
+		close(cleanupDone)
+	}()
+	defer func() {
+		stopCleanup()
+		<-cleanupDone
+	}()
 
 	listener, err := net.Listen("tcp", cfg.ListenAddr)
 	if err != nil {
