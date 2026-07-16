@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -20,9 +21,10 @@ const requestMetadataAllowance = 4 << 10
 
 var slugPattern = regexp.MustCompile(`^[a-z]{1,128}$`)
 
-// PasteService is the plaintext API's domain boundary.
+// PasteService is the public API's domain boundary.
 type PasteService interface {
 	CreatePlaintext(context.Context, paste.CreatePlaintextInput) (paste.Paste, error)
+	CreateEncrypted(context.Context, paste.CreateEncryptedInput) (paste.Paste, error)
 	GetActive(context.Context, string) (paste.Paste, error)
 }
 
@@ -34,9 +36,9 @@ type pasteAPI struct {
 }
 
 type createPasteRequest struct {
-	Mode    string                 `json:"mode"`
-	Payload paste.PlaintextPayload `json:"payload"`
-	Expiry  string                 `json:"expiry"`
+	Mode    string          `json:"mode"`
+	Payload json.RawMessage `json:"payload"`
+	Expiry  string          `json:"expiry"`
 }
 
 type createPasteResponse struct {
@@ -46,11 +48,14 @@ type createPasteResponse struct {
 }
 
 type pasteResponse struct {
-	Slug          string                 `json:"slug"`
-	Payload       paste.PlaintextPayload `json:"payload"`
-	BurnAfterRead bool                   `json:"burn_after_read"`
-	ExpiresAt     time.Time              `json:"expires_at"`
-	CreatedAt     time.Time              `json:"created_at"`
+	Slug          string                    `json:"slug"`
+	Payload       *paste.PlaintextPayload   `json:"payload,omitempty"`
+	Envelope      *paste.CiphertextEnvelope `json:"envelope,omitempty"`
+	IsEncrypted   bool                      `json:"is_encrypted"`
+	CryptoVersion *int                      `json:"crypto_version,omitempty"`
+	BurnAfterRead bool                      `json:"burn_after_read"`
+	ExpiresAt     time.Time                 `json:"expires_at"`
+	CreatedAt     time.Time                 `json:"created_at"`
 }
 
 func (api pasteAPI) create(w http.ResponseWriter, r *http.Request) {
@@ -58,18 +63,11 @@ func (api pasteAPI) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var request createPasteRequest
-	if err := decodeJSON(w, r, &request, api.maxContentBytes+requestMetadataAllowance); err != nil {
+	if err := decodeJSON(w, r, &request, encryptedRequestLimit(api.maxContentBytes)); err != nil {
 		api.writeRequestError(w, r, err)
 		return
 	}
-	if request.Mode != "plaintext" {
-		api.writeRequestError(w, r, fmt.Errorf("%w: mode must be plaintext", paste.ErrInvalidPayload))
-		return
-	}
-	created, err := api.pastes.CreatePlaintext(r.Context(), paste.CreatePlaintextInput{
-		Payload: request.Payload,
-		Expiry:  request.Expiry,
-	})
+	created, err := api.createPaste(r.Context(), request)
 	if err != nil {
 		api.writeRequestError(w, r, err)
 		return
@@ -80,6 +78,35 @@ func (api pasteAPI) create(w http.ResponseWriter, r *http.Request) {
 		URL:       pasteURL(api.baseURL, created.Slug),
 		ExpiresAt: created.ExpiresAt,
 	})
+}
+
+func (api pasteAPI) createPaste(ctx context.Context, request createPasteRequest) (paste.Paste, error) {
+	switch request.Mode {
+	case "plaintext":
+		if int64(len(request.Payload)) > api.maxContentBytes+requestMetadataAllowance {
+			return paste.Paste{}, paste.ErrPayloadTooLarge
+		}
+		var payload paste.PlaintextPayload
+		if err := decodePayload(request.Payload, &payload); err != nil {
+			return paste.Paste{}, fmt.Errorf("%w: malformed plaintext payload", paste.ErrInvalidPayload)
+		}
+		return api.pastes.CreatePlaintext(ctx, paste.CreatePlaintextInput{Payload: payload, Expiry: request.Expiry})
+	case "encrypted":
+		var envelope paste.CiphertextEnvelope
+		if err := decodePayload(request.Payload, &envelope); err != nil {
+			return paste.Paste{}, fmt.Errorf("%w: malformed encrypted envelope", paste.ErrInvalidPayload)
+		}
+		limit, err := paste.EncryptedPayloadLimit(api.maxContentBytes)
+		if err != nil {
+			return paste.Paste{}, err
+		}
+		if _, err := paste.ValidateCiphertextEnvelope(envelope, limit); err != nil {
+			return paste.Paste{}, err
+		}
+		return api.pastes.CreateEncrypted(ctx, paste.CreateEncryptedInput{Envelope: envelope, Expiry: request.Expiry})
+	default:
+		return paste.Paste{}, fmt.Errorf("%w: unsupported paste mode", paste.ErrInvalidPayload)
+	}
 }
 
 func (api pasteAPI) get(w http.ResponseWriter, r *http.Request) {
@@ -98,12 +125,25 @@ func (api pasteAPI) get(w http.ResponseWriter, r *http.Request) {
 	}
 	api.limits.RecordSuccess(clientIPFromContext(r.Context()))
 	setPasteHeaders(w.Header())
+	response := pasteResponse{
+		Slug: result.Slug, IsEncrypted: result.IsEncrypted,
+		BurnAfterRead: result.BurnAfterRead, ExpiresAt: result.ExpiresAt, CreatedAt: result.CreatedAt,
+	}
+	if result.IsEncrypted {
+		response.Envelope = result.Envelope
+		response.CryptoVersion = &result.CryptoVersion
+	} else {
+		response.Payload = &result.Payload
+	}
 	writeJSON(w, http.StatusOK, pasteResponse{
-		Slug:          result.Slug,
-		Payload:       result.Payload,
-		BurnAfterRead: result.BurnAfterRead,
-		ExpiresAt:     result.ExpiresAt,
-		CreatedAt:     result.CreatedAt,
+		Slug:          response.Slug,
+		Payload:       response.Payload,
+		Envelope:      response.Envelope,
+		IsEncrypted:   response.IsEncrypted,
+		CryptoVersion: response.CryptoVersion,
+		BurnAfterRead: response.BurnAfterRead,
+		ExpiresAt:     response.ExpiresAt,
+		CreatedAt:     response.CreatedAt,
 	})
 }
 
@@ -118,6 +158,10 @@ func (api pasteAPI) raw(w http.ResponseWriter, r *http.Request) {
 		api.writeGetError(w, r, err)
 		return
 	}
+	if result.IsEncrypted {
+		api.writeNotFound(w, r)
+		return
+	}
 	if !api.allow(w, r, ratelimit.Read, 1) {
 		return
 	}
@@ -127,6 +171,31 @@ func (api pasteAPI) raw(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(http.StatusOK)
 	_, _ = io.WriteString(w, result.Payload.Content)
+}
+
+func encryptedRequestLimit(maxContentBytes int64) int64 {
+	// Base64url expands opaque ciphertext by up to 4/3; allowance covers the
+	// IV, envelope fields, and JSON request metadata.
+	limit, err := paste.EncryptedPayloadLimit(maxContentBytes)
+	if err != nil {
+		panic(err)
+	}
+	return ((limit+2)/3)*4 + requestMetadataAllowance
+}
+
+func decodePayload(raw json.RawMessage, target any) error {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("multiple JSON values")
+		}
+		return err
+	}
+	return nil
 }
 
 func (api pasteAPI) writeRequestError(w http.ResponseWriter, r *http.Request, err error) {

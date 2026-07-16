@@ -149,6 +149,36 @@ func TestCreateMapsOnlySlugPrimaryKeyToCollision(t *testing.T) {
 	}
 }
 
+func TestCreateEncryptedAndGetActiveRoundTrip(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store, err := Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	now := time.Date(2026, time.July, 16, 12, 0, 0, 0, time.UTC)
+	envelope := testEnvelope()
+	created, err := store.CreateEncrypted(ctx, paste.NewEncryptedPaste{
+		Slug: "quietbrightotter", Envelope: envelope, ContentSize: 16,
+		ExpiresAt: now.Add(time.Hour), CreatedAt: now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	retrieved, err := store.GetActive(ctx, created.Slug, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !retrieved.IsEncrypted || retrieved.Envelope == nil || *retrieved.Envelope != envelope || retrieved.CryptoVersion != paste.CryptoVersion {
+		t.Fatalf("encrypted retrieval = %#v", retrieved)
+	}
+	if retrieved.Payload != (paste.PlaintextPayload{}) {
+		t.Fatalf("encrypted retrieval exposed plaintext payload = %#v", retrieved.Payload)
+	}
+}
+
 func TestDeleteExpiredBatchRemovesOnlyExpiredRows(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -210,5 +240,12 @@ func testNewPaste(slug string, expiresAt, createdAt time.Time) paste.NewPaste {
 		ContentSize: int64(len(content)),
 		ExpiresAt:   expiresAt,
 		CreatedAt:   createdAt,
+	}
+}
+
+func testEnvelope() paste.CiphertextEnvelope {
+	return paste.CiphertextEnvelope{
+		Version: paste.CryptoVersion, Algorithm: paste.CryptoAlgorithm,
+		IV: "AAECAwQFBgcICQoL", Ciphertext: "AAECAwQFBgcICQoLDA0ODw",
 	}
 }

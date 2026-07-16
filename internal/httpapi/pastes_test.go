@@ -78,7 +78,7 @@ func TestPlaintextGetAndRawContract(t *testing.T) {
 		if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 			t.Fatal(err)
 		}
-		if response.Payload.Content != result.Payload.Content {
+		if response.Payload == nil || response.Payload.Content != result.Payload.Content {
 			t.Fatalf("content = %q", response.Payload.Content)
 		}
 	})
@@ -90,6 +90,54 @@ func TestPlaintextGetAndRawContract(t *testing.T) {
 			t.Fatalf("status/headers/body = %d %#v %q", recorder.Code, recorder.Header(), recorder.Body.String())
 		}
 	})
+}
+
+func TestEncryptedCreateAndRetrieveContract(t *testing.T) {
+	created := testEncryptedPaste()
+	service := &fakePasteService{encryptedCreated: created, result: created}
+	handler := NewHandler(testConfig(t), service)
+	body := `{"mode":"encrypted","payload":{"version":1,"algorithm":"A256GCM","iv":"AAECAwQFBgcICQoL","ciphertext":"AAECAwQFBgcICQoLDA0ODw"},"expiry":"1h"}`
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/pastes", strings.NewReader(body)))
+	if recorder.Code != http.StatusCreated || service.encryptedCreateCalls != 1 {
+		t.Fatalf("create status/calls = %d/%d: %s", recorder.Code, service.encryptedCreateCalls, recorder.Body.String())
+	}
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/pastes/quietbrightotter", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("get status = %d: %s", recorder.Code, recorder.Body.String())
+	}
+	var response pasteResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if !response.IsEncrypted || response.Envelope == nil || *response.Envelope != *created.Envelope || response.Payload != nil || response.CryptoVersion == nil || *response.CryptoVersion != paste.CryptoVersion {
+		t.Fatalf("encrypted response = %#v", response)
+	}
+}
+
+func TestEncryptedCreateRejectsInvalidEnvelopeAndKey(t *testing.T) {
+	tests := []string{
+		`{"mode":"encrypted","payload":{"version":2,"algorithm":"A256GCM","iv":"AAECAwQFBgcICQoL","ciphertext":"AAECAwQFBgcICQoLDA0ODw"},"expiry":"1h"}`,
+		`{"mode":"encrypted","payload":{"version":1,"algorithm":"A256GCM","iv":"AAECAwQFBgcICQoL","ciphertext":"AAECAwQFBgcICQoLDA0ODw","key":"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"},"expiry":"1h"}`,
+		`{"mode":"encrypted","payload":{"version":1,"algorithm":"A256GCM","iv":"AAECAwQFBgcICQoL","ciphertext":"AAECAwQFBgcICQoLDA0ODw"},"expiry":"1h","key":"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"}`,
+	}
+	for _, body := range tests {
+		service := &fakePasteService{}
+		recorder := httptest.NewRecorder()
+		NewHandler(testConfig(t), service).ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/pastes", strings.NewReader(body)))
+		assertError(t, recorder, http.StatusBadRequest, "invalid_request")
+		if service.encryptedCreateCalls != 0 {
+			t.Fatal("server accepted an encryption key")
+		}
+	}
+}
+
+func TestRawEncryptedPasteIsNotFound(t *testing.T) {
+	service := &fakePasteService{result: testEncryptedPaste()}
+	recorder := httptest.NewRecorder()
+	NewHandler(testConfig(t), service).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/pastes/quietbrightotter/raw", nil))
+	assertError(t, recorder, http.StatusNotFound, "not_found")
 }
 
 func TestPlaintextGetCollapsesInvalidMissingAndExpired(t *testing.T) {
@@ -160,12 +208,22 @@ func TestUntrustedForwardedIPCannotRotateRateLimitIdentity(t *testing.T) {
 }
 
 type fakePasteService struct {
-	created     paste.Paste
-	result      paste.Paste
-	input       paste.CreatePlaintextInput
-	createErr   error
-	getErr      error
-	createCalls int
+	created              paste.Paste
+	encryptedCreated     paste.Paste
+	result               paste.Paste
+	input                paste.CreatePlaintextInput
+	createErr            error
+	getErr               error
+	createCalls          int
+	encryptedCreateCalls int
+}
+
+func (s *fakePasteService) CreateEncrypted(_ context.Context, input paste.CreateEncryptedInput) (paste.Paste, error) {
+	s.encryptedCreateCalls++
+	if s.createErr != nil {
+		return paste.Paste{}, s.createErr
+	}
+	return s.encryptedCreated, nil
 }
 
 func (s *fakePasteService) CreatePlaintext(_ context.Context, input paste.CreatePlaintextInput) (paste.Paste, error) {
@@ -187,4 +245,10 @@ func (s *fakePasteService) GetActive(context.Context, string) (paste.Paste, erro
 func testPaste() paste.Paste {
 	created := time.Date(2026, time.July, 16, 12, 0, 0, 0, time.UTC)
 	return paste.Paste{Slug: "quietbrightotter", Payload: paste.PlaintextPayload{Version: 1, Title: "Example", Language: "go", Content: "package main\n"}, ContentSize: 13, CreatedAt: created, ExpiresAt: created.Add(time.Hour)}
+}
+
+func testEncryptedPaste() paste.Paste {
+	created := time.Date(2026, time.July, 16, 12, 0, 0, 0, time.UTC)
+	envelope := paste.CiphertextEnvelope{Version: paste.CryptoVersion, Algorithm: paste.CryptoAlgorithm, IV: "AAECAwQFBgcICQoL", Ciphertext: "AAECAwQFBgcICQoLDA0ODw"}
+	return paste.Paste{Slug: "quietbrightotter", Envelope: &envelope, IsEncrypted: true, CryptoVersion: paste.CryptoVersion, ContentSize: 16, CreatedAt: created, ExpiresAt: created.Add(time.Hour)}
 }

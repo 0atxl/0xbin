@@ -5,8 +5,8 @@
 
 Each step ends with a verification gate. Do not begin a dependent step until its gate passes. Commit boundaries may follow steps or coherent substeps; avoid one enormous final commit.
 
-**Current implementation status (2026-07-16):** Steps 0–8 are complete and
-their verification gates pass. Step 9 is next. Full browser journeys remain
+**Current implementation status (2026-07-16):** Steps 0–9 are complete and
+their verification gates pass. Step 10 is next. Full browser journeys remain
 scheduled for Step 11; the current end-to-end target covers only the Step 8
 fragment transport boundary.
 

@@ -87,8 +87,31 @@ func TestServiceRejectsUnknownExpiryBeforeStorage(t *testing.T) {
 	}
 }
 
+func TestServiceCreateEncryptedStoresOnlyEnvelope(t *testing.T) {
+	now := time.Date(2026, time.July, 16, 12, 0, 0, 0, time.UTC)
+	store := &recordingStore{}
+	service, err := NewService(store, &sequenceGenerator{slugs: []string{"quietbrightotter"}}, DefaultExpiryPolicy(), MaxContentBytes, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope := CiphertextEnvelope{Version: CryptoVersion, Algorithm: CryptoAlgorithm, IV: "AAECAwQFBgcICQoL", Ciphertext: "AAECAwQFBgcICQoLDA0ODw"}
+	created, err := service.CreateEncrypted(context.Background(), CreateEncryptedInput{Envelope: envelope, Expiry: "1h"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !created.IsEncrypted || created.Envelope == nil || *created.Envelope != envelope || store.createEncryptedCalls != 1 {
+		t.Fatalf("created encrypted paste = %#v, calls = %d", created, store.createEncryptedCalls)
+	}
+}
+
 type recordingStore struct {
-	createCalls int
+	createCalls          int
+	createEncryptedCalls int
+}
+
+func (s *recordingStore) CreateEncrypted(_ context.Context, newPaste NewEncryptedPaste) (Paste, error) {
+	s.createEncryptedCalls++
+	return Paste{Slug: newPaste.Slug, Envelope: &newPaste.Envelope, IsEncrypted: true, CryptoVersion: newPaste.Envelope.Version, ContentSize: newPaste.ContentSize, ExpiresAt: newPaste.ExpiresAt, CreatedAt: newPaste.CreatedAt}, nil
 }
 
 func (s *recordingStore) Create(_ context.Context, newPaste NewPaste) (Paste, error) {

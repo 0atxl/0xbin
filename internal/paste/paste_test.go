@@ -83,3 +83,27 @@ func TestValidatePlaintextChecksSizeBeforeUTF8Scan(t *testing.T) {
 		t.Fatalf("ValidatePlaintext() error = %v, want %v", err, ErrPayloadTooLarge)
 	}
 }
+
+func TestValidateCiphertextEnvelope(t *testing.T) {
+	valid := CiphertextEnvelope{Version: CryptoVersion, Algorithm: CryptoAlgorithm, IV: "AAECAwQFBgcICQoL", Ciphertext: "AAECAwQFBgcICQoLDA0ODw"}
+	size, err := ValidateCiphertextEnvelope(valid, MaxEncryptedPayloadBytes())
+	if err != nil || size != AESGCMTagBytes {
+		t.Fatalf("ValidateCiphertextEnvelope() = %d, %v", size, err)
+	}
+	for _, envelope := range []CiphertextEnvelope{
+		{Version: 2, Algorithm: CryptoAlgorithm, IV: valid.IV, Ciphertext: valid.Ciphertext},
+		{Version: CryptoVersion, Algorithm: "other", IV: valid.IV, Ciphertext: valid.Ciphertext},
+		{Version: CryptoVersion, Algorithm: CryptoAlgorithm, IV: "not/base64", Ciphertext: valid.Ciphertext},
+		{Version: CryptoVersion, Algorithm: CryptoAlgorithm, IV: "AAECAw", Ciphertext: valid.Ciphertext},
+		{Version: CryptoVersion, Algorithm: CryptoAlgorithm, IV: valid.IV, Ciphertext: "AA"},
+	} {
+		if _, err := ValidateCiphertextEnvelope(envelope, MaxEncryptedPayloadBytes()); !errors.Is(err, ErrInvalidPayload) {
+			t.Fatalf("ValidateCiphertextEnvelope(%#v) error = %v", envelope, err)
+		}
+	}
+	oversized := valid
+	oversized.Ciphertext = strings.Repeat("A", int((MaxEncryptedPayloadBytes()+1)*4/3))
+	if _, err := ValidateCiphertextEnvelope(oversized, MaxEncryptedPayloadBytes()); !errors.Is(err, ErrPayloadTooLarge) {
+		t.Fatalf("oversized envelope error = %v", err)
+	}
+}

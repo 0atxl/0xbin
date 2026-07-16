@@ -13,6 +13,9 @@ import (
 type Paste struct {
 	Slug          string
 	Payload       PlaintextPayload
+	Envelope      *CiphertextEnvelope
+	IsEncrypted   bool
+	CryptoVersion int
 	BurnAfterRead bool
 	ContentSize   int64
 	ExpiresAt     time.Time
@@ -29,6 +32,17 @@ type NewPaste struct {
 	CreatedAt     time.Time
 }
 
+// NewEncryptedPaste contains server-derived values for an opaque encrypted
+// envelope. It deliberately has no key or plaintext fields.
+type NewEncryptedPaste struct {
+	Slug          string
+	Envelope      CiphertextEnvelope
+	BurnAfterRead bool
+	ContentSize   int64
+	ExpiresAt     time.Time
+	CreatedAt     time.Time
+}
+
 // CreatePlaintextInput deliberately contains no client-controlled timestamps.
 type CreatePlaintextInput struct {
 	Payload       PlaintextPayload
@@ -36,9 +50,17 @@ type CreatePlaintextInput struct {
 	BurnAfterRead bool
 }
 
+// CreateEncryptedInput deliberately contains no plaintext or encryption key.
+type CreateEncryptedInput struct {
+	Envelope      CiphertextEnvelope
+	Expiry        string
+	BurnAfterRead bool
+}
+
 // Store is the Step 4 plaintext storage boundary.
 type Store interface {
 	Create(context.Context, NewPaste) (Paste, error)
+	CreateEncrypted(context.Context, NewEncryptedPaste) (Paste, error)
 	GetActive(context.Context, string, time.Time) (Paste, error)
 }
 
@@ -100,6 +122,47 @@ func (s *Service) CreatePlaintext(ctx context.Context, input CreatePlaintextInpu
 				Payload:       input.Payload,
 				BurnAfterRead: input.BurnAfterRead,
 				ContentSize:   int64(len(input.Payload.Content)),
+				ExpiresAt:     expiresAt,
+				CreatedAt:     createdAt,
+			})
+			return err
+		},
+		func(err error) bool { return errors.Is(err, ErrSlugCollision) },
+	)
+	if err != nil {
+		return Paste{}, err
+	}
+	return created, nil
+}
+
+// CreateEncrypted validates an opaque envelope and derives lifecycle values.
+// It cannot inspect encrypted plaintext or receive an encryption key.
+func (s *Service) CreateEncrypted(ctx context.Context, input CreateEncryptedInput) (Paste, error) {
+	limit, err := EncryptedPayloadLimit(s.maxContentBytes)
+	if err != nil {
+		return Paste{}, err
+	}
+	contentSize, err := ValidateCiphertextEnvelope(input.Envelope, limit)
+	if err != nil {
+		return Paste{}, err
+	}
+	createdAt := normalizeTime(s.now())
+	expiresAt, err := s.expiries.ExpiresAt(input.Expiry, createdAt)
+	if err != nil {
+		return Paste{}, err
+	}
+
+	var created Paste
+	_, err = slug.InsertWithRetry(
+		ctx,
+		slug.DefaultMaxAttempts,
+		s.slugs.Generate,
+		func(ctx context.Context, generated string) error {
+			created, err = s.store.CreateEncrypted(ctx, NewEncryptedPaste{
+				Slug:          generated,
+				Envelope:      input.Envelope,
+				BurnAfterRead: input.BurnAfterRead,
+				ContentSize:   contentSize,
 				ExpiresAt:     expiresAt,
 				CreatedAt:     createdAt,
 			})

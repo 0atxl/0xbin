@@ -2,11 +2,11 @@ openapi: 3.1.0
 info:
   title: 0xbin API
   version: 0.1.0
-  description: Plaintext endpoints implemented in Implementation Plan Step 5.
+  description: Plaintext and encrypted endpoints implemented through Implementation Plan Step 9.
 paths:
   /api/v1/pastes:
     post:
-      summary: Create a plaintext paste
+      summary: Create a plaintext or encrypted paste
       requestBody:
         required: true
         content:
@@ -25,7 +25,7 @@ paths:
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/pastes/{slug}:
     get:
-      summary: Retrieve an active plaintext paste
+      summary: Retrieve an active paste
       parameters:
         - $ref: '#/components/parameters/Slug'
       responses:
@@ -72,8 +72,11 @@ components:
       additionalProperties: false
       required: [mode, payload, expiry]
       properties:
-        mode: { type: string, const: plaintext }
-        payload: { $ref: '#/components/schemas/PlaintextPayload' }
+        mode: { type: string, enum: [plaintext, encrypted] }
+        payload:
+          oneOf:
+            - $ref: '#/components/schemas/PlaintextPayload'
+            - $ref: '#/components/schemas/CiphertextEnvelope'
         expiry: { type: string, enum: ['1h', '24h'] }
     CreatePasteResponse:
       type: object
@@ -84,13 +87,25 @@ components:
         expires_at: { type: string, format: date-time }
     PasteResponse:
       type: object
-      required: [slug, payload, burn_after_read, expires_at, created_at]
+      required: [slug, is_encrypted, burn_after_read, expires_at, created_at]
       properties:
         slug: { type: string }
         payload: { $ref: '#/components/schemas/PlaintextPayload' }
+        envelope: { $ref: '#/components/schemas/CiphertextEnvelope' }
+        is_encrypted: { type: boolean }
+        crypto_version: { type: integer, const: 1 }
         burn_after_read: { type: boolean }
         expires_at: { type: string, format: date-time }
         created_at: { type: string, format: date-time }
+    CiphertextEnvelope:
+      type: object
+      additionalProperties: false
+      required: [version, algorithm, iv, ciphertext]
+      properties:
+        version: { type: integer, const: 1 }
+        algorithm: { type: string, const: A256GCM }
+        iv: { type: string, description: Base64url-encoded 12-byte IV. }
+        ciphertext: { type: string, description: Base64url-encoded AES-GCM ciphertext with authentication tag. }
     Error:
       type: object
       required: [error]

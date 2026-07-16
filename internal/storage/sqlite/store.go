@@ -154,6 +154,45 @@ func (s *Store) Create(ctx context.Context, newPaste paste.NewPaste) (paste.Past
 	}, nil
 }
 
+// CreateEncrypted inserts an opaque encrypted envelope. The server stores it
+// without attempting to decrypt, authenticate, or otherwise inspect content.
+func (s *Store) CreateEncrypted(ctx context.Context, newPaste paste.NewEncryptedPaste) (paste.Paste, error) {
+	payload, err := json.Marshal(newPaste.Envelope)
+	if err != nil {
+		return paste.Paste{}, fmt.Errorf("encode encrypted envelope: %w", err)
+	}
+	_, err = s.db.ExecContext(ctx, `
+		INSERT INTO pastes (
+			slug, payload, is_encrypted, crypto_version, burn_after_read,
+			content_size, expires_at, created_at
+		) VALUES (?, ?, 1, ?, ?, ?, ?, ?)`,
+		newPaste.Slug,
+		string(payload),
+		newPaste.Envelope.Version,
+		boolToInt(newPaste.BurnAfterRead),
+		newPaste.ContentSize,
+		newPaste.ExpiresAt.UTC().Unix(),
+		newPaste.CreatedAt.UTC().Unix(),
+	)
+	if err != nil {
+		var sqliteErr *sqliteDriver.Error
+		if errors.As(err, &sqliteErr) && sqliteErr.Code() == sqlite3.SQLITE_CONSTRAINT_PRIMARYKEY {
+			return paste.Paste{}, paste.ErrSlugCollision
+		}
+		return paste.Paste{}, fmt.Errorf("insert encrypted paste: %w", err)
+	}
+	return paste.Paste{
+		Slug:          newPaste.Slug,
+		Envelope:      &newPaste.Envelope,
+		IsEncrypted:   true,
+		CryptoVersion: newPaste.Envelope.Version,
+		BurnAfterRead: newPaste.BurnAfterRead,
+		ContentSize:   newPaste.ContentSize,
+		ExpiresAt:     unixTime(newPaste.ExpiresAt.UTC().Unix()),
+		CreatedAt:     unixTime(newPaste.CreatedAt.UTC().Unix()),
+	}, nil
+}
+
 // GetActive returns a plaintext paste only when its expiry is later than now.
 // Missing and expired records deliberately share ErrNotFound.
 func (s *Store) GetActive(ctx context.Context, slug string, now time.Time) (paste.Paste, error) {
@@ -189,11 +228,20 @@ func (s *Store) GetActive(ctx context.Context, slug string, now time.Time) (past
 	if err != nil {
 		return paste.Paste{}, fmt.Errorf("get active paste: %w", err)
 	}
-	if isEncrypted != 0 || cryptoVersion.Valid {
-		return paste.Paste{}, fmt.Errorf("get active paste: encrypted payload is not supported by plaintext storage")
-	}
-	if err := json.Unmarshal([]byte(payloadJSON), &result.Payload); err != nil {
-		return paste.Paste{}, fmt.Errorf("decode plaintext payload: %w", err)
+	if isEncrypted == 1 && cryptoVersion.Valid {
+		var envelope paste.CiphertextEnvelope
+		if err := json.Unmarshal([]byte(payloadJSON), &envelope); err != nil {
+			return paste.Paste{}, fmt.Errorf("decode encrypted envelope: %w", err)
+		}
+		result.Envelope = &envelope
+		result.IsEncrypted = true
+		result.CryptoVersion = int(cryptoVersion.Int64)
+	} else if isEncrypted == 0 && !cryptoVersion.Valid {
+		if err := json.Unmarshal([]byte(payloadJSON), &result.Payload); err != nil {
+			return paste.Paste{}, fmt.Errorf("decode plaintext payload: %w", err)
+		}
+	} else {
+		return paste.Paste{}, fmt.Errorf("get active paste: invalid encryption state")
 	}
 	result.BurnAfterRead = burnAfterRead != 0
 	result.ExpiresAt = unixTime(expiresAt)
