@@ -26,7 +26,7 @@ Not included: Paste creation, encryption, UI design.
 
 ## Phase 1 — Plaintext Vertical Slice
 
-**Objective:** A complete browser/API path for expiring plaintext pastes.
+**Objective:** A complete backend/API path for expiring plaintext pastes.
 
 Includes:
 
@@ -45,9 +45,11 @@ Exit criteria:
 - Plaintext API flow is usable end to end.
 - Expiry is enforced in SQL even when cleanup is disabled.
 - Collision and trusted-proxy tests pass.
-- Slug-space limitations are documented in user copy.
+- Slug-space limitations are documented in project documentation; equivalent
+  user-facing copy is added with the browser interface in Phase 3.
 
-Not included: Client encryption, burn after read, polished frontend.
+Not included: Client encryption, burn after read, or a usable browser
+interface.
 
 ## Phase 2 — Encrypted and Burn Flows
 
@@ -58,9 +60,9 @@ Includes:
 - Browser AES-256-GCM
 - Versioned payload/envelope
 - Key in URL fragment
-- Missing-key dialog flow
+- Missing-key parsing and key-input protocol support
 - Server structural validation
-- Safe burn confirmation
+- Non-consuming burn confirmation metadata
 - Atomic consume
 
 Implementation-plan steps: 8–10.
@@ -72,7 +74,8 @@ Exit criteria:
 - Exactly one concurrent consume wins.
 - Expired burn pastes cannot be consumed.
 
-Not included: Final visual design or public launch.
+Not included: The user-facing missing-key dialog, burn confirmation screen,
+complete browser journeys, final visual design, or public launch.
 
 ## Phase 3 — Frontend Behaviour and Self-Hosting
 
@@ -81,6 +84,7 @@ Not included: Final visual design or public launch.
 Includes:
 
 - Creation/viewer behaviour and states
+- Missing-key dialog and burn confirmation screen
 - CodeMirror editor
 - Copy/search/raw/wrap behaviours
 - Accessibility baseline
@@ -151,4 +155,3 @@ Each candidate requires its own requirements and acceptance criteria before impl
 - Security fixes may cross phase boundaries when necessary.
 - Update this document when scope changes; do not silently reinterpret a phase.
 - Review costs and abuse signals before increasing hosted limits.
-
