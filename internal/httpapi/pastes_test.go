@@ -140,6 +140,45 @@ func TestRawEncryptedPasteIsNotFound(t *testing.T) {
 	assertError(t, recorder, http.StatusNotFound, "not_found")
 }
 
+func TestBurnGetDoesNotExposeOrConsumeContent(t *testing.T) {
+	result := testPaste()
+	result.BurnAfterRead = true
+	service := &fakePasteService{result: result}
+	handler := NewHandler(testConfig(t), service)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/pastes/quietbrightotter", nil))
+	if recorder.Code != http.StatusOK || service.consumeCalls != 0 || strings.Contains(recorder.Body.String(), result.Payload.Content) {
+		t.Fatalf("GET status/calls/body = %d/%d/%q", recorder.Code, service.consumeCalls, recorder.Body.String())
+	}
+	var confirmation burnConfirmationResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &confirmation); err != nil || !confirmation.BurnAfterRead || confirmation.IsEncrypted {
+		t.Fatalf("burn confirmation = %#v, %v", confirmation, err)
+	}
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/pastes/quietbrightotter/raw", nil))
+	assertError(t, recorder, http.StatusNotFound, "not_found")
+}
+
+func TestConsumeContractAndNotFound(t *testing.T) {
+	result := testPaste()
+	result.BurnAfterRead = true
+	service := &fakePasteService{consumed: result}
+	handler := NewHandler(testConfig(t), service)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/pastes/quietbrightotter/consume", nil))
+	var response pasteResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if recorder.Code != http.StatusOK || service.consumeCalls != 1 || response.Payload == nil || response.Payload.Content != result.Payload.Content {
+		t.Fatalf("consume status/calls/body = %d/%d/%q", recorder.Code, service.consumeCalls, recorder.Body.String())
+	}
+	service.consumeErr = paste.ErrNotFound
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/pastes/quietbrightotter/consume", nil))
+	assertError(t, recorder, http.StatusNotFound, "not_found")
+}
+
 func TestPlaintextGetCollapsesInvalidMissingAndExpired(t *testing.T) {
 	for _, path := range []string{"/api/v1/pastes/INVALID", "/api/v1/pastes/missingbrightotter", "/api/v1/pastes/expirebrightotter"} {
 		t.Run(path, func(t *testing.T) {
@@ -214,6 +253,9 @@ type fakePasteService struct {
 	input                paste.CreatePlaintextInput
 	createErr            error
 	getErr               error
+	consumed             paste.Paste
+	consumeErr           error
+	consumeCalls         int
 	createCalls          int
 	encryptedCreateCalls int
 }
@@ -240,6 +282,14 @@ func (s *fakePasteService) GetActive(context.Context, string) (paste.Paste, erro
 		return paste.Paste{}, s.getErr
 	}
 	return s.result, nil
+}
+
+func (s *fakePasteService) Consume(context.Context, string) (paste.Paste, error) {
+	s.consumeCalls++
+	if s.consumeErr != nil {
+		return paste.Paste{}, s.consumeErr
+	}
+	return s.consumed, nil
 }
 
 func testPaste() paste.Paste {

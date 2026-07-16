@@ -62,6 +62,7 @@ type Store interface {
 	Create(context.Context, NewPaste) (Paste, error)
 	CreateEncrypted(context.Context, NewEncryptedPaste) (Paste, error)
 	GetActive(context.Context, string, time.Time) (Paste, error)
+	ConsumeActive(context.Context, string, time.Time) (Paste, error)
 }
 
 // SlugGenerator is implemented by slug.Generator and deterministic test fakes.
@@ -180,4 +181,9 @@ func (s *Service) CreateEncrypted(ctx context.Context, input CreateEncryptedInpu
 // are both represented by ErrNotFound from the store.
 func (s *Service) GetActive(ctx context.Context, slug string) (Paste, error) {
 	return s.store.GetActive(ctx, slug, normalizeTime(s.now()))
+}
+
+// Consume deletes and returns one active burn-after-read paste atomically.
+func (s *Service) Consume(ctx context.Context, slug string) (Paste, error) {
+	return s.store.ConsumeActive(ctx, slug, normalizeTime(s.now()))
 }

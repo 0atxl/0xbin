@@ -26,6 +26,7 @@ type PasteService interface {
 	CreatePlaintext(context.Context, paste.CreatePlaintextInput) (paste.Paste, error)
 	CreateEncrypted(context.Context, paste.CreateEncryptedInput) (paste.Paste, error)
 	GetActive(context.Context, string) (paste.Paste, error)
+	Consume(context.Context, string) (paste.Paste, error)
 }
 
 type pasteAPI struct {
@@ -36,9 +37,15 @@ type pasteAPI struct {
 }
 
 type createPasteRequest struct {
-	Mode    string          `json:"mode"`
-	Payload json.RawMessage `json:"payload"`
-	Expiry  string          `json:"expiry"`
+	Mode          string          `json:"mode"`
+	Payload       json.RawMessage `json:"payload"`
+	Expiry        string          `json:"expiry"`
+	BurnAfterRead bool            `json:"burn_after_read"`
+}
+
+type burnConfirmationResponse struct {
+	BurnAfterRead bool `json:"burn_after_read"`
+	IsEncrypted   bool `json:"is_encrypted"`
 }
 
 type createPasteResponse struct {
@@ -90,7 +97,7 @@ func (api pasteAPI) createPaste(ctx context.Context, request createPasteRequest)
 		if err := decodePayload(request.Payload, &payload); err != nil {
 			return paste.Paste{}, fmt.Errorf("%w: malformed plaintext payload", paste.ErrInvalidPayload)
 		}
-		return api.pastes.CreatePlaintext(ctx, paste.CreatePlaintextInput{Payload: payload, Expiry: request.Expiry})
+		return api.pastes.CreatePlaintext(ctx, paste.CreatePlaintextInput{Payload: payload, Expiry: request.Expiry, BurnAfterRead: request.BurnAfterRead})
 	case "encrypted":
 		var envelope paste.CiphertextEnvelope
 		if err := decodePayload(request.Payload, &envelope); err != nil {
@@ -103,7 +110,7 @@ func (api pasteAPI) createPaste(ctx context.Context, request createPasteRequest)
 		if _, err := paste.ValidateCiphertextEnvelope(envelope, limit); err != nil {
 			return paste.Paste{}, err
 		}
-		return api.pastes.CreateEncrypted(ctx, paste.CreateEncryptedInput{Envelope: envelope, Expiry: request.Expiry})
+		return api.pastes.CreateEncrypted(ctx, paste.CreateEncryptedInput{Envelope: envelope, Expiry: request.Expiry, BurnAfterRead: request.BurnAfterRead})
 	default:
 		return paste.Paste{}, fmt.Errorf("%w: unsupported paste mode", paste.ErrInvalidPayload)
 	}
@@ -125,26 +132,33 @@ func (api pasteAPI) get(w http.ResponseWriter, r *http.Request) {
 	}
 	api.limits.RecordSuccess(clientIPFromContext(r.Context()))
 	setPasteHeaders(w.Header())
-	response := pasteResponse{
-		Slug: result.Slug, IsEncrypted: result.IsEncrypted,
-		BurnAfterRead: result.BurnAfterRead, ExpiresAt: result.ExpiresAt, CreatedAt: result.CreatedAt,
+	if result.BurnAfterRead {
+		writeJSON(w, http.StatusOK, burnConfirmationResponse{BurnAfterRead: true, IsEncrypted: result.IsEncrypted})
+		return
 	}
-	if result.IsEncrypted {
-		response.Envelope = result.Envelope
-		response.CryptoVersion = &result.CryptoVersion
-	} else {
-		response.Payload = &result.Payload
+	writeJSON(w, http.StatusOK, responseForPaste(result))
+}
+
+func (api pasteAPI) consume(w http.ResponseWriter, r *http.Request) {
+	slug, ok := validSlug(r.PathValue("slug"))
+	if !ok {
+		api.writeNotFound(w, r)
+		return
 	}
-	writeJSON(w, http.StatusOK, pasteResponse{
-		Slug:          response.Slug,
-		Payload:       response.Payload,
-		Envelope:      response.Envelope,
-		IsEncrypted:   response.IsEncrypted,
-		CryptoVersion: response.CryptoVersion,
-		BurnAfterRead: response.BurnAfterRead,
-		ExpiresAt:     response.ExpiresAt,
-		CreatedAt:     response.CreatedAt,
-	})
+	if !api.allow(w, r, ratelimit.Consume, 1) || !api.allowIdentity(w, r, ratelimit.Consume, "slug:"+slug, 1) {
+		return
+	}
+	result, err := api.pastes.Consume(r.Context(), slug)
+	if errors.Is(err, paste.ErrNotFound) {
+		api.writeNotFound(w, r)
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "service_unavailable", "Service is temporarily unavailable", requestIDFromContext(r.Context()))
+		return
+	}
+	setPasteHeaders(w.Header())
+	writeJSON(w, http.StatusOK, responseForPaste(result))
 }
 
 func (api pasteAPI) raw(w http.ResponseWriter, r *http.Request) {
@@ -158,7 +172,7 @@ func (api pasteAPI) raw(w http.ResponseWriter, r *http.Request) {
 		api.writeGetError(w, r, err)
 		return
 	}
-	if result.IsEncrypted {
+	if result.IsEncrypted || result.BurnAfterRead {
 		api.writeNotFound(w, r)
 		return
 	}
@@ -171,6 +185,17 @@ func (api pasteAPI) raw(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(http.StatusOK)
 	_, _ = io.WriteString(w, result.Payload.Content)
+}
+
+func responseForPaste(result paste.Paste) pasteResponse {
+	response := pasteResponse{Slug: result.Slug, IsEncrypted: result.IsEncrypted, BurnAfterRead: result.BurnAfterRead, ExpiresAt: result.ExpiresAt, CreatedAt: result.CreatedAt}
+	if result.IsEncrypted {
+		response.Envelope = result.Envelope
+		response.CryptoVersion = &result.CryptoVersion
+	} else {
+		response.Payload = &result.Payload
+	}
+	return response
 }
 
 func encryptedRequestLimit(maxContentBytes int64) int64 {
@@ -232,7 +257,11 @@ func (api pasteAPI) writeNotFound(w http.ResponseWriter, r *http.Request) {
 }
 
 func (api pasteAPI) allow(w http.ResponseWriter, r *http.Request, category ratelimit.Category, cost int) bool {
-	allowed, retryAfter := api.limits.Allow(category, clientIPFromContext(r.Context()), cost)
+	return api.allowIdentity(w, r, category, clientIPFromContext(r.Context()), cost)
+}
+
+func (api pasteAPI) allowIdentity(w http.ResponseWriter, r *http.Request, category ratelimit.Category, identity string, cost int) bool {
+	allowed, retryAfter := api.limits.Allow(category, identity, cost)
 	if allowed {
 		return true
 	}

@@ -196,6 +196,44 @@ func (s *Store) CreateEncrypted(ctx context.Context, newPaste paste.NewEncrypted
 // GetActive returns a plaintext paste only when its expiry is later than now.
 // Missing and expired records deliberately share ErrNotFound.
 func (s *Store) GetActive(ctx context.Context, slug string, now time.Time) (paste.Paste, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT slug, payload, is_encrypted, crypto_version, burn_after_read,
+		       content_size, expires_at, created_at
+		FROM pastes
+		WHERE slug = ? AND expires_at > ?`, slug, now.UTC().Unix())
+	result, err := scanPaste(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return paste.Paste{}, paste.ErrNotFound
+	}
+	if err != nil {
+		return paste.Paste{}, fmt.Errorf("get active paste: %w", err)
+	}
+	return result, nil
+}
+
+// ConsumeActive atomically deletes and returns one active burn-after-read
+// paste. A missing, expired, normal, or already consumed paste is not found.
+func (s *Store) ConsumeActive(ctx context.Context, slug string, now time.Time) (paste.Paste, error) {
+	row := s.db.QueryRowContext(ctx, `
+		DELETE FROM pastes
+		WHERE slug = ? AND burn_after_read = 1 AND expires_at > ?
+		RETURNING slug, payload, is_encrypted, crypto_version, burn_after_read,
+		          content_size, expires_at, created_at`, slug, now.UTC().Unix())
+	result, err := scanPaste(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return paste.Paste{}, paste.ErrNotFound
+	}
+	if err != nil {
+		return paste.Paste{}, fmt.Errorf("consume active paste: %w", err)
+	}
+	return result, nil
+}
+
+type rowScanner interface {
+	Scan(...any) error
+}
+
+func scanPaste(row rowScanner) (paste.Paste, error) {
 	var (
 		payloadJSON   string
 		isEncrypted   int
@@ -205,14 +243,7 @@ func (s *Store) GetActive(ctx context.Context, slug string, now time.Time) (past
 		expiresAt     int64
 		createdAt     int64
 	)
-	err := s.db.QueryRowContext(ctx, `
-		SELECT slug, payload, is_encrypted, crypto_version, burn_after_read,
-		       content_size, expires_at, created_at
-		FROM pastes
-		WHERE slug = ? AND expires_at > ?`,
-		slug,
-		now.UTC().Unix(),
-	).Scan(
+	err := row.Scan(
 		&result.Slug,
 		&payloadJSON,
 		&isEncrypted,
@@ -222,11 +253,8 @@ func (s *Store) GetActive(ctx context.Context, slug string, now time.Time) (past
 		&expiresAt,
 		&createdAt,
 	)
-	if errors.Is(err, sql.ErrNoRows) {
-		return paste.Paste{}, paste.ErrNotFound
-	}
 	if err != nil {
-		return paste.Paste{}, fmt.Errorf("get active paste: %w", err)
+		return paste.Paste{}, err
 	}
 	if isEncrypted == 1 && cryptoVersion.Valid {
 		var envelope paste.CiphertextEnvelope
@@ -241,7 +269,7 @@ func (s *Store) GetActive(ctx context.Context, slug string, now time.Time) (past
 			return paste.Paste{}, fmt.Errorf("decode plaintext payload: %w", err)
 		}
 	} else {
-		return paste.Paste{}, fmt.Errorf("get active paste: invalid encryption state")
+		return paste.Paste{}, fmt.Errorf("invalid encryption state")
 	}
 	result.BurnAfterRead = burnAfterRead != 0
 	result.ExpiresAt = unixTime(expiresAt)

@@ -37,6 +37,22 @@ paths:
                 $ref: '#/components/schemas/PasteResponse'
         '404': { $ref: '#/components/responses/NotFound' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /api/v1/pastes/{slug}/consume:
+    post:
+      summary: Reveal and atomically destroy an active burn-after-read paste
+      description: For encrypted pastes, this consumes the ciphertext before the browser can verify a supplied key. A wrong or missing key cannot be retried after a successful consume.
+      parameters:
+        - $ref: '#/components/parameters/Slug'
+      responses:
+        '200':
+          description: The one successful reveal
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PasteResponse'
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/pastes/{slug}/raw:
     get:
       summary: Retrieve active plaintext content as text
@@ -78,6 +94,7 @@ components:
             - $ref: '#/components/schemas/PlaintextPayload'
             - $ref: '#/components/schemas/CiphertextEnvelope'
         expiry: { type: string, enum: ['1h', '24h'] }
+        burn_after_read: { type: boolean, default: false }
     CreatePasteResponse:
       type: object
       required: [slug, url, expires_at]
@@ -129,4 +146,7 @@ components:
       content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
     ServiceUnavailable:
       description: Temporary service failure
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    RateLimited:
+      description: Rate limit exceeded; response includes Retry-After
       content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }

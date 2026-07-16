@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
 
@@ -225,6 +226,77 @@ func TestDeleteExpiredBatchRejectsInvalidLimit(t *testing.T) {
 	defer store.Close()
 	if _, err := store.DeleteExpiredBatch(context.Background(), time.Now(), 0); err == nil {
 		t.Fatal("DeleteExpiredBatch() error = nil")
+	}
+}
+
+func TestConsumeActiveDeletesExactlyOneBurnPaste(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Date(2026, time.July, 16, 12, 0, 0, 0, time.UTC)
+	burn := testNewPaste("quietbrightotter", now.Add(time.Hour), now)
+	burn.BurnAfterRead = true
+	if _, err := store.Create(ctx, burn); err != nil {
+		t.Fatal(err)
+	}
+
+	const contenders = 24
+	results := make(chan error, contenders)
+	start := make(chan struct{})
+	var group sync.WaitGroup
+	for range contenders {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			<-start
+			_, err := store.ConsumeActive(ctx, burn.Slug, now)
+			results <- err
+		}()
+	}
+	close(start)
+	group.Wait()
+	close(results)
+
+	successes := 0
+	for err := range results {
+		if err == nil {
+			successes++
+		} else if !errors.Is(err, paste.ErrNotFound) {
+			t.Fatalf("ConsumeActive() error = %v", err)
+		}
+	}
+	if successes != 1 {
+		t.Fatalf("successful consumes = %d, want 1", successes)
+	}
+	if _, err := store.GetActive(ctx, burn.Slug, now); !errors.Is(err, paste.ErrNotFound) {
+		t.Fatalf("burn paste after consume error = %v", err)
+	}
+}
+
+func TestConsumeActiveRejectsExpiredAndNormalPastes(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store, err := Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Date(2026, time.July, 16, 12, 0, 0, 0, time.UTC)
+	expired := testNewPaste("stalequickwren", now.Add(-time.Hour), now)
+	expired.BurnAfterRead = true
+	normal := testNewPaste("calmbrightotter", now.Add(time.Hour), now)
+	for _, newPaste := range []paste.NewPaste{expired, normal} {
+		if _, err := store.Create(ctx, newPaste); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, slug := range []string{expired.Slug, normal.Slug} {
+		if _, err := store.ConsumeActive(ctx, slug, now); !errors.Is(err, paste.ErrNotFound) {
+			t.Fatalf("ConsumeActive(%q) error = %v", slug, err)
+		}
 	}
 }
 

@@ -130,6 +130,10 @@ func (*recordingStore) GetActive(context.Context, string, time.Time) (Paste, err
 	return Paste{}, ErrNotFound
 }
 
+func (*recordingStore) ConsumeActive(context.Context, string, time.Time) (Paste, error) {
+	return Paste{}, ErrNotFound
+}
+
 type sequenceGenerator struct {
 	slugs []string
 	next  int
