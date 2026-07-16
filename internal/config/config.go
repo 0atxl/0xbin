@@ -32,6 +32,7 @@ type Config struct {
 	MaxPasteBytes     int64
 	DefaultExpiry     time.Duration
 	AllowedExpiries   []time.Duration
+	AllowedExpiryIDs  []string
 	CreateRate        Rate
 	ReadRate          Rate
 	MissRate          Rate
@@ -129,6 +130,7 @@ func Load(lookup LookupEnv) (Config, error) {
 		MaxPasteBytes:     maxPasteBytes,
 		DefaultExpiry:     defaultExpiry,
 		AllowedExpiries:   allowedExpiries,
+		AllowedExpiryIDs:  expiryIDs(get("OXBIN_ALLOWED_EXPIRIES", "1h,24h")),
 		CreateRate:        createRate,
 		ReadRate:          readRate,
 		MissRate:          missRate,
@@ -140,6 +142,15 @@ func Load(lookup LookupEnv) (Config, error) {
 		IdleTimeout:       idleTimeout,
 		ShutdownTimeout:   shutdownTimeout,
 	}, nil
+}
+
+func expiryIDs(value string) []string {
+	parts := strings.Split(value, ",")
+	identifiers := make([]string, 0, len(parts))
+	for _, part := range parts {
+		identifiers = append(identifiers, strings.TrimSpace(part))
+	}
+	return identifiers
 }
 
 func parseBaseURL(value string) (*url.URL, error) {

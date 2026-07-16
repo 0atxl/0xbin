@@ -246,7 +246,9 @@ Maintain fixed test vectors for:
 
 ## 7. API Design
 
-Use JSON with `Content-Type: application/json`. Exact schemas should be captured in an OpenAPI file when handlers are implemented.
+Use JSON with `Content-Type: application/json`. The current endpoint schemas are
+defined in [`openapi.yaml`](openapi.yaml); the document expands as later API
+modes are implemented.
 
 ### 7.1 Create paste
 

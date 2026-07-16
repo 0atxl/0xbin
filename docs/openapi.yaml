@@ -1,0 +1,117 @@
+openapi: 3.1.0
+info:
+  title: 0xbin API
+  version: 0.1.0
+  description: Plaintext endpoints implemented in Implementation Plan Step 5.
+paths:
+  /api/v1/pastes:
+    post:
+      summary: Create a plaintext paste
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePasteRequest'
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreatePasteResponse'
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /api/v1/pastes/{slug}:
+    get:
+      summary: Retrieve an active plaintext paste
+      parameters:
+        - $ref: '#/components/parameters/Slug'
+      responses:
+        '200':
+          description: Active paste
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PasteResponse'
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /api/v1/pastes/{slug}/raw:
+    get:
+      summary: Retrieve active plaintext content as text
+      parameters:
+        - $ref: '#/components/parameters/Slug'
+      responses:
+        '200':
+          description: Plaintext content
+          content:
+            text/plain:
+              schema: { type: string }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+components:
+  parameters:
+    Slug:
+      name: slug
+      in: path
+      required: true
+      schema: { type: string, pattern: '^[a-z]{1,128}$' }
+  schemas:
+    PlaintextPayload:
+      type: object
+      additionalProperties: false
+      required: [version, content]
+      properties:
+        version: { type: integer, const: 1 }
+        title: { type: string, description: At most 200 UTF-8 bytes. }
+        language: { type: string, description: At most 64 UTF-8 bytes. }
+        content: { type: string, minLength: 1, description: At most 1048576 UTF-8 bytes. }
+    CreatePasteRequest:
+      type: object
+      additionalProperties: false
+      required: [mode, payload, expiry]
+      properties:
+        mode: { type: string, const: plaintext }
+        payload: { $ref: '#/components/schemas/PlaintextPayload' }
+        expiry: { type: string, enum: ['1h', '24h'] }
+    CreatePasteResponse:
+      type: object
+      required: [slug, url, expires_at]
+      properties:
+        slug: { type: string }
+        url: { type: string, format: uri }
+        expires_at: { type: string, format: date-time }
+    PasteResponse:
+      type: object
+      required: [slug, payload, burn_after_read, expires_at, created_at]
+      properties:
+        slug: { type: string }
+        payload: { $ref: '#/components/schemas/PlaintextPayload' }
+        burn_after_read: { type: boolean }
+        expires_at: { type: string, format: date-time }
+        created_at: { type: string, format: date-time }
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, request_id]
+          properties:
+            code: { type: string }
+            message: { type: string }
+            request_id: { type: string }
+  responses:
+    InvalidRequest:
+      description: Invalid request
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    PayloadTooLarge:
+      description: Paste exceeds the size limit
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    NotFound:
+      description: Missing, expired, deleted, or consumed paste
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    ServiceUnavailable:
+      description: Temporary service failure
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }

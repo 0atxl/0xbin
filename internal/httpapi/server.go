@@ -22,14 +22,14 @@ type Server struct {
 
 // NewServer creates the HTTP server. Database readiness is deliberately not
 // wired until Step 2.
-func NewServer(cfg config.Config, readiness ...func(context.Context) error) *Server {
+func NewServer(cfg config.Config, pastes PasteService, readiness ...func(context.Context) error) *Server {
 	var ready func(context.Context) error
 	if len(readiness) > 0 {
 		ready = readiness[0]
 	}
 	return &Server{server: &http.Server{
 		Addr:              cfg.ListenAddr,
-		Handler:           NewHandler(ready),
+		Handler:           NewHandler(cfg, pastes, ready),
 		ReadHeaderTimeout: cfg.ReadHeaderTimeout,
 		ReadTimeout:       cfg.ReadTimeout,
 		WriteTimeout:      cfg.WriteTimeout,
@@ -48,7 +48,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 }
 
 // NewHandler creates the root router and its foundational middleware.
-func NewHandler(readiness ...func(context.Context) error) http.Handler {
+func NewHandler(cfg config.Config, pastes PasteService, readiness ...func(context.Context) error) http.Handler {
 	var ready func(context.Context) error
 	if len(readiness) > 0 {
 		ready = readiness[0]
@@ -56,6 +56,12 @@ func NewHandler(readiness ...func(context.Context) error) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health/live", live)
 	mux.HandleFunc("GET /health/ready", func(w http.ResponseWriter, r *http.Request) { notReady(w, r, ready) })
+	if pastes != nil {
+		api := pasteAPI{pastes: pastes, baseURL: cfg.BaseURL, maxContentBytes: cfg.MaxPasteBytes}
+		mux.HandleFunc("POST /api/v1/pastes", api.create)
+		mux.HandleFunc("GET /api/v1/pastes/{slug}", api.get)
+		mux.HandleFunc("GET /api/v1/pastes/{slug}/raw", api.raw)
+	}
 	mux.HandleFunc("/api/", apiNotFound)
 	mux.HandleFunc("/api", apiNotFound)
 	mux.HandleFunc("/", notFound)

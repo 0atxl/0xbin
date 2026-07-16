@@ -14,7 +14,7 @@ import (
 
 func TestHealthEndpoints(t *testing.T) {
 	t.Parallel()
-	handler := NewHandler()
+	handler := NewHandler(testConfig(t), nil)
 
 	t.Run("liveness", func(t *testing.T) {
 		recorder := httptest.NewRecorder()
@@ -37,7 +37,7 @@ func TestHealthEndpoints(t *testing.T) {
 func TestReadinessUsesDatabaseCheck(t *testing.T) {
 	t.Parallel()
 	recorder := httptest.NewRecorder()
-	NewHandler(func(context.Context) error { return nil }).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/health/ready", nil))
+	NewHandler(testConfig(t), nil, func(context.Context) error { return nil }).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/health/ready", nil))
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", recorder.Code)
 	}
@@ -46,7 +46,7 @@ func TestReadinessUsesDatabaseCheck(t *testing.T) {
 func TestUnknownAPIRouteReturnsJSONError(t *testing.T) {
 	t.Parallel()
 	recorder := httptest.NewRecorder()
-	NewHandler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/unknown", nil))
+	NewHandler(testConfig(t), nil).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/unknown", nil))
 	assertError(t, recorder, http.StatusNotFound, "not_found")
 }
 
@@ -63,7 +63,7 @@ func TestRecoveryReturnsStableError(t *testing.T) {
 func TestServerShutdownHonorsContext(t *testing.T) {
 	t.Parallel()
 	cfg := testConfig(t)
-	server := NewServer(cfg)
+	server := NewServer(cfg, nil)
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)

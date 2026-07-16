@@ -10,9 +10,12 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/0atxl/0xbin/internal/config"
 	"github.com/0atxl/0xbin/internal/httpapi"
+	"github.com/0atxl/0xbin/internal/paste"
+	"github.com/0atxl/0xbin/internal/slug"
 	"github.com/0atxl/0xbin/internal/storage/sqlite"
 )
 
@@ -33,13 +36,21 @@ func run() error {
 		return err
 	}
 	defer store.Close()
+	expiries, err := expiryPolicy(cfg)
+	if err != nil {
+		return err
+	}
+	pastes, err := paste.NewService(store, slug.NewDefaultGenerator(), expiries, cfg.MaxPasteBytes, time.Now)
+	if err != nil {
+		return err
+	}
 
 	listener, err := net.Listen("tcp", cfg.ListenAddr)
 	if err != nil {
 		return fmt.Errorf("listen on %q: %w", cfg.ListenAddr, err)
 	}
 
-	server := httpapi.NewServer(cfg, store.Ping)
+	server := httpapi.NewServer(cfg, pastes, store.Ping)
 	serveErr := make(chan error, 1)
 	go func() {
 		serveErr <- server.Serve(listener)
@@ -69,4 +80,12 @@ func run() error {
 		return err
 	}
 	return nil
+}
+
+func expiryPolicy(cfg config.Config) (paste.ExpiryPolicy, error) {
+	allowed := make(map[string]time.Duration, len(cfg.AllowedExpiryIDs))
+	for index, identifier := range cfg.AllowedExpiryIDs {
+		allowed[identifier] = cfg.AllowedExpiries[index]
+	}
+	return paste.NewExpiryPolicy(allowed)
 }
