@@ -4,6 +4,8 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -13,7 +15,9 @@ import (
 	"time"
 
 	"github.com/0atxl/0xbin/db/migrations"
-	_ "modernc.org/sqlite"
+	"github.com/0atxl/0xbin/internal/paste"
+	sqliteDriver "modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 const busyTimeout = 5 * time.Second
@@ -114,8 +118,100 @@ func (s *Store) migrate(ctx context.Context) error {
 // Ping reports whether the initialized database is reachable.
 func (s *Store) Ping(ctx context.Context) error { return s.db.PingContext(ctx) }
 
+// Create inserts a plaintext paste. The slug primary key is the authoritative
+// uniqueness check; only that exact constraint maps to ErrSlugCollision.
+func (s *Store) Create(ctx context.Context, newPaste paste.NewPaste) (paste.Paste, error) {
+	payload, err := json.Marshal(newPaste.Payload)
+	if err != nil {
+		return paste.Paste{}, fmt.Errorf("encode plaintext payload: %w", err)
+	}
+	_, err = s.db.ExecContext(ctx, `
+		INSERT INTO pastes (
+			slug, payload, is_encrypted, crypto_version, burn_after_read,
+			content_size, expires_at, created_at
+		) VALUES (?, ?, 0, NULL, ?, ?, ?, ?)`,
+		newPaste.Slug,
+		string(payload),
+		boolToInt(newPaste.BurnAfterRead),
+		newPaste.ContentSize,
+		newPaste.ExpiresAt.UTC().Unix(),
+		newPaste.CreatedAt.UTC().Unix(),
+	)
+	if err != nil {
+		var sqliteErr *sqliteDriver.Error
+		if errors.As(err, &sqliteErr) && sqliteErr.Code() == sqlite3.SQLITE_CONSTRAINT_PRIMARYKEY {
+			return paste.Paste{}, paste.ErrSlugCollision
+		}
+		return paste.Paste{}, fmt.Errorf("insert paste: %w", err)
+	}
+	return paste.Paste{
+		Slug:          newPaste.Slug,
+		Payload:       newPaste.Payload,
+		BurnAfterRead: newPaste.BurnAfterRead,
+		ContentSize:   newPaste.ContentSize,
+		ExpiresAt:     unixTime(newPaste.ExpiresAt.UTC().Unix()),
+		CreatedAt:     unixTime(newPaste.CreatedAt.UTC().Unix()),
+	}, nil
+}
+
+// GetActive returns a plaintext paste only when its expiry is later than now.
+// Missing and expired records deliberately share ErrNotFound.
+func (s *Store) GetActive(ctx context.Context, slug string, now time.Time) (paste.Paste, error) {
+	var (
+		payloadJSON   string
+		isEncrypted   int
+		cryptoVersion sql.NullInt64
+		burnAfterRead int
+		result        paste.Paste
+		expiresAt     int64
+		createdAt     int64
+	)
+	err := s.db.QueryRowContext(ctx, `
+		SELECT slug, payload, is_encrypted, crypto_version, burn_after_read,
+		       content_size, expires_at, created_at
+		FROM pastes
+		WHERE slug = ? AND expires_at > ?`,
+		slug,
+		now.UTC().Unix(),
+	).Scan(
+		&result.Slug,
+		&payloadJSON,
+		&isEncrypted,
+		&cryptoVersion,
+		&burnAfterRead,
+		&result.ContentSize,
+		&expiresAt,
+		&createdAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return paste.Paste{}, paste.ErrNotFound
+	}
+	if err != nil {
+		return paste.Paste{}, fmt.Errorf("get active paste: %w", err)
+	}
+	if isEncrypted != 0 || cryptoVersion.Valid {
+		return paste.Paste{}, fmt.Errorf("get active paste: encrypted payload is not supported by plaintext storage")
+	}
+	if err := json.Unmarshal([]byte(payloadJSON), &result.Payload); err != nil {
+		return paste.Paste{}, fmt.Errorf("decode plaintext payload: %w", err)
+	}
+	result.BurnAfterRead = burnAfterRead != 0
+	result.ExpiresAt = unixTime(expiresAt)
+	result.CreatedAt = unixTime(createdAt)
+	return result, nil
+}
+
 // Close releases the database connection.
 func (s *Store) Close() error { return s.db.Close() }
 
 // DB exposes the connection only for storage integration tests during foundation work.
 func (s *Store) DB() *sql.DB { return s.db }
+
+func boolToInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
+}
+
+func unixTime(seconds int64) time.Time { return time.Unix(seconds, 0).UTC() }

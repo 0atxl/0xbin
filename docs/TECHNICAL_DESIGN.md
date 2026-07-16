@@ -139,7 +139,16 @@ Example plaintext payload:
 }
 ```
 
+Plaintext payload version 1 requires valid UTF-8 and non-empty content. Limits
+are measured in UTF-8 bytes: content is at most 1 MiB, title is at most 200
+bytes, and language is at most 64 bytes. Empty title and language values are
+valid. Size checks precede full UTF-8 validation.
+
 The server parses plaintext payloads for validation and raw responses. It treats encrypted ciphertext as opaque after structural envelope validation.
+
+Creation accepts an expiry identifier, not a timestamp. The default policy maps
+`1h` and `24h` to their durations and calculates `created_at` and `expires_at`
+from the server clock, normalized to UTC Unix seconds.
 
 ### 4.2 SQLite settings
 
@@ -163,7 +172,9 @@ The server parses plaintext payloads for validation and raw responses. It treats
 
 ### 5.1 Word lists
 
-Store curated adjective and noun lists as versioned repository assets. At build/test time:
+Store curated adjective and noun lists as versioned repository assets. Version 1
+uses 128 adjectives and 128 nouns, producing exactly 2,097,152
+adjective-adjective-noun combinations. At build/test time:
 
 - Normalize lowercase ASCII.
 - Reject blank entries, duplicates, separators, digits, and unacceptable words.

@@ -27,9 +27,11 @@ make test-e2e
 make build
 ```
 
-The initial binary is only a compile-time service placeholder. Configuration,
-HTTP serving, SQLite, and container packaging are intentionally implemented in
-later steps of [the implementation plan](docs/IMPLEMENTATION_PLAN.md).
+The current binary loads validated configuration, initializes SQLite
+migrations, and exposes liveness and readiness health endpoints. Paste HTTP
+operations and the frontend product flows are implemented in later steps of
+[the implementation plan](docs/IMPLEMENTATION_PLAN.md). Container packaging is
+scheduled for Step 12.
 
 Docker packaging is a project requirement and is scheduled for Implementation
 Step 12; no runtime image is provided by this foundation baseline.

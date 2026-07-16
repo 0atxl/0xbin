@@ -313,4 +313,3 @@ gate, and do not begin Step 4.
 ```
 
 At the end of each step, review the diff and test evidence before proceeding.
-
