@@ -36,6 +36,7 @@ type Config struct {
 	CreateRate        Rate
 	ReadRate          Rate
 	MissRate          Rate
+	ConsumeRate       Rate
 	TrustedProxies    []netip.Prefix
 	CreationEnabled   bool
 	ReadHeaderTimeout time.Duration
@@ -93,6 +94,10 @@ func Load(lookup LookupEnv) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	consumeRate, err := parseRate("OXBIN_CONSUME_RATE", get("OXBIN_CONSUME_RATE", "30/1h"))
+	if err != nil {
+		return Config{}, err
+	}
 	trustedProxies, err := parseTrustedProxies(get("OXBIN_TRUSTED_PROXIES", ""))
 	if err != nil {
 		return Config{}, err
@@ -134,6 +139,7 @@ func Load(lookup LookupEnv) (Config, error) {
 		CreateRate:        createRate,
 		ReadRate:          readRate,
 		MissRate:          missRate,
+		ConsumeRate:       consumeRate,
 		TrustedProxies:    trustedProxies,
 		CreationEnabled:   creationEnabled,
 		ReadHeaderTimeout: readHeaderTimeout,

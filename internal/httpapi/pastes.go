@@ -9,9 +9,11 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"time"
 
 	"github.com/0atxl/0xbin/internal/paste"
+	"github.com/0atxl/0xbin/internal/ratelimit"
 )
 
 const requestMetadataAllowance = 4 << 10
@@ -28,6 +30,7 @@ type pasteAPI struct {
 	pastes          PasteService
 	baseURL         *url.URL
 	maxContentBytes int64
+	limits          *ratelimit.Registry
 }
 
 type createPasteRequest struct {
@@ -51,6 +54,9 @@ type pasteResponse struct {
 }
 
 func (api pasteAPI) create(w http.ResponseWriter, r *http.Request) {
+	if !api.allow(w, r, ratelimit.Create, 1) {
+		return
+	}
 	var request createPasteRequest
 	if err := decodeJSON(w, r, &request, api.maxContentBytes+requestMetadataAllowance); err != nil {
 		api.writeRequestError(w, r, err)
@@ -79,7 +85,7 @@ func (api pasteAPI) create(w http.ResponseWriter, r *http.Request) {
 func (api pasteAPI) get(w http.ResponseWriter, r *http.Request) {
 	slug, ok := validSlug(r.PathValue("slug"))
 	if !ok {
-		api.writeNotFound(w, r)
+		api.writeMiss(w, r)
 		return
 	}
 	result, err := api.pastes.GetActive(r.Context(), slug)
@@ -87,6 +93,10 @@ func (api pasteAPI) get(w http.ResponseWriter, r *http.Request) {
 		api.writeGetError(w, r, err)
 		return
 	}
+	if !api.allow(w, r, ratelimit.Read, 1) {
+		return
+	}
+	api.limits.RecordSuccess(clientIPFromContext(r.Context()))
 	setPasteHeaders(w.Header())
 	writeJSON(w, http.StatusOK, pasteResponse{
 		Slug:          result.Slug,
@@ -100,7 +110,7 @@ func (api pasteAPI) get(w http.ResponseWriter, r *http.Request) {
 func (api pasteAPI) raw(w http.ResponseWriter, r *http.Request) {
 	slug, ok := validSlug(r.PathValue("slug"))
 	if !ok {
-		api.writeNotFound(w, r)
+		api.writeMiss(w, r)
 		return
 	}
 	result, err := api.pastes.GetActive(r.Context(), slug)
@@ -108,6 +118,10 @@ func (api pasteAPI) raw(w http.ResponseWriter, r *http.Request) {
 		api.writeGetError(w, r, err)
 		return
 	}
+	if !api.allow(w, r, ratelimit.Read, 1) {
+		return
+	}
+	api.limits.RecordSuccess(clientIPFromContext(r.Context()))
 	setPasteHeaders(w.Header())
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
@@ -129,15 +143,34 @@ func (api pasteAPI) writeRequestError(w http.ResponseWriter, r *http.Request, er
 
 func (api pasteAPI) writeGetError(w http.ResponseWriter, r *http.Request, err error) {
 	if errors.Is(err, paste.ErrNotFound) {
-		api.writeNotFound(w, r)
+		api.writeMiss(w, r)
 		return
 	}
 	writeError(w, http.StatusServiceUnavailable, "service_unavailable", "Service is temporarily unavailable", requestIDFromContext(r.Context()))
 }
 
+func (api pasteAPI) writeMiss(w http.ResponseWriter, r *http.Request) {
+	cost := api.limits.RecordMiss(clientIPFromContext(r.Context()))
+	if !api.allow(w, r, ratelimit.Miss, cost) {
+		return
+	}
+	api.writeNotFound(w, r)
+}
+
 func (api pasteAPI) writeNotFound(w http.ResponseWriter, r *http.Request) {
 	setPasteHeaders(w.Header())
 	writeError(w, http.StatusNotFound, "not_found", "Not found", requestIDFromContext(r.Context()))
+}
+
+func (api pasteAPI) allow(w http.ResponseWriter, r *http.Request, category ratelimit.Category, cost int) bool {
+	allowed, retryAfter := api.limits.Allow(category, clientIPFromContext(r.Context()), cost)
+	if allowed {
+		return true
+	}
+	seconds := max(1, int(retryAfter.Seconds()))
+	w.Header().Set("Retry-After", strconv.Itoa(seconds))
+	writeError(w, http.StatusTooManyRequests, "rate_limited", "Too many requests", requestIDFromContext(r.Context()))
+	return false
 }
 
 func setPasteHeaders(header http.Header) {

@@ -59,6 +59,7 @@ func TestLoadRejectsInvalidConfiguration(t *testing.T) {
 		{"default expiry", "OXBIN_DEFAULT_EXPIRY", "25h"},
 		{"allowed expiry", "OXBIN_ALLOWED_EXPIRIES", "1h,1h"},
 		{"rate", "OXBIN_CREATE_RATE", "fifteen/hour"},
+		{"consume rate", "OXBIN_CONSUME_RATE", "fifteen/hour"},
 		{"trusted proxy", "OXBIN_TRUSTED_PROXIES", "not-a-cidr"},
 		{"creation switch", "OXBIN_CREATION_ENABLED", "sometimes"},
 		{"timeout", "OXBIN_SHUTDOWN_TIMEOUT", "0s"},

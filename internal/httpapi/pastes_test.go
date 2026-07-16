@@ -117,6 +117,48 @@ func TestPlaintextCreateBoundsRequestBody(t *testing.T) {
 	}
 }
 
+func TestRateLimitReturnsRetryAfter(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.CreateRate.Count = 1
+	cfg.CreateRate.Window = time.Hour
+	handler := NewHandler(cfg, &fakePasteService{created: testPaste()})
+	body := `{"mode":"plaintext","payload":{"version":1,"content":"x"},"expiry":"1h"}`
+	for attempt := 0; attempt < 2; attempt++ {
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/pastes", strings.NewReader(body)))
+		if attempt == 0 && recorder.Code != http.StatusCreated {
+			t.Fatalf("first status = %d", recorder.Code)
+		}
+		if attempt == 1 {
+			assertError(t, recorder, http.StatusTooManyRequests, "rate_limited")
+			if recorder.Header().Get("Retry-After") == "" {
+				t.Fatal("rate-limited response is missing Retry-After")
+			}
+		}
+	}
+}
+
+func TestUntrustedForwardedIPCannotRotateRateLimitIdentity(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.CreateRate.Count = 1
+	cfg.CreateRate.Window = time.Hour
+	handler := NewHandler(cfg, &fakePasteService{created: testPaste()})
+	body := `{"mode":"plaintext","payload":{"version":1,"content":"x"},"expiry":"1h"}`
+	for _, forwarded := range []string{"203.0.113.1", "203.0.113.2"} {
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, "/api/v1/pastes", strings.NewReader(body))
+		request.RemoteAddr = "198.51.100.8:1234"
+		request.Header.Set("X-Forwarded-For", forwarded)
+		handler.ServeHTTP(recorder, request)
+		if forwarded == "203.0.113.1" && recorder.Code != http.StatusCreated {
+			t.Fatalf("first status = %d", recorder.Code)
+		}
+		if forwarded == "203.0.113.2" {
+			assertError(t, recorder, http.StatusTooManyRequests, "rate_limited")
+		}
+	}
+}
+
 type fakePasteService struct {
 	created     paste.Paste
 	result      paste.Paste

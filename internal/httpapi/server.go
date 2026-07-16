@@ -8,8 +8,10 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"time"
 
 	"github.com/0atxl/0xbin/internal/config"
+	"github.com/0atxl/0xbin/internal/ratelimit"
 )
 
 // ErrServerClosed is returned by Serve after a graceful shutdown.
@@ -57,7 +59,16 @@ func NewHandler(cfg config.Config, pastes PasteService, readiness ...func(contex
 	mux.HandleFunc("GET /health/live", live)
 	mux.HandleFunc("GET /health/ready", func(w http.ResponseWriter, r *http.Request) { notReady(w, r, ready) })
 	if pastes != nil {
-		api := pasteAPI{pastes: pastes, baseURL: cfg.BaseURL, maxContentBytes: cfg.MaxPasteBytes}
+		limits, err := ratelimit.NewRegistry(map[ratelimit.Category]config.Rate{
+			ratelimit.Create:  cfg.CreateRate,
+			ratelimit.Read:    cfg.ReadRate,
+			ratelimit.Miss:    cfg.MissRate,
+			ratelimit.Consume: cfg.ConsumeRate,
+		}, 10_000, 2*time.Hour, time.Now)
+		if err != nil {
+			panic("validated rate limit configuration is invalid: " + err.Error())
+		}
+		api := pasteAPI{pastes: pastes, baseURL: cfg.BaseURL, maxContentBytes: cfg.MaxPasteBytes, limits: limits}
 		mux.HandleFunc("POST /api/v1/pastes", api.create)
 		mux.HandleFunc("GET /api/v1/pastes/{slug}", api.get)
 		mux.HandleFunc("GET /api/v1/pastes/{slug}/raw", api.raw)
@@ -65,7 +76,7 @@ func NewHandler(cfg config.Config, pastes PasteService, readiness ...func(contex
 	mux.HandleFunc("/api/", apiNotFound)
 	mux.HandleFunc("/api", apiNotFound)
 	mux.HandleFunc("/", notFound)
-	return requestID(recoverPanics(mux))
+	return requestID(recoverPanics(clientIP(mux, cfg.TrustedProxies)))
 }
 
 func live(w http.ResponseWriter, _ *http.Request) {
