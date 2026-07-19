@@ -10,7 +10,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "vitest run",
-    "test:e2e": "node ./scripts/crypto-network-test.mjs && node ./scripts/e2e-placeholder.mjs"
+    "test:e2e": "node ./scripts/crypto-network-test.mjs && node ./scripts/e2e.mjs"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.3",
@@ -32,6 +32,7 @@
     "vite": "latest"
   },
   "devDependencies": {
+    "@playwright/test": "^1.61.1",
     "@types/react": "latest",
     "@types/react-dom": "latest",
     "prettier": "latest",
