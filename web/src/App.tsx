@@ -290,7 +290,11 @@ function CreationCanvas({
     const nextErrors = validateDraft(draft);
     setErrors(nextErrors);
     if (Object.keys(nextErrors).length > 0) {
-      onStatus("Fix the highlighted fields");
+      onStatus(
+        nextErrors.content === "Paste content is required."
+          ? "Empty paste"
+          : (Object.values(nextErrors)[0] ?? "Paste details need attention"),
+      );
       return;
     }
     const request = lifetimeRequest(draft.lifetime);
@@ -342,10 +346,6 @@ function CreationCanvas({
         onSubmit={() => void submit()}
       />
 
-      <div className="validation-slot" role="alert">
-        {errors.title ?? errors.language ?? errors.content ?? ""}
-      </div>
-
       <footer className="creation-toolbar">
         <div className="toolbar-spacer" />
         <span
@@ -357,8 +357,12 @@ function CreationCanvas({
         >
           {formatBytes(contentBytes)} / 1 MiB
         </span>
-        <fieldset className="lifetime-selector">
+        <fieldset
+          className="lifetime-selector"
+          data-selected-lifetime={draft.lifetime}
+        >
           <legend className="sr-only">Lifetime</legend>
+          <span className="lifetime-indicator" aria-hidden="true" />
           <LifetimeButton
             lifetime="once"
             label="Once"
@@ -666,6 +670,7 @@ function PasteViewer({
   const [wrap, setWrap] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState("");
+  const [activeMatch, setActiveMatch] = useState(0);
   const searchRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -714,7 +719,7 @@ function PasteViewer({
     const openSearch = (event: KeyboardEvent) => {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "f") {
         event.preventDefault();
-        setSearchOpen(true);
+        focusSearch();
       }
     };
     window.addEventListener("keydown", openSearch);
@@ -725,6 +730,26 @@ function PasteViewer({
     if (!searchOpen) return;
     searchRef.current?.focus();
   }, [searchOpen]);
+
+  useEffect(() => {
+    setActiveMatch(0);
+  }, [query]);
+
+  const payload =
+    paste && "payload" in paste ? paste.payload : decryptedPayload;
+  const matchCount = payload ? countMatches(payload.content, query) : 0;
+
+  useEffect(() => {
+    if (!query || matchCount === 0) return;
+    document
+      .querySelector<HTMLElement>(`mark[data-search-match="${activeMatch}"]`)
+      ?.scrollIntoView({ block: "center", inline: "nearest" });
+  }, [activeMatch, matchCount, query]);
+
+  function focusSearch() {
+    setSearchOpen(true);
+    window.setTimeout(() => searchRef.current?.focus(), 0);
+  }
 
   async function copyContent() {
     const payload =
@@ -882,7 +907,6 @@ function PasteViewer({
     );
   }
   if (!paste) return null;
-  const payload = "payload" in paste ? paste.payload : decryptedPayload;
   if (!payload) return <CenteredState label="Decrypting…" />;
 
   return (
@@ -899,22 +923,49 @@ function PasteViewer({
         </div>
         <div className="viewer-actions" aria-label="Paste actions">
           {searchOpen ? (
-            <input
-              ref={searchRef}
-              type="search"
-              value={query}
-              placeholder="Find"
-              aria-label="Search paste"
-              onChange={(event) => setQuery(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Escape") {
-                  setQuery("");
-                  setSearchOpen(false);
+            <>
+              <input
+                ref={searchRef}
+                type="search"
+                value={query}
+                placeholder="Find"
+                aria-label="Search paste"
+                onChange={(event) => setQuery(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Escape") {
+                    setQuery("");
+                    setSearchOpen(false);
+                  }
+                }}
+              />
+              <ActionButton
+                label="Previous match"
+                disabled={matchCount === 0}
+                onClick={() =>
+                  setActiveMatch((current) =>
+                    current === 0 ? matchCount - 1 : current - 1,
+                  )
                 }
-              }}
-            />
+              >
+                <PreviousIcon />
+              </ActionButton>
+              <ActionButton
+                label="Next match"
+                disabled={matchCount === 0}
+                onClick={() =>
+                  setActiveMatch((current) => (current + 1) % matchCount)
+                }
+              >
+                <NextIcon />
+              </ActionButton>
+              <span className="search-count" aria-live="polite">
+                {query && matchCount > 0
+                  ? `${activeMatch + 1} / ${matchCount}`
+                  : ""}
+              </span>
+            </>
           ) : null}
-          <ActionButton label="Search" onClick={() => setSearchOpen(true)}>
+          <ActionButton label="Search" onClick={focusSearch}>
             <SearchIcon />
           </ActionButton>
           <ActionButton label="Copy" onClick={() => void copyContent()}>
@@ -955,43 +1006,88 @@ function PasteViewer({
       ) : null}
 
       <div className={wrap ? "paste-content wrap" : "paste-content"}>
-        <ContentLines content={payload.content} query={query} />
+        <ContentLines
+          content={payload.content}
+          query={query}
+          activeMatch={activeMatch}
+        />
       </div>
     </main>
   );
 }
 
-function ContentLines({ content, query }: { content: string; query: string }) {
+function ContentLines({
+  content,
+  query,
+  activeMatch,
+}: {
+  content: string;
+  query: string;
+  activeMatch: number;
+}) {
+  let firstMatch = 0;
   return (
     <div className="content-lines" role="region" aria-label="Paste content">
-      {content.split("\n").map((line, index) => (
-        <div className="content-line" key={index}>
-          <span className="line-number" aria-hidden="true">
-            {index + 1}
-          </span>
-          <code>{highlightText(line || " ", query)}</code>
-        </div>
-      ))}
+      {content.split("\n").map((line, index) => {
+        const lineFirstMatch = firstMatch;
+        firstMatch += countMatches(line, query);
+        return (
+          <div className="content-line" key={index}>
+            <span className="line-number" aria-hidden="true">
+              {index + 1}
+            </span>
+            <code>
+              {highlightText(line || " ", query, lineFirstMatch, activeMatch)}
+            </code>
+          </div>
+        );
+      })}
     </div>
   );
 }
 
-function highlightText(text: string, query: string): ReactNode {
+function countMatches(text: string, query: string): number {
+  if (!query) return 0;
+  const lowerText = text.toLocaleLowerCase();
+  const lowerQuery = query.toLocaleLowerCase();
+  let count = 0;
+  let match = lowerText.indexOf(lowerQuery);
+  while (match !== -1) {
+    count += 1;
+    match = lowerText.indexOf(lowerQuery, match + query.length);
+  }
+  return count;
+}
+
+function highlightText(
+  text: string,
+  query: string,
+  firstMatch: number,
+  activeMatch: number,
+): ReactNode {
   if (!query) return text;
   const lowerText = text.toLocaleLowerCase();
   const lowerQuery = query.toLocaleLowerCase();
   const parts: ReactNode[] = [];
   let start = 0;
   let match = lowerText.indexOf(lowerQuery);
+  let matchIndex = firstMatch;
   while (match !== -1) {
     parts.push(text.slice(start, match));
     parts.push(
-      <mark key={`${match}-${parts.length}`}>
+      <mark
+        className={
+          matchIndex === activeMatch ? "active-search-match" : undefined
+        }
+        data-search-match={matchIndex}
+        key={`${match}-${parts.length}`}
+      >
         {text.slice(match, match + query.length)}
       </mark>,
     );
     start = match + query.length;
     match = lowerText.indexOf(lowerQuery, start);
+    matchIndex += 1;
   }
   parts.push(text.slice(start));
   return parts;
@@ -1000,11 +1096,13 @@ function highlightText(text: string, query: string): ReactNode {
 function ActionButton({
   label,
   active,
+  disabled,
   onClick,
   children,
 }: {
   label: string;
   active?: boolean;
+  disabled?: boolean;
   onClick: () => void;
   children: ReactNode;
 }) {
@@ -1012,6 +1110,7 @@ function ActionButton({
     <button
       className={active ? "action-button active" : "action-button"}
       type="button"
+      disabled={disabled}
       aria-label={label}
       title={label}
       onClick={onClick}
@@ -1222,6 +1321,22 @@ function SearchIcon() {
     <svg viewBox="0 0 20 20" aria-hidden="true">
       <circle cx="8.5" cy="8.5" r="5.5" />
       <path d="m13 13 4 4" />
+    </svg>
+  );
+}
+
+function PreviousIcon() {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden="true">
+      <path d="m13 5-5 5 5 5" />
+    </svg>
+  );
+}
+
+function NextIcon() {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden="true">
+      <path d="m7 5 5 5-5 5" />
     </svg>
   );
 }

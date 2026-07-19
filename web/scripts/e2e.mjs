@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { promisify } from "node:util";
 import { chromium } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 
@@ -13,6 +14,7 @@ const webPort = 15173;
 const apiOrigin = `http://127.0.0.1:${apiPort}`;
 const webOrigin = `http://127.0.0.1:${webPort}`;
 const processes = [];
+const execFileAsync = promisify(execFile);
 
 function start(command, args, options = {}) {
   const child = spawn(command, args, {
@@ -75,9 +77,13 @@ async function createPaste(page, content, options = {}) {
 }
 
 const dataDir = await mkdtemp(join(tmpdir(), "0xbin-e2e-"));
+const binaryPath = join(dataDir, "0xbin");
 let browser;
 try {
-  start("go", ["run", "./cmd/0xbin"], {
+  await execFileAsync("go", ["build", "-o", binaryPath, "./cmd/0xbin"], {
+    cwd: root,
+  });
+  start(binaryPath, [], {
     env: {
       OXBIN_LISTEN_ADDR: `127.0.0.1:${apiPort}`,
       OXBIN_BASE_URL: webOrigin,
@@ -117,8 +123,15 @@ try {
 
   await page.goto(webOrigin);
   await assertNoSeriousAccessibilityIssues(page, "create screen");
+  await page.getByRole("button", { name: "Create", exact: true }).click();
+  await expectVisible(page, "Empty paste");
+  await assert.equal(
+    await page.getByText("Paste content is required", { exact: true }).count(),
+    0,
+    "validation should use the notification stack instead of bottom text",
+  );
 
-  const plaintextURL = await createPaste(page, "package main\n", {
+  const plaintextURL = await createPaste(page, "package main\npackage docs\n", {
     title: "main.go",
     lifetime: "1h",
   });
@@ -133,6 +146,11 @@ try {
   await page.goto(plaintextURL);
   await page.keyboard.press("Control+F");
   await page.getByLabel("Search paste").fill("package");
+  await expectVisible(page, "1 / 2");
+  await page.getByRole("button", { name: "Next match" }).click();
+  await expectVisible(page, "2 / 2");
+  await page.getByRole("button", { name: "Previous match" }).click();
+  await expectVisible(page, "1 / 2");
   await page.keyboard.press("Escape");
   await page.setViewportSize({ width: 390, height: 844 });
   await expectVisible(page, "main.go");
@@ -145,6 +163,12 @@ try {
     true,
     "search input should be focused after opening",
   );
+  await page.getByLabel("Search paste").evaluate((input) => input.blur());
+  await page.getByRole("button", { name: "Search" }).click();
+  await assertFocused(page.getByLabel("Search paste"));
+  await page.getByLabel("Search paste").evaluate((input) => input.blur());
+  await page.keyboard.press("Control+F");
+  await assertFocused(page.getByLabel("Search paste"));
   await page.setViewportSize({ width: 1280, height: 900 });
 
   const secret = "client-side secret must not reach the server";
@@ -210,6 +234,34 @@ try {
 
   await page.goto(`${webOrigin}/quietbrightotter`);
   await expectVisible(page, "Paste unavailable");
+
+  await expectCreateFailure(
+    page,
+    429,
+    "rate_limited",
+    "Too many requests — try again later",
+  );
+  await expectCreateFailure(
+    page,
+    503,
+    "service_unavailable",
+    "Could not create paste — try again",
+  );
+
+  const clipboardFailureContext = await browser.newContext();
+  await clipboardFailureContext.addInitScript(() => {
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: () => Promise.reject(new Error("blocked")) },
+    });
+  });
+  const clipboardFailurePage = await clipboardFailureContext.newPage();
+  await createPaste(clipboardFailurePage, "copy failure coverage");
+  await expectVisible(
+    clipboardFailurePage,
+    "Paste created — copy the link manually",
+  );
+  await clipboardFailureContext.close();
   await context.close();
 } finally {
   await browser?.close();
@@ -222,6 +274,14 @@ async function expectVisible(page, text) {
     .getByText(text, { exact: false })
     .first()
     .waitFor({ state: "visible" });
+}
+
+async function assertFocused(locator) {
+  await assert.equal(
+    await locator.evaluate((element) => element.matches(":focus")),
+    true,
+    "expected element to be focused",
+  );
 }
 
 async function assertNoSeriousAccessibilityIssues(page, screen) {
@@ -239,6 +299,23 @@ async function assertNoSeriousAccessibilityIssues(page, screen) {
       .map((violation) => violation.id)
       .join(", ")}`,
   );
+}
+
+async function expectCreateFailure(page, status, code, expectedMessage) {
+  await page.route("**/api/v1/pastes", (route) =>
+    route.fulfill({
+      status,
+      contentType: "application/json",
+      body: JSON.stringify({
+        error: { code, message: "Request failed", request_id: "e2e" },
+      }),
+    }),
+  );
+  await page.goto(webOrigin);
+  await page.locator(".cm-content").fill("failure coverage");
+  await page.getByRole("button", { name: "Create", exact: true }).click();
+  await expectVisible(page, expectedMessage);
+  await page.unroute("**/api/v1/pastes");
 }
 
 console.log("Browser journeys passed.");
