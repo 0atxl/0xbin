@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"testing/fstest"
 	"time"
 
 	"github.com/0atxl/0xbin/internal/config"
@@ -48,6 +49,42 @@ func TestUnknownAPIRouteReturnsJSONError(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	NewHandler(testConfig(t), nil).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/unknown", nil))
 	assertError(t, recorder, http.StatusNotFound, "not_found")
+}
+
+func TestFrontendRoutesAndAssets(t *testing.T) {
+	t.Parallel()
+	bundle := fstest.MapFS{
+		"index.html":     &fstest.MapFile{Data: []byte("<div id=\"root\"></div>")},
+		"assets/app.js":  &fstest.MapFile{Data: []byte("console.log('0xbin')")},
+		"assets/app.css": &fstest.MapFile{Data: []byte("body{}")},
+	}
+	handler := NewHandlerWithFrontend(testConfig(t), nil, bundle)
+
+	for _, requestPath := range []string{"/", "/radiantcolorfulpomeranian"} {
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, requestPath, nil))
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("GET %s status = %d, want 200", requestPath, recorder.Code)
+		}
+		if got := recorder.Header().Get("Cache-Control"); got != "no-store" {
+			t.Errorf("GET %s Cache-Control = %q, want no-store", requestPath, got)
+		}
+	}
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/assets/app.js", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("asset status = %d, want 200", recorder.Code)
+	}
+	if got := recorder.Header().Get("Cache-Control"); got != "public, max-age=31536000, immutable" {
+		t.Errorf("asset Cache-Control = %q", got)
+	}
+
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/assets/missing.js", nil))
+	if recorder.Code != http.StatusNotFound {
+		t.Errorf("missing asset status = %d, want 404", recorder.Code)
+	}
 }
 
 func TestRecoveryReturnsStableError(t *testing.T) {

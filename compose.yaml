@@ -1,0 +1,13 @@
+services:
+  0xbin:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      OXBIN_BASE_URL: ${OXBIN_BASE_URL:-http://localhost:8080}
+    volumes:
+      - 0xbin-data:/data
+    restart: unless-stopped
+
+volumes:
+  0xbin-data:

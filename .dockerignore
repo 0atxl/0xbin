@@ -1,0 +1,10 @@
+.git
+.agents
+.codex
+bin
+data
+web/node_modules
+web/dist
+web/coverage
+internal/webassets/dist
+!internal/webassets/dist/.keep

@@ -137,7 +137,9 @@ Requirements use `FR-<area>-<number>` identifiers.
 ### 7.3 Plaintext viewing
 
 - **FR-VIEW-01:** Active plaintext pastes open directly.
-- **FR-VIEW-02:** Viewer supports copy, search, wrap/no-wrap, and raw/download behaviour.
+- **FR-VIEW-02:** Viewer supports copy, search, permanent line wrapping, and
+  raw/download behaviour. The MVP does not offer horizontal scrolling or a
+  wrap toggle.
 - **FR-VIEW-03:** Content is rendered as untrusted text and cannot execute.
 - **FR-VIEW-04:** Expired, missing, deleted, and consumed pastes share one public not-found state.
 - **FR-VIEW-05:** Paste pages are marked against indexing and excluded from sitemaps.

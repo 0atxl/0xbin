@@ -9,6 +9,8 @@ web/node_modules/
 web/dist/
 web/coverage/
 web/.vite/
+internal/webassets/dist/*
+!internal/webassets/dist/.keep
 
 # Local runtime data and environment overrides
 /data/

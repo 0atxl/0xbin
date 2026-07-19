@@ -7,6 +7,10 @@ export default defineConfig(({ mode }) => {
     "http://127.0.0.1:8080";
   return {
     plugins: [react()],
+    build: {
+      outDir: "../internal/webassets/dist",
+      emptyOutDir: false,
+    },
     server: {
       proxy: {
         "/api": apiTarget,

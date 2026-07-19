@@ -237,7 +237,8 @@ Required behaviours:
   minimal confirmation. The viewer shows lifetime information for view-once
   and one-hour pastes; ordinary one-day views do not need persistent expiry
   copy.
-- Plaintext viewer with copy, raw/download, search, and wrap/no-wrap.
+- Plaintext viewer with copy, raw/download, search, and permanent line
+  wrapping. Horizontal scrolling and a wrap toggle are not part of the MVP.
 - Encrypted viewer that reads the fragment key or prompts when missing.
 - Burn confirmation page that does not fetch content until deliberate reveal.
 - Clear loading, success, validation, rate-limit, not-found, decryption-error, and service-error states.

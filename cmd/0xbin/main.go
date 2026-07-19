@@ -18,6 +18,7 @@ import (
 	"github.com/0atxl/0xbin/internal/paste"
 	"github.com/0atxl/0xbin/internal/slug"
 	"github.com/0atxl/0xbin/internal/storage/sqlite"
+	"github.com/0atxl/0xbin/internal/webassets"
 )
 
 func main() {
@@ -66,7 +67,7 @@ func run() error {
 		return fmt.Errorf("listen on %q: %w", cfg.ListenAddr, err)
 	}
 
-	server := httpapi.NewServer(cfg, pastes, store.Ping)
+	server := httpapi.NewServerWithFrontend(cfg, pastes, webassets.FS(), store.Ping)
 	serveErr := make(chan error, 1)
 	go func() {
 		serveErr <- server.Serve(listener)

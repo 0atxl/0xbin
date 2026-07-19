@@ -1,7 +1,8 @@
 # 0xbin Frontend Design and Implementation Plan
 
-**Status:** Approved direction for the Step 11 behavioural MVP  
-**Step 10A:** Three-day expiry policy implemented; Step 11 remains gated on its verification  
+**Status:** Implemented self-host direction for Steps 11–16  
+**Current release note:** The quiet one-hour viewer lifetime treatment remains
+an outstanding Phase 3 item.  
 **Sources of truth:** `../spec.md`, `PRD.md`, `TECHNICAL_DESIGN.md`, `IMPLEMENTATION_PLAN.md`, and `../AGENTS.md`
 
 This document settles the visual and interaction direction for the 0xbin MVP
@@ -29,6 +30,8 @@ semantics from `spec.md` still win if this document is interpreted ambiguously.
 - An encrypted sharing URL includes its key only in the URL fragment. The full
   URL, including `#key`, is copied. The server must never receive the key.
 - The viewer includes a **Create new paste** action.
+- Viewer content wraps long lines permanently. The MVP has no horizontal
+  scrolling or wrap/no-wrap toggle.
 - Copy success is shown through a small accessible toast.
 - The encrypted key gate appears only when an encrypted paste is opened without
   a usable fragment key.
@@ -74,8 +77,7 @@ This small backend change precedes frontend lifetime controls.
 - `spec.md`, `docs/PRD.md`, `docs/TECHNICAL_DESIGN.md`, and `docs/PHASES.md`
   - Record three-day expiry as an MVP choice rather than a post-MVP candidate.
 - `README.md`
-  - Correct the implementation status to show Steps 0–10 complete and Step 11
-    next.
+  - Keep implementation status aligned with completed steps.
 
 ### Verification gate
 
@@ -219,24 +221,12 @@ icon, active encryption state, focus details, and brief success feedback.
 - Main page content: fixed to the viewport between the top controls and bottom
   actions; the document itself does not scroll
 - Editor/viewer canvas: the only primary scroll region
-- Corner-menu trigger: fixed at the bottom-left
+### Self-host navigation
 
-### Corner menu
-
-The trigger is always present on normal creation and viewer pages. It opens on
-click/tap and keyboard activation; hover may preview it but must not be the only
-interaction.
-
-Initial items:
-
-- Why 0xbin
-- Who made this
-- GitHub
-- Privacy
-- Terms
-
-The focused encrypted-key and View-once gates may omit the visible logo, theme
-toggle, and corner menu. They still inherit the stored or system theme.
+The self-hosted distribution intentionally omits the corner menu and its
+marketing, legal, and policy destinations. Those hosted-public destinations
+belong to Step 17 and may be added in the later public fork. Focused encrypted
+key and View-once gates omit the visible logo and theme toggle.
 
 ### Theme behaviour
 
@@ -362,7 +352,6 @@ remain available.
   - Copy
   - Raw or Download
   - Search
-  - Wrap/No wrap
   - Create new paste
 - Borderless content canvas with line numbers when useful.
 - Omit empty metadata rather than displaying placeholder values.
@@ -374,7 +363,7 @@ remain available.
 - Raw opens the safe server raw endpoint for active non-burn plaintext pastes.
 - Download uses a safe filename derived without trusting arbitrary title input.
 - Search works through keyboard and visible controls.
-- Wrap state is local UI state.
+- Long lines always wrap in the viewer and editor.
 
 ### Encrypted viewer
 
@@ -514,7 +503,6 @@ AppRouter
 AppShell
 BrandIcon
 ThemeToggle
-CornerMenu
 ToastRegion
 CreatePage
 MetadataFields
@@ -633,7 +621,8 @@ slug; copy feedback is accessible.
 ### 11.5 Plaintext viewer
 
 - Fetch and safely render plaintext pastes.
-- Implement Copy, Raw, Download, Search, Wrap, and Create new paste.
+- Implement Copy, Raw, Download, Search, permanent wrapping, and Create new
+  paste.
 - Implement loading, unavailable, and service-error states.
 
 **Gate:** Plaintext viewing works for large and malicious test content without
@@ -675,9 +664,7 @@ generically unavailable; encrypted wrong-key risk is clearly presented.
 
 ### 11.9 Documentation closeout
 
-- Update `README.md` implementation status to Steps 0–11 complete only after all
-  Step 11 gates pass.
-- Update `IMPLEMENTATION_PLAN.md` current status to make Step 12 next.
+- Update `README.md` and `IMPLEMENTATION_PLAN.md` after each completed step.
 - Record any deferred visual refinements without expanding MVP behaviour.
 
 ## 16. Step 11 Completion Checklist
@@ -685,18 +672,18 @@ generically unavailable; encrypted wrong-key risk is clearly presented.
 - [x] Backend accepts `1h`, `24h`, and `72h`.
 - [x] Lifetime selector exposes View once, 1 hour, 1 day, and 3 days.
 - [x] Create page is a full-screen editor canvas.
-- [ ] Plaintext creation and viewer journeys pass.
-- [ ] Encrypted creation never transmits plaintext or key.
-- [ ] Missing-key and wrong-key journeys pass.
-- [ ] View-once GET never consumes content.
-- [ ] View-once deliberate consume works exactly once.
-- [ ] Copy, Raw/Download, Search, Wrap, and Create new paste work.
-- [ ] All transient and persistent error states are implemented.
-- [ ] Malicious paste content cannot execute.
-- [ ] Keyboard-only and accessibility checks pass.
-- [ ] Reduced-motion alternatives work.
-- [ ] Large-content viewer remains usable.
-- [ ] All repository verification commands pass.
+- [x] Plaintext creation and viewer journeys pass.
+- [x] Encrypted creation never transmits plaintext or key.
+- [x] Missing-key and wrong-key journeys pass.
+- [x] View-once GET never consumes content.
+- [x] View-once deliberate consume works exactly once.
+- [x] Copy, Raw/Download, Search, permanent wrapping, and Create new paste work.
+- [x] Transient and persistent error states are implemented.
+- [x] Malicious paste content cannot execute.
+- [x] Keyboard-only and accessibility checks pass.
+- [x] Reduced-motion alternatives work.
+- [x] Large-content viewer remains usable.
+- [x] All repository verification commands pass.
 
 ## 17. Explicitly Deferred
 
@@ -708,4 +695,3 @@ generically unavailable; encrypted wrong-key risk is clearly presented.
 - File or image uploads
 - Public galleries, comments, revisions, or forks
 - Final marketing pages and elaborate brand animation
-- Step 12 frontend embedding and container packaging

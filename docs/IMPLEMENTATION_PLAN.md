@@ -5,11 +5,11 @@
 
 Each step ends with a verification gate. Do not begin a dependent step until its gate passes. Commit boundaries may follow steps or coherent substeps; avoid one enormous final commit.
 
-**Current implementation status (2026-07-19):** Steps 0–10A are complete and
-their verification gates pass. Step 11 is next. The former monolithic frontend
-step is divided into Steps 11–15, using the approved
-[`FRONTEND.md`](FRONTEND.md) baseline. The current end-to-end
-target covers only the Step 8 fragment transport boundary.
+**Current implementation status (2026-07-19):** Steps 0–16 are implemented.
+The self-hosted packaging gate has passed. The viewer and self-host scope
+choices are documented in [`FRONTEND.md`](FRONTEND.md); the remaining Phase 3
+release item is the required quiet one-hour lifetime treatment in Step 13.
+Step 17, hosted security and operational hardening, has not begun.
 
 ## 0. Repository Baseline
 
@@ -255,8 +255,9 @@ target covers only the Step 8 fragment transport boundary.
 2. Build the typed API client and minimal route shell for `/` and `/{slug}`.
 3. Introduce named design tokens, light/dark theme support, system-theme
    defaulting, and persistence of the theme preference only.
-4. Implement `AppShell`, `BrandLogo`, `ThemeToggle`, `CornerMenu`, and the
-   shared `StatusMessage`/unavailable presentation boundaries.
+4. Implement `AppShell`, `BrandLogo`, `ThemeToggle`, and the shared
+   `StatusMessage`/unavailable presentation boundaries. The self-hosted build
+   omits the hosted-public corner menu and policy destinations.
 5. Establish semantic labels, visible focus treatment, focus restoration, and
    reduced-motion primitives before route-specific animation is added.
 6. Ensure paste bodies and fragment keys cannot enter local storage, route
@@ -310,7 +311,8 @@ target covers only the Step 8 fragment transport boundary.
 
 1. Implement normal-paste loading, safe text/token rendering, and neutral
    skeleton lines.
-2. Implement viewer title, line numbers, `Copy`, `Wrap`, search, `Raw`, and
+2. Implement viewer title, line numbers, `Copy`, permanently wrapped search,
+   `Raw`, and
    `New paste` actions.
 3. Use the server raw endpoint only for active non-burn plaintext pastes.
 4. Show the compact view-once warning and one-hour relative expiry treatment;

@@ -29,19 +29,42 @@ make build
 
 ## Implementation status
 
-Implementation Plan Steps 0–10A are complete. The current binary loads validated
-configuration, initializes SQLite migrations, exposes health endpoints, and
-serves the rate-limited plaintext create, retrieve, and raw APIs. It also runs
-a bounded expiry cleanup worker. The frontend contains the tested browser
-AES-256-GCM and URL-fragment key module, but the rendered application remains a
-scaffold.
+Steps 0–16 are committed. The production React bundle is embedded in the Go
+binary, and the repository includes self-hosted container packaging. See the
+[implementation plan](docs/IMPLEMENTATION_PLAN.md) for the verification gates.
 
-The usable browser interface begins at Step 11, and embedded frontend/container
-packaging is Step 16. See [the implementation plan](docs/IMPLEMENTATION_PLAN.md)
-for the complete sequence and verification gates.
+## Self-hosting
 
-Docker packaging is a project requirement and is scheduled for Implementation
-Step 16; no runtime image is provided yet.
+0xbin runs as one container and stores its SQLite database in `/data`. Set the
+public URL before starting so copied links use the correct host.
+
+```text
+cp .env.example .env
+# Edit OXBIN_BASE_URL in .env for your public HTTPS URL.
+docker compose up --build -d
+```
+
+Open `http://localhost:8080` for a local instance. Confirm service health with:
+
+```text
+curl --fail http://127.0.0.1:8080/health/live
+curl --fail http://127.0.0.1:8080/health/ready
+```
+
+The named `0xbin-data` volume persists pastes through container recreation.
+For a bind mount instead, replace the Compose volume with a host directory that
+is writable by the container's non-root user. Run only one 0xbin container per
+SQLite data directory.
+
+### Upgrade and restart
+
+```text
+git pull
+docker compose up --build -d
+```
+
+Database migrations run automatically at startup. Keep the volume mounted;
+without it, all pastes disappear when the container is removed.
 
 ## SQLite
 

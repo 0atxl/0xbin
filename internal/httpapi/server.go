@@ -5,9 +5,13 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"io/fs"
 	"log/slog"
+	"mime"
 	"net"
 	"net/http"
+	"path"
+	"strings"
 	"time"
 
 	"github.com/0atxl/0xbin/internal/config"
@@ -25,13 +29,23 @@ type Server struct {
 // NewServer creates the HTTP server. Database readiness is deliberately not
 // wired until Step 2.
 func NewServer(cfg config.Config, pastes PasteService, readiness ...func(context.Context) error) *Server {
+	return newServer(cfg, pastes, nil, readiness...)
+}
+
+// NewServerWithFrontend creates a server that serves the embedded frontend
+// for browser routes while keeping API and health routes separate.
+func NewServerWithFrontend(cfg config.Config, pastes PasteService, frontend fs.FS, readiness ...func(context.Context) error) *Server {
+	return newServer(cfg, pastes, frontend, readiness...)
+}
+
+func newServer(cfg config.Config, pastes PasteService, frontend fs.FS, readiness ...func(context.Context) error) *Server {
 	var ready func(context.Context) error
 	if len(readiness) > 0 {
 		ready = readiness[0]
 	}
 	return &Server{server: &http.Server{
 		Addr:              cfg.ListenAddr,
-		Handler:           NewHandler(cfg, pastes, ready),
+		Handler:           newHandler(cfg, pastes, frontend, ready),
 		ReadHeaderTimeout: cfg.ReadHeaderTimeout,
 		ReadTimeout:       cfg.ReadTimeout,
 		WriteTimeout:      cfg.WriteTimeout,
@@ -51,6 +65,16 @@ func (s *Server) Shutdown(ctx context.Context) error {
 
 // NewHandler creates the root router and its foundational middleware.
 func NewHandler(cfg config.Config, pastes PasteService, readiness ...func(context.Context) error) http.Handler {
+	return newHandler(cfg, pastes, nil, readiness...)
+}
+
+// NewHandlerWithFrontend attaches a frontend filesystem to browser routes.
+// It is useful for integration tests and the embedded production bundle.
+func NewHandlerWithFrontend(cfg config.Config, pastes PasteService, frontend fs.FS, readiness ...func(context.Context) error) http.Handler {
+	return newHandler(cfg, pastes, frontend, readiness...)
+}
+
+func newHandler(cfg config.Config, pastes PasteService, frontend fs.FS, readiness ...func(context.Context) error) http.Handler {
 	var ready func(context.Context) error
 	if len(readiness) > 0 {
 		ready = readiness[0]
@@ -76,8 +100,61 @@ func NewHandler(cfg config.Config, pastes PasteService, readiness ...func(contex
 	}
 	mux.HandleFunc("/api/", apiNotFound)
 	mux.HandleFunc("/api", apiNotFound)
-	mux.HandleFunc("/", notFound)
+	if frontend == nil {
+		mux.HandleFunc("/", notFound)
+	} else {
+		mux.Handle("/", frontendHandler(frontend))
+	}
 	return requestID(recoverPanics(clientIP(mux, cfg.TrustedProxies)))
+}
+
+func frontendHandler(bundle fs.FS) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		name := strings.TrimPrefix(path.Clean(r.URL.Path), "/")
+		if name == "." {
+			name = ""
+		}
+		if name != "" && fs.ValidPath(name) {
+			if contents, err := fs.ReadFile(bundle, name); err == nil {
+				serveFrontendFile(w, r, name, contents)
+				return
+			}
+		}
+
+		// Vite assets must exist exactly. All other browser paths are React
+		// routes and receive the application shell.
+		if strings.HasPrefix(name, "assets/") || path.Ext(name) != "" {
+			http.NotFound(w, r)
+			return
+		}
+		contents, err := fs.ReadFile(bundle, "index.html")
+		if err != nil {
+			http.Error(w, "Frontend bundle is unavailable; run make build.", http.StatusServiceUnavailable)
+			return
+		}
+		serveFrontendFile(w, r, "index.html", contents)
+	})
+}
+
+func serveFrontendFile(w http.ResponseWriter, r *http.Request, name string, contents []byte) {
+	if name == "index.html" {
+		w.Header().Set("Cache-Control", "no-store")
+	} else {
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	}
+	if contentType := mime.TypeByExtension(path.Ext(name)); contentType != "" {
+		w.Header().Set("Content-Type", contentType)
+	}
+	if r.Method == http.MethodHead {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	_, _ = w.Write(contents)
 }
 
 func live(w http.ResponseWriter, _ *http.Request) {
