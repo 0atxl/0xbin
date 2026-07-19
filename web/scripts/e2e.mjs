@@ -123,6 +123,65 @@ try {
 
   await page.goto(webOrigin);
   await assertNoSeriousAccessibilityIssues(page, "create screen");
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.getByLabel("Encrypt").check();
+  await expectVisible(page, "The key stays in the copied link.");
+  await assert.equal(
+    await page
+      .locator(".toast-timer")
+      .evaluate((timer) => getComputedStyle(timer).animationName),
+    "none",
+    "notification cooldown animation should stop when reduced motion is enabled",
+  );
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await page.reload();
+  await assert.equal(
+    await page.getByRole("button", { name: "Site menu" }).count(),
+    0,
+    "self-hosted UI should not include the policy menu",
+  );
+  await page.locator(".code-editor .cm-content").fill("x".repeat(2_000));
+  await assert.equal(
+    await page
+      .locator(".code-editor .cm-scroller")
+      .evaluate((scroller) => scroller.scrollWidth <= scroller.clientWidth),
+    true,
+    "creation editor should wrap long lines without horizontal overflow",
+  );
+  await page.reload();
+  await page.setViewportSize({ width: 425, height: 844 });
+  await expectVisible(page, "Plain text");
+  await page.setViewportSize({ width: 375, height: 844 });
+  await page.getByRole("button", { name: "3d", exact: true }).click();
+  await page.waitForTimeout(220);
+  await assert.equal(
+    await page.locator(".lifetime-indicator").evaluate((indicator) => {
+      const selected = document.querySelector(
+        '.lifetime-selector button[aria-pressed="true"]',
+      );
+      if (!(selected instanceof HTMLElement)) return false;
+      return (
+        Math.abs(
+          indicator.getBoundingClientRect().left -
+            selected.getBoundingClientRect().left,
+        ) < 1
+      );
+    }),
+    true,
+    "expiry indicator should stay aligned with centered options on narrow screens",
+  );
+  await assert.equal(
+    await page.locator(".lifetime-selector").evaluate((selector) => {
+      const create = document.querySelector(".primary-action");
+      if (!(create instanceof HTMLElement)) return false;
+      const lifetime = selector.getBoundingClientRect();
+      const action = create.getBoundingClientRect();
+      return lifetime.bottom <= action.top || action.bottom <= lifetime.top;
+    }),
+    true,
+    "mobile lifetime selector and Create action should not overlap",
+  );
+  await page.setViewportSize({ width: 1280, height: 900 });
   await page.getByRole("button", { name: "Create", exact: true }).click();
   await expectVisible(page, "Empty paste");
   await assert.equal(
@@ -138,6 +197,13 @@ try {
   await expectVisible(page, "main.go");
   await expectVisible(page, "package main");
   await assertNoSeriousAccessibilityIssues(page, "plaintext viewer");
+  await assert.equal(
+    await page
+      .locator(".readonly-paste-editor .cm-scroller")
+      .evaluate((scroller) => getComputedStyle(scroller).overflowX),
+    "hidden",
+    "viewer should not expose a horizontal scrollbar",
+  );
   assert.match(new URL(plaintextURL).pathname, /^\/[a-z]+$/);
 
   await createPaste(page, "three-day paste", { lifetime: "3d" });
@@ -154,8 +220,54 @@ try {
   await page.keyboard.press("Escape");
   await page.setViewportSize({ width: 390, height: 844 });
   await expectVisible(page, "main.go");
+  await page.getByRole("button", { name: "Download" }).waitFor({
+    state: "visible",
+  });
+  await assert.equal(
+    await page.locator(".viewer-actions").evaluate((actions) => {
+      const title = document.querySelector("#viewer-heading");
+      return (
+        title !== null &&
+        actions.getBoundingClientRect().top >
+          title.getBoundingClientRect().bottom
+      );
+    }),
+    true,
+    "mobile actions should be a row below the title",
+  );
   await page.getByRole("button", { name: "Search" }).click();
   await page.getByLabel("Search paste").waitFor({ state: "visible" });
+  await assert.equal(
+    await page.locator(".viewer-action-icons").evaluate((row) => {
+      const buttons = row.querySelectorAll(".action-button");
+      const first = buttons.item(0)?.getBoundingClientRect();
+      const last = buttons.item(buttons.length - 1)?.getBoundingClientRect();
+      const bounds = row.getBoundingClientRect();
+      return (
+        first !== undefined &&
+        last !== undefined &&
+        Math.abs(first.left - bounds.left) < 2 &&
+        Math.abs(last.right - bounds.right) < 2
+      );
+    }),
+    true,
+    "mobile action icons should span the full action row",
+  );
+  await assert.equal(
+    await page.locator(".viewer-search-row").evaluate((row) => {
+      const control = row.querySelector(".search-control");
+      const sections = control?.querySelectorAll("input, .action-button");
+      const bounds = row.getBoundingClientRect();
+      return (
+        control instanceof HTMLElement &&
+        sections?.length === 3 &&
+        Math.abs(control.getBoundingClientRect().left - bounds.left - 4) < 2 &&
+        Math.abs(control.getBoundingClientRect().right - bounds.right + 4) < 2
+      );
+    }),
+    true,
+    "mobile search should be a three-section control inset four pixels from each edge",
+  );
   await assert.equal(
     await page
       .getByLabel("Search paste")
@@ -163,7 +275,8 @@ try {
     true,
     "search input should be focused after opening",
   );
-  await page.getByLabel("Search paste").evaluate((input) => input.blur());
+  await page.getByRole("button", { name: "Search" }).click();
+  await page.getByLabel("Search paste").waitFor({ state: "hidden" });
   await page.getByRole("button", { name: "Search" }).click();
   await assertFocused(page.getByLabel("Search paste"));
   await page.getByLabel("Search paste").evaluate((input) => input.blur());
@@ -215,11 +328,27 @@ try {
 
   const noKeyURL = encryptedURL.split("#")[0];
   await page.goto(noKeyURL);
-  await expectVisible(page, "Encrypted paste");
+  await page.getByPlaceholder("Decryption key here").waitFor({
+    state: "visible",
+  });
+  await assert.equal(
+    await page
+      .getByRole("button", { name: "0xbin: create a new paste" })
+      .count(),
+    0,
+    "key gate should not show application chrome",
+  );
   await page
     .getByLabel("Paste decryption key")
     .fill("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
   await page.getByRole("button", { name: "Decrypt" }).click();
+  await assert.equal(
+    await page
+      .getByLabel("Paste decryption key")
+      .evaluate((input) => input.getAttribute("aria-invalid")),
+    "true",
+    "wrong keys should mark the compact key field invalid",
+  );
   await expectVisible(page, "Unable to decrypt — check the key.");
   await page.getByLabel("Paste decryption key").fill(encryptedURL);
   await page.getByRole("button", { name: "Decrypt" }).click();

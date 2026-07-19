@@ -97,8 +97,8 @@ export function App() {
       window.matchMedia("(prefers-color-scheme: dark)").matches,
     ),
   );
-  const [menuOpen, setMenuOpen] = useState(false);
   const [statuses, setStatuses] = useState<Toast[]>([]);
+  const [keyGateOpen, setKeyGateOpen] = useState(false);
   const [notificationsPaused, setNotificationsPaused] = useState(false);
   const nextStatusID = useRef(0);
   const themeTransitionTimeout = useRef<number | undefined>(undefined);
@@ -130,15 +130,8 @@ export function App() {
     [],
   );
 
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setMenuOpen(false);
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, []);
-
   function navigate(path: string) {
+    setKeyGateOpen(false);
     window.history.pushState({}, "", path);
     setRoute(currentRoute());
   }
@@ -199,27 +192,29 @@ export function App() {
   }
 
   return (
-    <div className="app-shell">
-      <header className="site-header">
-        <button
-          className="icon-button brand-icon"
-          type="button"
-          aria-label="0xbin: create a new paste"
-          title="New paste"
-          onClick={() => navigate("/")}
-        >
-          <LogoIcon />
-        </button>
-        <button
-          className="icon-button theme-toggle"
-          type="button"
-          aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} theme`}
-          title={`Switch to ${theme === "dark" ? "light" : "dark"} theme`}
-          onClick={toggleTheme}
-        >
-          {theme === "dark" ? <SunIcon /> : <MoonIcon />}
-        </button>
-      </header>
+    <div className={keyGateOpen ? "app-shell key-gate-open" : "app-shell"}>
+      {!keyGateOpen ? (
+        <header className="site-header">
+          <button
+            className="icon-button brand-icon"
+            type="button"
+            aria-label="0xbin: create a new paste"
+            title="New paste"
+            onClick={() => navigate("/")}
+          >
+            <LogoIcon />
+          </button>
+          <button
+            className="icon-button theme-toggle"
+            type="button"
+            aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} theme`}
+            title={`Switch to ${theme === "dark" ? "light" : "dark"} theme`}
+            onClick={toggleTheme}
+          >
+            {theme === "dark" ? <SunIcon /> : <MoonIcon />}
+          </button>
+        </header>
+      ) : null}
 
       {route.kind === "create" ? (
         <CreationCanvas onStatus={showStatus} onCreated={handleCreated} />
@@ -231,13 +226,10 @@ export function App() {
           onRetryCopy={retryCopy}
           onStatus={showStatus}
           onNewPaste={() => navigate("/")}
+          onKeyGateChange={setKeyGateOpen}
         />
       )}
 
-      <CornerMenu
-        open={menuOpen}
-        onToggle={() => setMenuOpen((open) => !open)}
-      />
       {statuses.length > 0 ? (
         <div
           className="status-stack"
@@ -453,18 +445,20 @@ function LanguageMenu({
   onChange: (value: string) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const [closing, setClosing] = useState(false);
   const selectRef = useRef<HTMLDivElement>(null);
+  const closeTimeout = useRef<number | undefined>(undefined);
   const menuID = useId();
   const selected =
     languages.find(([language]) => language === value)?.[1] ?? value;
 
   useEffect(() => {
     const close = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(false);
+      if (event.key === "Escape") closeMenu();
     };
     window.addEventListener("keydown", close);
     return () => window.removeEventListener("keydown", close);
-  }, []);
+  }, [closing, open]);
 
   useEffect(() => {
     const closeOutside = (event: PointerEvent) => {
@@ -472,12 +466,48 @@ function LanguageMenu({
         event.target instanceof Node &&
         !selectRef.current?.contains(event.target)
       ) {
-        setOpen(false);
+        closeMenu();
       }
     };
     document.addEventListener("pointerdown", closeOutside);
     return () => document.removeEventListener("pointerdown", closeOutside);
-  }, []);
+  }, [closing, open]);
+
+  useEffect(
+    () => () => {
+      if (closeTimeout.current !== undefined) {
+        window.clearTimeout(closeTimeout.current);
+      }
+    },
+    [],
+  );
+
+  function closeMenu() {
+    if (!open || closing) return;
+    setClosing(true);
+    closeTimeout.current = window.setTimeout(() => {
+      setOpen(false);
+      setClosing(false);
+      closeTimeout.current = undefined;
+    }, 140);
+  }
+
+  function toggleMenu() {
+    if (closing) {
+      if (closeTimeout.current !== undefined) {
+        window.clearTimeout(closeTimeout.current);
+        closeTimeout.current = undefined;
+      }
+      setClosing(false);
+      setOpen(true);
+      return;
+    }
+    if (open) {
+      closeMenu();
+      return;
+    }
+    setOpen(true);
+  }
 
   return (
     <div className="custom-select" ref={selectRef}>
@@ -486,14 +516,19 @@ function LanguageMenu({
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-controls={menuID}
-        onClick={() => setOpen((current) => !current)}
+        onClick={toggleMenu}
       >
         <CodeIcon />
         <span>{selected}</span>
         <ChevronIcon />
       </button>
       {open ? (
-        <ul id={menuID} role="listbox" aria-label="Language">
+        <ul
+          id={menuID}
+          className={closing ? "is-closing" : undefined}
+          role="listbox"
+          aria-label="Language"
+        >
           {languages.map(([language, label]) => (
             <li key={language} role="option" aria-selected={language === value}>
               <button
@@ -563,6 +598,7 @@ function CodeEditor({
           doc: value,
           extensions: [
             lineNumbers(),
+            EditorView.lineWrapping,
             placeholder("Write text or code here…"),
             closeBrackets(),
             indentOnInput(),
@@ -633,6 +669,7 @@ function CodeEditor({
         className="editor-fallback"
         aria-label="Paste content"
         placeholder="Write text or code here…"
+        wrap="soft"
         value={value}
         onChange={(event) => onChange(event.target.value)}
         onKeyDown={(event) => {
@@ -653,6 +690,7 @@ function PasteViewer({
   onRetryCopy,
   onStatus,
   onNewPaste,
+  onKeyGateChange,
 }: {
   slug: string;
   shareURL?: string;
@@ -660,6 +698,7 @@ function PasteViewer({
   onRetryCopy: () => void;
   onStatus: (message: string) => void;
   onNewPaste: () => void;
+  onKeyGateChange: (open: boolean) => void;
 }) {
   const [paste, setPaste] = useState<
     RetrievedPaste | RetrievedEncryptedPaste
@@ -673,11 +712,16 @@ function PasteViewer({
   const [keyError, setKeyError] = useState(false);
   const [burnEncrypted, setBurnEncrypted] = useState(false);
   const [consuming, setConsuming] = useState(false);
-  const [wrap, setWrap] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
+  const [searchClosing, setSearchClosing] = useState(false);
   const [query, setQuery] = useState("");
   const [activeMatch, setActiveMatch] = useState(0);
   const searchRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    onKeyGateChange(state === "key");
+    return () => onKeyGateChange(false);
+  }, [onKeyGateChange, state]);
 
   useEffect(() => {
     if (!slug) {
@@ -748,6 +792,23 @@ function PasteViewer({
   function focusSearch() {
     setSearchOpen(true);
     window.setTimeout(() => searchRef.current?.focus(), 0);
+  }
+
+  function toggleSearch() {
+    if (searchClosing) {
+      setSearchClosing(false);
+      setSearchOpen(true);
+      return;
+    }
+    if (searchOpen) return closeSearch();
+    focusSearch();
+  }
+
+  function closeSearch() {
+    setQuery("");
+    setSearchOpen(false);
+    setSearchClosing(true);
+    window.setTimeout(() => setSearchClosing(false), 140);
   }
 
   async function copyContent() {
@@ -862,10 +923,9 @@ function PasteViewer({
   }
   if (state === "key") {
     return (
-      <main className="centered-state">
-        <h1>Encrypted paste</h1>
-        <p>The key is processed only in this browser.</p>
+      <main className="key-gate">
         <form
+          className="key-entry-form"
           onSubmit={(event) => {
             event.preventDefault();
             if (!paste || !("envelope" in paste)) return;
@@ -874,6 +934,7 @@ function PasteViewer({
               key = keyFromFragmentOrURL(keyInput);
             } catch {
               setKeyError(true);
+              onStatus("Unable to decrypt — check the key.");
               return;
             }
             setKeyError(false);
@@ -886,6 +947,7 @@ function PasteViewer({
               .catch(() => {
                 setKeyError(true);
                 setState("key");
+                onStatus("Unable to decrypt — check the key.");
               });
           }}
         >
@@ -894,13 +956,14 @@ function PasteViewer({
           </label>
           <input
             id="decryption-key"
+            aria-invalid={keyError}
             value={keyInput}
+            placeholder="Decryption key here"
             onChange={(event) => setKeyInput(event.target.value)}
           />
-          <button type="submit">Decrypt</button>
-          {keyError ? (
-            <p role="alert">Unable to decrypt — check the key.</p>
-          ) : null}
+          <button type="submit" aria-label="Decrypt" title="Decrypt">
+            <ArrowIcon />
+          </button>
         </form>
       </main>
     );
@@ -921,80 +984,103 @@ function PasteViewer({
           )}
         </div>
         <div className="viewer-actions" aria-label="Paste actions">
-          {searchOpen ? (
-            <>
-              <input
-                ref={searchRef}
-                type="search"
-                value={query}
-                placeholder="Find"
-                aria-label="Search paste"
-                onChange={(event) => setQuery(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Escape") {
-                    setQuery("");
-                    setSearchOpen(false);
-                  }
-                }}
-              />
-              <ActionButton
-                label="Previous match"
-                disabled={matchCount === 0}
-                onClick={() =>
-                  setActiveMatch((current) =>
-                    current === 0 ? matchCount - 1 : current - 1,
-                  )
-                }
-              >
-                <PreviousIcon />
-              </ActionButton>
-              <ActionButton
-                label="Next match"
-                disabled={matchCount === 0}
-                onClick={() =>
-                  setActiveMatch((current) => (current + 1) % matchCount)
-                }
-              >
-                <NextIcon />
-              </ActionButton>
-              <span className="search-count" aria-live="polite">
-                {query && matchCount > 0
-                  ? `${activeMatch + 1} / ${matchCount}`
-                  : ""}
-              </span>
-            </>
-          ) : null}
-          <ActionButton label="Search" onClick={focusSearch}>
-            <SearchIcon />
-          </ActionButton>
-          <ActionButton label="Copy" onClick={() => void copyContent()}>
-            <CopyIcon />
-          </ActionButton>
-          {"payload" in paste ? (
-            <a
-              className="action-button"
-              href={`/api/v1/pastes/${encodeURIComponent(slug)}/raw`}
-              target="_blank"
-              rel="noreferrer"
-              aria-label="Open raw paste"
-              title="Raw"
+          {searchOpen || searchClosing ? (
+            <div
+              className={
+                searchClosing
+                  ? "viewer-search-row is-closing"
+                  : "viewer-search-row"
+              }
             >
-              <RawIcon />
-            </a>
+              <div className="search-control">
+                <div className="search-input-cell">
+                  <input
+                    ref={searchRef}
+                    className={query ? "has-query" : undefined}
+                    type="search"
+                    value={query}
+                    placeholder="Find"
+                    aria-label="Search paste"
+                    onChange={(event) => setQuery(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Escape") {
+                        closeSearch();
+                      }
+                    }}
+                  />
+                  {query ? (
+                    <button
+                      className="search-clear"
+                      type="button"
+                      aria-label="Clear search"
+                      title="Clear search"
+                      onClick={() => {
+                        setQuery("");
+                        searchRef.current?.focus();
+                      }}
+                    >
+                      ×
+                    </button>
+                  ) : null}
+                </div>
+                <div className="search-navigation">
+                  <ActionButton
+                    label="Previous match"
+                    disabled={matchCount === 0}
+                    onClick={() =>
+                      setActiveMatch((current) =>
+                        current === 0 ? matchCount - 1 : current - 1,
+                      )
+                    }
+                  >
+                    <PreviousIcon />
+                  </ActionButton>
+                  <ActionButton
+                    label="Next match"
+                    disabled={matchCount === 0}
+                    onClick={() =>
+                      setActiveMatch((current) => (current + 1) % matchCount)
+                    }
+                  >
+                    <NextIcon />
+                  </ActionButton>
+                </div>
+                {query ? (
+                  <span className="search-count" aria-live="polite">
+                    {matchCount > 0
+                      ? `${activeMatch + 1} / ${matchCount}`
+                      : "0 / 0"}
+                  </span>
+                ) : null}
+              </div>
+            </div>
           ) : null}
-          <ActionButton label="Download" onClick={downloadContent}>
-            <DownloadIcon />
-          </ActionButton>
-          <ActionButton
-            label={wrap ? "Disable line wrapping" : "Wrap lines"}
-            active={wrap}
-            onClick={() => setWrap((current) => !current)}
-          >
-            <WrapIcon />
-          </ActionButton>
-          <ActionButton label="Create new paste" onClick={onNewPaste}>
-            <PlusIcon />
-          </ActionButton>
+          <div className="viewer-action-icons">
+            <ActionButton label="Search" onClick={toggleSearch}>
+              <SearchIcon />
+            </ActionButton>
+            <ActionButton label="Copy" onClick={() => void copyContent()}>
+              <CopyIcon />
+            </ActionButton>
+            {"payload" in paste ? (
+              <a
+                className="action-button"
+                href={`/api/v1/pastes/${encodeURIComponent(slug)}/raw`}
+                target="_blank"
+                rel="noreferrer"
+                aria-label="Open raw paste"
+                title="Raw"
+              >
+                <RawIcon />
+              </a>
+            ) : null}
+            <ActionButton label="Download" onClick={downloadContent}>
+              <DownloadIcon />
+            </ActionButton>
+            <ActionButton label="Create new paste" onClick={onNewPaste}>
+              <PlusIcon />
+            </ActionButton>
+          </div>
         </div>
       </header>
 
@@ -1004,11 +1090,10 @@ function PasteViewer({
         </button>
       ) : null}
 
-      <div className={wrap ? "paste-content wrap" : "paste-content"}>
+      <div className="paste-content">
         <ReadonlyPasteViewer
           content={payload.content}
           language={payload.language}
-          wrap={wrap}
           query={query}
           activeMatch={activeMatch}
         />
@@ -1020,20 +1105,17 @@ function PasteViewer({
 function ReadonlyPasteViewer({
   content,
   language,
-  wrap,
   query,
   activeMatch,
 }: {
   content: string;
   language: string;
-  wrap: boolean;
   query: string;
   activeMatch: number;
 }) {
   const host = useRef<HTMLDivElement>(null);
   const view = useRef<EditorView | undefined>(undefined);
   const languageConfig = useRef(new Compartment());
-  const wrapConfig = useRef(new Compartment());
   const searchConfig = useRef(new Compartment());
 
   useEffect(() => {
@@ -1050,7 +1132,7 @@ function ReadonlyPasteViewer({
             tabindex: "0",
           }),
           languageConfig.current.of([]),
-          wrapConfig.current.of(wrap ? EditorView.lineWrapping : []),
+          EditorView.lineWrapping,
           searchConfig.current.of(
             searchHighlights(content, query, activeMatch),
           ),
@@ -1085,15 +1167,6 @@ function ReadonlyPasteViewer({
       active = false;
     };
   }, [language]);
-
-  useEffect(() => {
-    if (!view.current) return;
-    view.current.dispatch({
-      effects: wrapConfig.current.reconfigure(
-        wrap ? EditorView.lineWrapping : [],
-      ),
-    });
-  }, [wrap]);
 
   useEffect(() => {
     if (!view.current) return;
@@ -1162,20 +1235,18 @@ function searchHighlights(
 
 function ActionButton({
   label,
-  active,
   disabled,
   onClick,
   children,
 }: {
   label: string;
-  active?: boolean;
   disabled?: boolean;
   onClick: () => void;
   children: ReactNode;
 }) {
   return (
     <button
-      className={active ? "action-button active" : "action-button"}
+      className="action-button"
       type="button"
       disabled={disabled}
       aria-label={label}
@@ -1202,35 +1273,6 @@ function CenteredState({
       {detail ? <p>{detail}</p> : null}
       {action}
     </main>
-  );
-}
-
-function CornerMenu({
-  open,
-  onToggle,
-}: {
-  open: boolean;
-  onToggle: () => void;
-}) {
-  const menuID = useId();
-  return (
-    <div className="corner-menu">
-      <button
-        className="icon-button corner-trigger"
-        type="button"
-        aria-label="Site menu"
-        aria-expanded={open}
-        aria-controls={menuID}
-        onClick={onToggle}
-      >
-        <MenuIcon />
-      </button>
-      {open ? (
-        <div className="corner-popover" id={menuID} role="menu">
-          <p>About and policy links arrive before launch.</p>
-        </div>
-      ) : null}
-    </div>
   );
 }
 
@@ -1338,15 +1380,6 @@ function MoonIcon() {
     </svg>
   );
 }
-function MenuIcon() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <circle cx="5" cy="12" r="1.4" />
-      <circle cx="12" cy="12" r="1.4" />
-      <circle cx="19" cy="12" r="1.4" />
-    </svg>
-  );
-}
 function ChevronIcon() {
   return (
     <svg viewBox="0 0 20 20" aria-hidden="true">
@@ -1426,13 +1459,6 @@ function DownloadIcon() {
   return (
     <svg viewBox="0 0 20 20" aria-hidden="true">
       <path d="M10 3v10M6 9l4 4 4-4M3 17h14" />
-    </svg>
-  );
-}
-function WrapIcon() {
-  return (
-    <svg viewBox="0 0 20 20" aria-hidden="true">
-      <path d="M3 5h12a3 3 0 0 1 0 6H8M11 8l-3 3 3 3M3 15h4" />
     </svg>
   );
 }
