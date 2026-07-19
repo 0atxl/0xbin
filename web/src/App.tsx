@@ -739,9 +739,14 @@ function PasteViewer({
       return;
     }
     const controller = new AbortController();
+    setPaste(undefined);
+    setDecryptedPayload(undefined);
+    setBurnEncrypted(false);
+    setKeyInput("");
     setState("loading");
-    getPaste(createPasteAPI(), slug)
+    getPaste(createPasteAPI(), slug, controller.signal)
       .then((result) => {
+        if (controller.signal.aborted) return;
         if ("burnAfterRead" in result) {
           setBurnEncrypted(result.isEncrypted);
           setState("burn");
@@ -756,12 +761,15 @@ function PasteViewer({
           const key = keyFromFragmentOrURL(window.location.hash);
           void decryptPayload(result.envelope, key)
             .then((payload) => {
+              if (controller.signal.aborted) return;
               setDecryptedPayload(payload);
               setState("ready");
             })
-            .catch(() => setState("key"));
+            .catch(() => {
+              if (!controller.signal.aborted) setState("key");
+            });
         } catch {
-          setState("key");
+          if (!controller.signal.aborted) setState("key");
         }
       })
       .catch((error: unknown) => {

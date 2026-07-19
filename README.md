@@ -29,7 +29,7 @@ make build
 
 ## Implementation status
 
-Steps 0–16 are committed. The production React bundle is embedded in the Go
+Steps 0–16 are implemented. The production React bundle is embedded in the Go
 binary, and the repository includes self-hosted container packaging. See the
 [implementation plan](docs/IMPLEMENTATION_PLAN.md) for the verification gates.
 
@@ -70,7 +70,7 @@ without it, all pastes disappear when the container is removed.
 
 0xbin uses the pure-Go `modernc.org/sqlite` driver, so local and container
 builds do not require CGo. The embedded schema uses SQLite `STRICT` tables,
-which require SQLite 3.37 or newer. Future atomic consume operations use
+which require SQLite 3.37 or newer. Atomic consume operations use SQLite
 `RETURNING`, available since SQLite 3.35. The bundled driver must therefore
 provide SQLite 3.37 or newer.
 

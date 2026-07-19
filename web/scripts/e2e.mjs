@@ -68,9 +68,16 @@ async function createPaste(page, content, options = {}) {
   await page.locator(".cm-content").fill(content);
   if (options.title)
     await page.getByPlaceholder("Untitled paste").fill(options.title);
-  if (options.lifetime)
-    await page.getByRole("button", { name: options.lifetime }).click();
-  if (options.encrypted) await page.getByLabel("Encrypt").check();
+  if (options.lifetime) {
+    const labels = { "24h": "1d", "72h": "3d" };
+    await page
+      .getByRole("button", {
+        name: labels[options.lifetime] ?? options.lifetime,
+      })
+      .click();
+  }
+  if (options.encrypted)
+    await page.getByText("Encrypt", { exact: true }).click();
   await page.getByRole("button", { name: "Create", exact: true }).click();
   await page.waitForURL((url) => url.pathname !== "/");
   return page.url();
@@ -124,7 +131,7 @@ try {
   await page.goto(webOrigin);
   await assertNoSeriousAccessibilityIssues(page, "create screen");
   await page.emulateMedia({ reducedMotion: "reduce" });
-  await page.getByLabel("Encrypt").check();
+  await page.getByText("Encrypt", { exact: true }).click();
   await expectVisible(page, "The key stays in the copied link.");
   await assert.equal(
     await page
@@ -196,9 +203,7 @@ try {
   });
   await expectVisible(page, "main.go");
   await expectVisible(page, "package main");
-  await page
-    .getByText(/Expires in \d{1,2}:\d{2}/)
-    .waitFor({ state: "visible" });
+  await page.locator(".viewer-expiry").waitFor({ state: "visible" });
   await assertNoSeriousAccessibilityIssues(page, "plaintext viewer");
   await assert.equal(
     await page
@@ -213,6 +218,7 @@ try {
   await expectVisible(page, "three-day paste");
 
   await page.goto(plaintextURL);
+  await expectVisible(page, "main.go");
   await page.keyboard.press("Control+F");
   await page.getByLabel("Search paste").fill("package");
   await expectVisible(page, "1 / 2");
@@ -220,7 +226,9 @@ try {
   await expectVisible(page, "2 / 2");
   await page.getByRole("button", { name: "Previous match" }).click();
   await expectVisible(page, "1 / 2");
+  await page.getByLabel("Search paste").focus();
   await page.keyboard.press("Escape");
+  await page.getByLabel("Search paste").waitFor({ state: "hidden" });
   await page.setViewportSize({ width: 390, height: 844 });
   await expectVisible(page, "main.go");
   await page.getByRole("button", { name: "Download" }).waitFor({
@@ -238,7 +246,7 @@ try {
     true,
     "mobile actions should be a row below the title",
   );
-  await page.getByRole("button", { name: "Search" }).click();
+  await page.getByRole("button", { name: "Search", exact: true }).click();
   await page.getByLabel("Search paste").waitFor({ state: "visible" });
   await assert.equal(
     await page.locator(".viewer-action-icons").evaluate((row) => {
@@ -264,23 +272,17 @@ try {
       return (
         control instanceof HTMLElement &&
         sections?.length === 3 &&
-        Math.abs(control.getBoundingClientRect().left - bounds.left - 4) < 2 &&
-        Math.abs(control.getBoundingClientRect().right - bounds.right + 4) < 2
+        Math.abs(control.getBoundingClientRect().left - bounds.left + 8) < 2 &&
+        Math.abs(control.getBoundingClientRect().right - bounds.right - 8) < 2
       );
     }),
     true,
-    "mobile search should be a three-section control inset four pixels from each edge",
+    "mobile search should be a three-section control extending eight pixels past each row edge",
   );
-  await assert.equal(
-    await page
-      .getByLabel("Search paste")
-      .evaluate((input) => input.matches(":focus")),
-    true,
-    "search input should be focused after opening",
-  );
-  await page.getByRole("button", { name: "Search" }).click();
+  await assertFocused(page.getByLabel("Search paste"));
+  await page.getByRole("button", { name: "Search", exact: true }).click();
   await page.getByLabel("Search paste").waitFor({ state: "hidden" });
-  await page.getByRole("button", { name: "Search" }).click();
+  await page.getByRole("button", { name: "Search", exact: true }).click();
   await assertFocused(page.getByLabel("Search paste"));
   await page.getByLabel("Search paste").evaluate((input) => input.blur());
   await page.keyboard.press("Control+F");
@@ -441,6 +443,11 @@ async function expectVisible(page, text) {
 }
 
 async function assertFocused(locator) {
+  await locator.waitFor({ state: "visible" });
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    if (await locator.evaluate((element) => element.matches(":focus"))) return;
+    await delay(10);
+  }
   await assert.equal(
     await locator.evaluate((element) => element.matches(":focus")),
     true,

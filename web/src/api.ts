@@ -161,9 +161,11 @@ export async function createEncryptedPaste(
 export async function getPaste(
   api: PasteAPI,
   slug: string,
+  signal?: AbortSignal,
 ): Promise<RetrievedPaste | RetrievedEncryptedPaste | BurnMetadata> {
   const response = await api.request<unknown>(
     `/api/v1/pastes/${encodeURIComponent(slug)}`,
+    signal ? { signal } : undefined,
   );
   if (isBurnMetadata(response)) {
     return {
@@ -198,7 +200,7 @@ export async function consumePaste(
     `/api/v1/pastes/${encodeURIComponent(slug)}/consume`,
     { method: "POST" },
   );
-  if (isRetrievedEncryptedPaste(response)) {
+  if (isRetrievedEncryptedPaste(response, true)) {
     return {
       slug: response.slug,
       envelope: response.envelope,
@@ -206,7 +208,7 @@ export async function consumePaste(
       createdAt: response.created_at,
     };
   }
-  if (isRetrievedPaste(response)) {
+  if (isRetrievedPaste(response, true)) {
     return {
       slug: response.slug,
       payload: response.payload,
@@ -323,7 +325,10 @@ function isBurnMetadata(value: unknown): value is {
   );
 }
 
-function isRetrievedPaste(value: unknown): value is {
+function isRetrievedPaste(
+  value: unknown,
+  allowBurnAfterRead = false,
+): value is {
   slug: string;
   payload: PlaintextPayload;
   is_encrypted: false;
@@ -347,7 +352,8 @@ function isRetrievedPaste(value: unknown): value is {
     "is_encrypted" in value &&
     value.is_encrypted === false &&
     "burn_after_read" in value &&
-    value.burn_after_read === false &&
+    typeof value.burn_after_read === "boolean" &&
+    (allowBurnAfterRead || value.burn_after_read === false) &&
     "expires_at" in value &&
     typeof value.expires_at === "string" &&
     "created_at" in value &&
@@ -363,7 +369,10 @@ function isRetrievedPaste(value: unknown): value is {
   );
 }
 
-function isRetrievedEncryptedPaste(value: unknown): value is {
+function isRetrievedEncryptedPaste(
+  value: unknown,
+  allowBurnAfterRead = false,
+): value is {
   slug: string;
   envelope: CiphertextEnvelope;
   is_encrypted: true;
@@ -387,7 +396,8 @@ function isRetrievedEncryptedPaste(value: unknown): value is {
     "is_encrypted" in value &&
     value.is_encrypted === true &&
     "burn_after_read" in value &&
-    value.burn_after_read === false &&
+    typeof value.burn_after_read === "boolean" &&
+    (allowBurnAfterRead || value.burn_after_read === false) &&
     "expires_at" in value &&
     typeof value.expires_at === "string" &&
     "created_at" in value &&
