@@ -377,10 +377,15 @@ remain available.
 ### Lifetime display
 
 Show the selected lifetime as quiet supporting information rather than a large
-badge. One-hour pastes show `Expires in about an hour`; ordinary one-day and
-three-day views remain uncluttered. View-once pastes must make their destructive
-behaviour prominent before reveal. Do not run a distracting second-by-second
-countdown.
+badge. One-hour pastes show a quiet local digital countdown such as `Expires in
+59:42` inside a transparent accent-ring dial. It sits in the desktop title row,
+centered without covering paste content, and becomes its own row beneath the
+title on mobile. Its digits update each second. The time sits inside a full
+elliptical progress ring that drains over the remaining hour; the ring and
+digits get a restrained pulse together only during the final minute. Ordinary
+one-day and three-day views remain uncluttered. View-once
+pastes must make their destructive behaviour prominent before reveal. The
+countdown uses the retrieved expiry timestamp and does not poll the server.
 
 ## 8. Encrypted Key Gate
 

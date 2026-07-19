@@ -1,4 +1,11 @@
-import { useEffect, useId, useRef, useState, type ReactNode } from "react";
+import {
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from "react";
 import { Compartment, EditorState, type Extension } from "@codemirror/state";
 import {
   defaultKeymap,
@@ -56,6 +63,7 @@ import {
   loadEditorLanguage,
 } from "./languages";
 import { editorHistoryExtensions } from "./editor-history";
+import { browserShareURL } from "./share-url";
 import "./styles.css";
 
 const toastDurationMs = 6000;
@@ -165,18 +173,19 @@ export function App() {
   }
 
   async function handleCreated(created: CreatedPaste) {
+    const shareURL = browserShareURL(created.url);
     let copied = true;
     try {
-      await navigator.clipboard.writeText(created.url);
+      await navigator.clipboard.writeText(shareURL);
     } catch {
       copied = false;
     }
-    setShareURL(created.url);
+    setShareURL(shareURL);
     setCopyFailed(!copied);
     showStatus(
       copied ? "Link copied" : "Paste created — copy the link manually",
     );
-    const destination = new URL(created.url);
+    const destination = new URL(shareURL);
     navigate(destination.pathname + destination.hash);
   }
 
@@ -716,6 +725,7 @@ function PasteViewer({
   const [searchClosing, setSearchClosing] = useState(false);
   const [query, setQuery] = useState("");
   const [activeMatch, setActiveMatch] = useState(0);
+  const [currentTime, setCurrentTime] = useState(() => Date.now());
   const searchRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -785,10 +795,31 @@ function PasteViewer({
     setActiveMatch(0);
   }, [query]);
 
+  useEffect(() => {
+    if (!paste || !isOneHourPaste(paste)) return;
+    const timer = window.setInterval(() => setCurrentTime(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, [paste]);
+
   const payload =
     paste && "payload" in paste ? paste.payload : decryptedPayload;
   const matchCount = payload ? countMatches(payload.content, query) : 0;
   const oneHourPaste = paste ? isOneHourPaste(paste) : false;
+  const expiryCountdown =
+    paste && oneHourPaste
+      ? formatExpiryCountdown(paste.expiresAt, currentTime)
+      : undefined;
+  const expiryProgress =
+    paste && oneHourPaste
+      ? expiryProgressTurn(paste.expiresAt, currentTime)
+      : undefined;
+  const expiryLastMinute =
+    paste && oneHourPaste
+      ? (() => {
+          const remainingMs = Date.parse(paste.expiresAt) - currentTime;
+          return remainingMs > 0 && remainingMs <= 60 * 1_000;
+        })()
+      : false;
 
   function focusSearch() {
     setSearchOpen(true);
@@ -874,6 +905,7 @@ function PasteViewer({
     return (
       <CenteredState
         label="Paste unavailable"
+        accentLabel
         detail="It may have expired, been consumed, been deleted, or never existed."
         action={
           <button type="button" onClick={onNewPaste}>
@@ -983,10 +1015,27 @@ function PasteViewer({
               Paste
             </h1>
           )}
-          {oneHourPaste ? (
-            <span className="viewer-expiry">Expires in about an hour</span>
-          ) : null}
         </div>
+        {expiryCountdown ? (
+          <span className="viewer-expiry">
+            <span>Expires in</span>
+            <span
+              className={
+                expiryLastMinute
+                  ? "viewer-expiry-count expiry-last-minute"
+                  : "viewer-expiry-count"
+              }
+              key={expiryCountdown}
+              style={
+                {
+                  "--expiry-progress": `${expiryProgress ?? 0}turn`,
+                } as CSSProperties
+              }
+            >
+              <span>{expiryCountdown}</span>
+            </span>
+          </span>
+        ) : null}
         <div className="viewer-actions" aria-label="Paste actions">
           {searchOpen || searchClosing ? (
             <div
@@ -1209,6 +1258,23 @@ function isOneHourPaste(
   return lifetime >= 59 * 60 * 1000 && lifetime <= 61 * 60 * 1000;
 }
 
+function formatExpiryCountdown(expiresAt: string, currentTime: number): string {
+  const remainingSeconds = Math.max(
+    0,
+    Math.ceil((Date.parse(expiresAt) - currentTime) / 1_000),
+  );
+  const minutes = Math.floor(remainingSeconds / 60);
+  const seconds = remainingSeconds % 60;
+  return `${minutes}:${seconds.toString().padStart(2, "0")}`;
+}
+
+function expiryProgressTurn(expiresAt: string, currentTime: number): number {
+  return Math.max(
+    0,
+    Math.min(1, (Date.parse(expiresAt) - currentTime) / (60 * 60 * 1_000)),
+  );
+}
+
 function matchAt(content: string, query: string, index: number) {
   if (!query) return;
   const lowerContent = content.toLocaleLowerCase();
@@ -1275,14 +1341,16 @@ function CenteredState({
   label,
   detail,
   action,
+  accentLabel = false,
 }: {
   label: string;
   detail?: string;
   action?: ReactNode;
+  accentLabel?: boolean;
 }) {
   return (
     <main className="centered-state">
-      <h1>{label}</h1>
+      <h1 className={accentLabel ? "accent-label" : undefined}>{label}</h1>
       {detail ? <p>{detail}</p> : null}
       {action}
     </main>

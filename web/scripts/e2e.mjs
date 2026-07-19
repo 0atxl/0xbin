@@ -196,7 +196,9 @@ try {
   });
   await expectVisible(page, "main.go");
   await expectVisible(page, "package main");
-  await expectVisible(page, "Expires in about an hour");
+  await page
+    .getByText(/Expires in \d{1,2}:\d{2}/)
+    .waitFor({ state: "visible" });
   await assertNoSeriousAccessibilityIssues(page, "plaintext viewer");
   await assert.equal(
     await page
