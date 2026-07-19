@@ -29,20 +29,19 @@ make build
 
 ## Implementation status
 
-Implementation Plan Steps 0–8 are complete. The current binary loads validated
+Implementation Plan Steps 0–10A are complete. The current binary loads validated
 configuration, initializes SQLite migrations, exposes health endpoints, and
 serves the rate-limited plaintext create, retrieve, and raw APIs. It also runs
 a bounded expiry cleanup worker. The frontend contains the tested browser
 AES-256-GCM and URL-fragment key module, but the rendered application remains a
 scaffold.
 
-Step 9, encrypted API storage and retrieval, is next. Burn-after-read is Step
-10, the usable browser interface is Step 11, and container packaging is Step
-12. See [the implementation plan](docs/IMPLEMENTATION_PLAN.md) for the complete
-sequence and verification gates.
+The usable browser interface begins at Step 11, and embedded frontend/container
+packaging is Step 16. See [the implementation plan](docs/IMPLEMENTATION_PLAN.md)
+for the complete sequence and verification gates.
 
 Docker packaging is a project requirement and is scheduled for Implementation
-Step 12; no runtime image is provided yet.
+Step 16; no runtime image is provided yet.
 
 ## SQLite
 

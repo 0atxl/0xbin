@@ -65,7 +65,7 @@ Includes:
 - Non-consuming burn confirmation metadata
 - Atomic consume
 
-Implementation-plan steps: 8–10.
+Implementation-plan steps: 8–10A.
 
 Exit criteria:
 
@@ -83,24 +83,28 @@ complete browser journeys, final visual design, or public launch.
 
 Includes:
 
-- Creation/viewer behaviour and states
+- Frontend design system and light/dark theme baseline
+- Creation/viewer behaviour and states, including direct viewer handoff after
+  automatic link copy
 - Missing-key dialog and burn confirmation screen
 - CodeMirror editor
-- Copy/search/raw/wrap behaviours
-- Accessibility baseline
+- Copy/search/raw/wrap/new-paste behaviours
+- Accessibility, responsive, contrast, and reduced-motion baselines
 - Embedded frontend
 - Single container and persistent volume
 - Self-host documentation
 
-Implementation-plan steps: 11–12.
+Implementation-plan steps: 11–16.
 
 Exit criteria:
 
 - Browser journeys pass end-to-end tests.
 - One image serves frontend and API and persists SQLite data.
-- A new self-hoster can start, restart, back up, and restore the service from documentation.
+- A new self-hoster can start and restart the service from documentation.
 
-Visual styling may be refined within this phase after the behaviour is stable, but must not change product/security semantics.
+The approved frontend design baseline is documented in
+[`FRONTEND.md`](FRONTEND.md). Refinement within this phase must
+not change product/security semantics.
 
 ## Phase 4 — Hosted Public Beta
 
@@ -115,7 +119,7 @@ Includes:
 - Backup/restore and rollback
 - Persistent hosted deployment
 
-Implementation-plan steps: 13–14.
+Implementation-plan steps: 17–18.
 
 Exit criteria:
 
@@ -130,7 +134,7 @@ Exit criteria:
 Candidate work, prioritized only from real usage:
 
 - Official CLI using the stable API and local encryption
-- 3-day/7-day expiry
+- 7-day expiry or longer, following an explicit policy review
 - Creator deletion capability
 - Improved large-log search and rendering
 - Raise size limit toward 5 MiB after benchmarks

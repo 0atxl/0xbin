@@ -147,7 +147,7 @@ valid. Size checks precede full UTF-8 validation.
 The server parses plaintext payloads for validation and raw responses. It treats encrypted ciphertext as opaque after structural envelope validation.
 
 Creation accepts an expiry identifier, not a timestamp. The default policy maps
-`1h` and `24h` to their durations and calculates `created_at` and `expires_at`
+`1h`, `24h`, and `72h` to their durations and calculates `created_at` and `expires_at`
 from the server clock, normalized to UTC Unix seconds.
 
 ### 4.2 SQLite settings
@@ -397,6 +397,19 @@ Language selection should be explicit initially. `plaintext` is a safe fallback.
 - No third-party analytics/scripts.
 - Redact URL fragments from client error reporting.
 - Test malicious content including script tags, event handlers, SVG payloads, Markdown HTML, and bidi/control characters.
+
+### 10.5 Frontend design boundary
+
+The implementation follows [`FRONTEND.md`](FRONTEND.md) for its
+visual and interaction baseline. The route shell keeps a generic unavailable
+state at the original `/{slug}` path rather than redirecting to a lifecycle
+specific error route. A successful create copies the browser-built sharing URL
+and navigates to that path; the URL fragment is never placed in API input,
+telemetry, or application persistence.
+
+The version-1 payload contains title, language, and content only. A creator
+field or attribution requires an explicit payload, validation, crypto-vector,
+API, and UI change; it is not introduced by the frontend design work.
 
 ## 11. Observability
 

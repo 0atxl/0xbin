@@ -71,7 +71,7 @@ func Load(lookup LookupEnv) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	allowedExpiries, err := parseExpiries(get("OXBIN_ALLOWED_EXPIRIES", "1h,24h"))
+	allowedExpiries, err := parseExpiries(get("OXBIN_ALLOWED_EXPIRIES", "1h,24h,72h"))
 	if err != nil {
 		return Config{}, err
 	}
@@ -135,7 +135,7 @@ func Load(lookup LookupEnv) (Config, error) {
 		MaxPasteBytes:     maxPasteBytes,
 		DefaultExpiry:     defaultExpiry,
 		AllowedExpiries:   allowedExpiries,
-		AllowedExpiryIDs:  expiryIDs(get("OXBIN_ALLOWED_EXPIRIES", "1h,24h")),
+		AllowedExpiryIDs:  expiryIDs(get("OXBIN_ALLOWED_EXPIRIES", "1h,24h,72h")),
 		CreateRate:        createRate,
 		ReadRate:          readRate,
 		MissRate:          missRate,
@@ -228,8 +228,8 @@ func parseExpiries(value string) ([]time.Duration, error) {
 
 func parseExpiry(value string) (time.Duration, error) {
 	duration, err := time.ParseDuration(value)
-	if err != nil || duration <= 0 || duration > 24*time.Hour {
-		return 0, fmt.Errorf("must be a positive duration no longer than 24h")
+	if err != nil || duration <= 0 || duration > 72*time.Hour {
+		return 0, fmt.Errorf("must be a positive duration no longer than 72h")
 	}
 	return duration, nil
 }

@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -23,6 +24,9 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if cfg.DefaultExpiry != 24*time.Hour {
 		t.Errorf("DefaultExpiry = %s, want 24h", cfg.DefaultExpiry)
+	}
+	if got, want := cfg.AllowedExpiryIDs, []string{"1h", "24h", "72h"}; !slices.Equal(got, want) {
+		t.Errorf("AllowedExpiryIDs = %v, want %v", got, want)
 	}
 }
 
@@ -56,7 +60,8 @@ func TestLoadRejectsInvalidConfiguration(t *testing.T) {
 		{"listen address", "OXBIN_LISTEN_ADDR", "not-an-address"},
 		{"data path", "OXBIN_DATA_DIR", "\x00"},
 		{"paste limit", "OXBIN_MAX_PASTE_BYTES", "1048577"},
-		{"default expiry", "OXBIN_DEFAULT_EXPIRY", "25h"},
+		{"default expiry", "OXBIN_DEFAULT_EXPIRY", "73h"},
+		{"allowed expiry beyond 72 hours", "OXBIN_ALLOWED_EXPIRIES", "73h"},
 		{"allowed expiry", "OXBIN_ALLOWED_EXPIRIES", "1h,1h"},
 		{"rate", "OXBIN_CREATE_RATE", "fifteen/hour"},
 		{"consume rate", "OXBIN_CONSUME_RATE", "fifteen/hour"},
@@ -80,6 +85,26 @@ func TestLoadRejectsInvalidConfiguration(t *testing.T) {
 				t.Errorf("Load() error = %q, want it to mention %s", err, test.key)
 			}
 		})
+	}
+}
+
+func TestLoadAccepts72HourExpiry(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := Load(func(key string) (string, bool) {
+		if key == "OXBIN_ALLOWED_EXPIRIES" {
+			return "72h", true
+		}
+		if key == "OXBIN_DEFAULT_EXPIRY" {
+			return "72h", true
+		}
+		return "", false
+	})
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.DefaultExpiry != 72*time.Hour {
+		t.Errorf("DefaultExpiry = %s, want 72h", cfg.DefaultExpiry)
 	}
 }
 

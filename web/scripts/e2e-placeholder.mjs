@@ -1,3 +1,3 @@
 console.log(
-  "No browser journeys exist in Implementation Step 0; e2e tests begin in Step 11.",
+  "No browser journeys are implemented yet; they are added in Step 11.8.",
 );

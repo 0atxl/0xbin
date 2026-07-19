@@ -5,10 +5,11 @@
 
 Each step ends with a verification gate. Do not begin a dependent step until its gate passes. Commit boundaries may follow steps or coherent substeps; avoid one enormous final commit.
 
-**Current implementation status (2026-07-16):** Steps 0–10 are complete and
-their verification gates pass. Step 11 is next. Full browser journeys remain
-scheduled for Step 11; the current end-to-end target covers only the Step 8
-fragment transport boundary.
+**Current implementation status (2026-07-19):** Steps 0–10A are complete and
+their verification gates pass. Step 11 is next. The former monolithic frontend
+step is divided into Steps 11–15, using the approved
+[`FRONTEND.md`](FRONTEND.md) baseline. The current end-to-end
+target covers only the Step 8 fragment transport boundary.
 
 ## 0. Repository Baseline
 
@@ -223,32 +224,163 @@ fragment transport boundary.
 - Expired burn paste cannot be consumed.
 - Subsequent attempts share generic not-found behaviour.
 
-## 11. Frontend Behavioural MVP
-
-Visual design is intentionally open.
+## 10A. Three-Day Expiry Policy
 
 ### Tasks
 
-1. Build typed API client and route shell.
-2. Implement creation form states and validation.
-3. Integrate CodeMirror 6 editor with plaintext fallback and size counter.
-4. Implement plaintext result and viewer behaviours.
-5. Implement encryption toggle and client-side encrypt-before-submit.
-6. Construct copied encrypted URL with fragment locally.
-7. Implement fragment parsing and missing-key dialog.
-8. Implement burn confirmation and deliberate consume.
-9. Implement copy, raw/download, search, wrap/no-wrap behaviour.
-10. Implement loading/error/not-found/decryption states.
-11. Add semantic accessibility and keyboard behaviour.
+1. Add the stable `72h` expiry identifier alongside `1h` and `24h`.
+2. Set the default `OXBIN_ALLOWED_EXPIRIES` value to `1h,24h,72h`, while
+   retaining `24h` as the default expiry.
+3. Raise configuration and service-policy duration validation to 72 hours;
+   durations greater than 72 hours remain invalid.
+4. Document `72h` in the API contract and MVP expiry requirements without a
+   database-schema change.
+5. Preserve the existing burn semantics: a View-once paste uses
+   `burn_after_read: true`, a `72h` safety expiry, non-consuming GET, and
+   atomic explicit consume.
 
 ### Verification gate
 
-- Complete plaintext, encrypted, missing-key, wrong-key, expiry, and burn journeys pass browser tests.
-- Fragment key is absent from server/network logs.
-- Malicious paste corpus cannot execute.
-- Keyboard-only and automated accessibility checks pass agreed baseline.
+- `1h`, `24h`, and `72h` create requests succeed.
+- A `72h` expiry is calculated exactly from server time.
+- Durations greater than `72h` fail configuration and policy validation.
+- View once remains non-consuming on GET and atomic on explicit consume.
 
-## 12. Embedded Frontend and Container
+## 11. Frontend Foundation and Design System
+
+### Tasks
+
+1. Read and apply `FRONTEND.md` without changing the settled security
+   or lifecycle semantics in `spec.md`.
+2. Build the typed API client and minimal route shell for `/` and `/{slug}`.
+3. Introduce named design tokens, light/dark theme support, system-theme
+   defaulting, and persistence of the theme preference only.
+4. Implement `AppShell`, `BrandLogo`, `ThemeToggle`, `CornerMenu`, and the
+   shared `StatusMessage`/unavailable presentation boundaries.
+5. Establish semantic labels, visible focus treatment, focus restoration, and
+   reduced-motion primitives before route-specific animation is added.
+6. Ensure paste bodies and fragment keys cannot enter local storage, route
+   telemetry, global error data, or persisted UI state.
+7. Do not publish corner-menu destinations until their corresponding public
+   information or policy pages exist in Step 17.
+
+### Verification gate
+
+- Both themes meet the agreed token and contrast baseline.
+- Keyboard users can operate the shell controls and dismiss the corner menu.
+- Theme preference persists without any paste body or key persistence.
+- Route/API separation preserves API errors and never sends fragments in
+  client-created API requests.
+
+## 12. Paste Creation and Link Sharing
+
+### Tasks
+
+1. Implement Title and language controls against the existing version-1
+   payload; do not add creator metadata without a separate contract change.
+2. Integrate CodeMirror 6 with a plaintext fallback, size counter, and
+   keyboard-complete editor behaviour.
+3. Implement creation validation and the `View once`, `1 hour`, `1 day`, and
+   `3 days` controls. Map `View once` to burn-after-read plus the bounded
+   `72h` safety expiry.
+4. Implement the off-by-default encryption toggle and its local privacy
+   explanation.
+5. Encrypt locally before submit when selected, construct the sharing URL with
+   the fragment locally, and keep the key out of requests and persistence.
+6. Disable duplicate submission; expose validating, encrypting, creating, and
+   field-level failure states.
+7. On success, copy the complete sharing URL, navigate directly to `/{slug}`,
+   and show a minimal viewer-side confirmation. Handle clipboard failure with
+   a retryable copy action without losing the successful paste.
+
+### Verification gate
+
+- Plaintext and encrypted creation produce the expected API payloads and
+  canonical sharing URLs.
+- Encrypted URLs copy with their fragment while visible UI does not expose the
+  key by default.
+- `Ctrl/Cmd + Enter`, validation, size limits, duplicate-submit prevention,
+  and clipboard failure are covered by browser tests.
+- Network inspection confirms neither key nor plaintext leaks beyond the
+  expected encrypted envelope.
+
+## 13. Paste Viewer and Public States
+
+### Tasks
+
+1. Implement normal-paste loading, safe text/token rendering, and neutral
+   skeleton lines.
+2. Implement viewer title, line numbers, `Copy`, `Wrap`, search, `Raw`, and
+   `New paste` actions.
+3. Use the server raw endpoint only for active non-burn plaintext pastes.
+4. Show the compact view-once warning and one-hour relative expiry treatment;
+   do not clutter ordinary one-day views with persistent expiry copy.
+5. Preserve `/{slug}` and render the same minimal unavailable state for
+   missing, expired, deleted, and consumed pastes.
+6. Add calm retryable loading, rate-limit, and temporary-service notices that
+   do not disclose lifecycle information or displace the entire application.
+
+### Verification gate
+
+- Plaintext viewing, copy, wrapping, search, raw output, and new-paste
+  navigation pass browser tests.
+- Missing, expired, deleted, and consumed server responses are
+  indistinguishable in the UI and retain the requested URL.
+- Malicious paste corpus remains inert and a 10,000-line paste remains usable
+  on the supported desktop-browser baseline.
+
+## 14. Encrypted Viewer and Burn Gates
+
+### Tasks
+
+1. Parse and validate a fragment key locally; prompt with `KeyGate` only when
+   an encrypted paste has no usable fragment.
+2. Accept a raw key or complete encrypted URL, trap and restore focus safely,
+   and present one generic local decryption failure.
+3. Decrypt and validate payloads locally before rendering. Generate encrypted
+   raw output only as a local browser Blob from successfully decrypted text.
+4. Implement the non-consuming `BurnGate`, deliberate consume request, and
+   pending/retry/unavailable states.
+5. For encrypted burn pastes, warn that key correctness cannot be confirmed
+   before consumption; accept only key-format validation before reveal.
+6. Add the optional reduced-motion-safe sand-dissolve reveal only after a
+   successful consume and successful local decode/decryption.
+
+### Verification gate
+
+- Missing-key, raw-key, full-URL key, wrong-key, malformed-envelope, and
+  modified-ciphertext journeys pass browser tests without key persistence.
+- Encrypted raw output never calls a server plaintext/raw endpoint.
+- Burn GET never exposes or consumes content; one reveal succeeds and all
+  concurrent/later attempts become the generic unavailable state.
+- Keyboard focus, Enter submission, Escape handling, and reduced-motion
+  behavior pass the agreed accessibility baseline.
+
+## 15. Frontend Integration and Quality Gate
+
+### Tasks
+
+1. Complete end-to-end journeys across create, viewer, unavailable, encrypted,
+   missing-key, wrong-key, expiry, and burn states.
+2. Add automated accessibility checks and keyboard-only coverage for every
+   interaction state, including full-screen gates and notifications.
+3. Test light/dark themes, narrow screens, long lines, large payloads,
+   clipboard failure, and reduced-motion presentation.
+4. Run the hostile-content corpus against both plaintext and locally
+   decrypted rendering paths.
+5. Audit browser storage, request targets, error-reporting hooks, and logs for
+   body/key leakage.
+
+### Verification gate
+
+- Complete plaintext, encrypted, missing-key, wrong-key, expiry, and burn
+  journeys pass browser tests.
+- Fragment keys are absent from server/network logs and browser persistence.
+- Malicious paste corpus cannot execute.
+- Keyboard-only, automated accessibility, responsive, contrast, and
+  reduced-motion checks pass the agreed baseline.
+
+## 16. Embedded Frontend and Container
 
 ### Tasks
 
@@ -259,6 +391,8 @@ Visual design is intentionally open.
 5. Add container health check.
 6. Provide Docker/Podman and Compose examples.
 7. Test amd64/arm64 build targets where CI supports them.
+8. Provide a first-run and restart self-host guide; defer backup/restore
+   procedures to Step 17.
 
 ### Verification gate
 
@@ -267,7 +401,7 @@ Visual design is intentionally open.
 - Missing volume/config produces clear safe behaviour.
 - Container stops gracefully and passes health checks.
 
-## 13. Security and Operational Hardening
+## 17. Security and Operational Hardening
 
 ### Tasks
 
@@ -279,7 +413,8 @@ Visual design is intentionally open.
 6. Implement protected operator delete and creation-disable control.
 7. Add aggregate metrics and alerts.
 8. Create backup/restore script or documented command and test it.
-9. Create privacy, acceptable-use, security, and abuse-contact pages.
+9. Create Why 0xbin, Who made this, GitHub, privacy, acceptable-use, terms,
+   security, and abuse-contact destinations, then wire the corner menu.
 
 ### Verification gate
 
@@ -289,7 +424,7 @@ Visual design is intentionally open.
 - Operator can stop creation and delete a reported slug without database shell access.
 - No critical known dependency issue remains unexplained.
 
-## 14. Public Beta
+## 18. Public Beta
 
 ### Tasks
 

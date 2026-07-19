@@ -25,7 +25,7 @@ If documents conflict, `spec.md` wins. Do not silently change a settled decision
 - SQLite is the only initial database for hosted and self-hosted deployments.
 - Expiry is enforced in read/consume queries; the cleanup worker only reclaims storage.
 - Burn-after-read requires explicit reveal and atomic consume; a GET never burns content.
-- Frontend visual design is not yet settled. Implement specified behaviour without inventing a rigid visual identity.
+- Follow `docs/FRONTEND.md` for the MVP visual and interaction baseline; do not change the settled behaviour or security semantics it records.
 - Keep the initial deployment to one Go service, one SQLite database, and an embedded frontend.
 - Do not introduce Redis, PostgreSQL, Kubernetes, accounts, or file uploads unless the relevant specification changes first.
 
@@ -97,4 +97,3 @@ Security-critical changes require negative tests, including wrong keys, malforme
 - Update `docs/TECHNICAL_DESIGN.md` when APIs, schema, components, or security boundaries change.
 - Update `docs/IMPLEMENTATION_PLAN.md` and `docs/PHASES.md` when sequencing or scope changes.
 - Keep this file concise and focused on durable agent behaviour. Do not duplicate the full specification here.
-

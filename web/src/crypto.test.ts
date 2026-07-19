@@ -46,8 +46,11 @@ describe("browser crypto", () => {
 
   it("encrypts with a 256-bit key and unique 96-bit IV", async () => {
     const encrypted = await encryptPayload(unicodePayload);
+    const second = await encryptPayload(unicodePayload);
     expect(decodeBase64url(encrypted.key)).toHaveLength(32);
     expect(decodeBase64url(encrypted.envelope.iv)).toHaveLength(12);
+    expect(second.key).not.toBe(encrypted.key);
+    expect(second.envelope.iv).not.toBe(encrypted.envelope.iv);
     await expect(
       decryptPayload(encrypted.envelope, encrypted.key),
     ).resolves.toEqual(unicodePayload);
@@ -83,6 +86,51 @@ describe("browser crypto", () => {
     expect(() => keyFromFragmentOrURL("AAECAw")).toThrow(DecryptionError);
   });
 
+  it.each(["", "#", "not/base64", "https://%", "https://0xbin.app/paste"])(
+    "reports malformed key input generically: %s",
+    (input) => {
+      expect(() => keyFromFragmentOrURL(input)).toThrow(DecryptionError);
+    },
+  );
+
+  it.each([
+    {
+      name: "unsupported algorithm",
+      envelope: { ...fixedEnvelope, algorithm: "other" },
+    },
+    { name: "malformed IV", envelope: { ...fixedEnvelope, iv: "not/base64" } },
+    { name: "short IV", envelope: { ...fixedEnvelope, iv: "AAECAw" } },
+    {
+      name: "malformed ciphertext",
+      envelope: { ...fixedEnvelope, ciphertext: "not/base64" },
+    },
+    {
+      name: "truncated tag",
+      envelope: { ...fixedEnvelope, ciphertext: "AAECAw" },
+    },
+  ])("reports $name generically", async ({ envelope }) => {
+    await expect(
+      decryptPayload(envelope as CiphertextEnvelope, fixedKey),
+    ).rejects.toBeInstanceOf(DecryptionError);
+  });
+
+  it.each([
+    { name: "non-JSON plaintext", plaintext: "not JSON" },
+    {
+      name: "unsupported plaintext version",
+      plaintext: JSON.stringify({ ...unicodePayload, version: 2 }),
+    },
+    {
+      name: "invalid plaintext shape",
+      plaintext: JSON.stringify({ ...unicodePayload, content: "" }),
+    },
+  ])("reports authenticated $name generically", async ({ plaintext }) => {
+    const envelope = await encryptTestPlaintext(plaintext);
+    await expect(decryptPayload(envelope, fixedKey)).rejects.toBeInstanceOf(
+      DecryptionError,
+    );
+  });
+
   it("keeps the key out of the constructed HTTP request", () => {
     const shareURL = withKeyFragment(
       "https://0xbin.app/quietbrightotter",
@@ -95,3 +143,30 @@ describe("browser crypto", () => {
     expect(destination.hash).toBe(`#${fixedKey}`);
   });
 });
+
+async function encryptTestPlaintext(
+  plaintext: string,
+): Promise<CiphertextEnvelope> {
+  const rawKey = decodeBase64url(fixedKey);
+  const iv = decodeBase64url(fixedEnvelope.iv);
+  const key = await crypto.subtle.importKey(
+    "raw",
+    rawKey as BufferSource,
+    { name: "AES-GCM" },
+    false,
+    ["encrypt"],
+  );
+  const ciphertext = new Uint8Array(
+    await crypto.subtle.encrypt(
+      { name: "AES-GCM", iv: iv as BufferSource },
+      key,
+      new TextEncoder().encode(plaintext),
+    ),
+  );
+  return {
+    version: encryptionVersion,
+    algorithm: encryptionAlgorithm,
+    iv: fixedEnvelope.iv,
+    ciphertext: encodeBase64url(ciphertext),
+  };
+}

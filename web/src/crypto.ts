@@ -118,17 +118,21 @@ export async function decryptPayload(
 // keyFromFragmentOrURL accepts a raw fragment key or a complete sharing URL;
 // callers keep its return value in page memory and never send it to an API.
 export function keyFromFragmentOrURL(input: string): string {
-  const value = input.trim();
-  const key = value.includes("://")
-    ? new URL(value).hash.slice(1)
-    : value.startsWith("#")
-      ? value.slice(1)
-      : value;
-  const decoded = decodeBase64url(key);
-  if (decoded.length !== keyBytes) {
+  try {
+    const value = input.trim();
+    const key = value.includes("://")
+      ? new URL(value).hash.slice(1)
+      : value.startsWith("#")
+        ? value.slice(1)
+        : value;
+    const decoded = decodeBase64url(key);
+    if (decoded.length !== keyBytes) {
+      throw new DecryptionError();
+    }
+    return key;
+  } catch {
     throw new DecryptionError();
   }
-  return key;
 }
 
 // withKeyFragment creates a share URL locally. URL fragments are not part of

@@ -10,11 +10,12 @@ type ExpiryPolicy struct {
 	allowed map[string]time.Duration
 }
 
-// DefaultExpiryPolicy permits the MVP's one-hour and one-day identifiers.
+// DefaultExpiryPolicy permits the MVP's one-hour, one-day, and three-day identifiers.
 func DefaultExpiryPolicy() ExpiryPolicy {
 	policy, err := NewExpiryPolicy(map[string]time.Duration{
 		"1h":  time.Hour,
 		"24h": 24 * time.Hour,
+		"72h": 72 * time.Hour,
 	})
 	if err != nil {
 		panic("default expiry policy is invalid: " + err.Error())
@@ -35,8 +36,8 @@ func NewExpiryPolicy(allowed map[string]time.Duration) (ExpiryPolicy, error) {
 		if duration <= 0 {
 			return ExpiryPolicy{}, fmt.Errorf("expiry duration for %q must be positive", identifier)
 		}
-		if duration > 24*time.Hour {
-			return ExpiryPolicy{}, fmt.Errorf("expiry duration for %q must not exceed 24h", identifier)
+		if duration > 72*time.Hour {
+			return ExpiryPolicy{}, fmt.Errorf("expiry duration for %q must not exceed 72h", identifier)
 		}
 		copy[identifier] = duration
 	}

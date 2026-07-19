@@ -3,7 +3,7 @@
 **Status:** Living specification  
 **Domain:** `0xbin.app`  
 **Product model:** Public hosted service and open-source self-hosted software  
-**Last updated:** 2026-07-13
+**Last updated:** 2026-07-19
 
 This file defines the settled product and architecture boundaries. Detailed product requirements, implementation design, sequencing, and repository instructions live in `docs/PRD.md`, `docs/TECHNICAL_DESIGN.md`, `docs/IMPLEMENTATION_PLAN.md`, `docs/PHASES.md`, and `AGENTS.md`.
 
@@ -31,9 +31,9 @@ Do not describe the entire service as zero-knowledge or private. Those propertie
 | Path suffix, digits, separators | None |
 | Database | SQLite for hosted and self-hosted deployments initially |
 | Backend | Go |
-| Frontend | React + TypeScript + Vite; visual design remains open |
+| Frontend | React + TypeScript + Vite; MVP design baseline in `docs/FRONTEND.md` |
 | Packaging | One Go service with embedded frontend and one SQLite volume |
-| Expiry | 1 hour, 1 day, burn after one deliberate read; bounded longer option may be added later |
+| Expiry | 1 hour, 1 day, 3 days, or burn after one deliberate read; unopened burn pastes expire after 3 days |
 | Redis/PostgreSQL | Not part of the initial design |
 | Maximum paste size | 1 MiB initially; raise only after benchmarks |
 | Public paste index | None |
@@ -225,12 +225,18 @@ Before public launch, provide an abuse contact, administrative paste deletion, e
 
 ## 8. Frontend Behaviour
 
-Visual style, component appearance, colors, spacing, and responsive layout are intentionally undecided.
+The MVP interaction and visual baseline is defined in
+[`docs/FRONTEND.md`](docs/FRONTEND.md). That document may refine
+implementation detail without changing the security and lifecycle behaviour
+settled here.
 
 Required behaviours:
 
 - Create page with editor, optional title, language selection, expiry, burn option, Generate action, and encryption toggle near Generate.
-- Creation result with copyable URL and expiry information.
+- Successful creation copies the sharing URL and opens the viewer with a
+  minimal confirmation. The viewer shows lifetime information for view-once
+  and one-hour pastes; ordinary one-day views do not need persistent expiry
+  copy.
 - Plaintext viewer with copy, raw/download, search, and wrap/no-wrap.
 - Encrypted viewer that reads the fragment key or prompts when missing.
 - Burn confirmation page that does not fetch content until deliberate reveal.

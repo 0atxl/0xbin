@@ -93,7 +93,7 @@ components:
           oneOf:
             - $ref: '#/components/schemas/PlaintextPayload'
             - $ref: '#/components/schemas/CiphertextEnvelope'
-        expiry: { type: string, enum: ['1h', '24h'] }
+        expiry: { type: string, enum: ['1h', '24h', '72h'] }
         burn_after_read: { type: boolean, default: false }
     CreatePasteResponse:
       type: object

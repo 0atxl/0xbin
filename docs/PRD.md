@@ -75,7 +75,8 @@ Developers and technical users frequently need to share a block of text, code, l
 4. Encryption remains off.
 5. User generates the paste.
 6. Service returns a clean three-word URL.
-7. User copies or opens the URL.
+7. Browser copies the canonical sharing URL, navigates directly to the new
+   paste viewer, and gives a minimal copy-status confirmation.
 
 ### 6.2 Create an encrypted paste
 
@@ -84,7 +85,8 @@ Developers and technical users frequently need to share a block of text, code, l
 3. Browser encrypts title, language, and content locally.
 4. Server stores only the ciphertext envelope.
 5. Browser appends the locally held key as a fragment to the returned URL.
-6. User copies the complete encrypted URL.
+6. Browser copies the complete encrypted URL, including its locally appended
+   key fragment, then navigates directly to the new paste viewer.
 
 ### 6.3 Open an encrypted paste
 
@@ -116,7 +118,7 @@ Requirements use `FR-<area>-<number>` identifiers.
 - **FR-CREATE-01:** A user can create a paste without an account.
 - **FR-CREATE-02:** Content is required; title and language are optional.
 - **FR-CREATE-03:** The hosted service accepts at most 1 MiB of decoded paste content initially.
-- **FR-CREATE-04:** Expiry options include 1 hour and 1 day.
+- **FR-CREATE-04:** Expiry options include View once, 1 hour, 1 day, and 3 days. View once uses burn-after-read and a 3-day unopened-paste safety expiry.
 - **FR-CREATE-05:** User may select burn after one deliberate read.
 - **FR-CREATE-06:** Encryption is visible near Generate and off by default.
 - **FR-CREATE-07:** Server, not client, generates slug and expiry timestamp.
@@ -187,7 +189,8 @@ Requirements use `FR-<area>-<number>` identifiers.
 
 ## 8. Frontend Behaviour Requirements
 
-This section defines behaviour, not visual design.
+This section defines behaviour, not visual design. The visual and interaction
+baseline is documented in [`FRONTEND.md`](FRONTEND.md).
 
 ### 8.1 Creation state
 
@@ -196,6 +199,9 @@ This section defines behaviour, not visual design.
 - Keyboard-accessible controls and logical focus order
 - Encryption explanation that says the key is part of the copied fragment URL and never sent to the server
 - Disable duplicate submission while a request is active
+- On success, copy the complete sharing URL when possible and navigate directly
+  to the new paste viewer; surface a minimal retryable notice if clipboard
+  access fails
 
 ### 8.2 Viewer state
 
@@ -203,6 +209,8 @@ This section defines behaviour, not visual design.
 - Copy success announced without relying only on color or animation
 - Key prompt traps focus correctly, closes safely, and never persists the key
 - Raw/download unavailable or clearly ciphertext-only for encrypted content
+- Generic unavailable state remains at the requested paste URL and does not
+  expose whether it was missing, expired, deleted, or consumed
 
 ### 8.3 Accessibility
 
@@ -260,4 +268,3 @@ Do not record paste bodies, titles, encryption keys, or user-level behavioural p
 - Should raw plaintext responses be enabled for burn-after-read pastes? Default answer: no.
 - Which browsers and mobile versions receive official support?
 - What final name should the later CLI use?
-
