@@ -101,5 +101,4 @@ describe("editor history", () => {
     ).toBe(true);
     expect(state.doc.toString()).toBe("he\tllo");
   });
-
 });
