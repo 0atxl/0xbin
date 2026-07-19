@@ -16,6 +16,10 @@ const webOrigin = `http://127.0.0.1:${webPort}`;
 const processes = [];
 const execFileAsync = promisify(execFile);
 
+function progress(message) {
+  console.log(`[e2e] ${message}`);
+}
+
 function start(command, args, options = {}) {
   const child = spawn(command, args, {
     cwd: root,
@@ -50,17 +54,23 @@ async function waitFor(url) {
 }
 
 async function stopAll() {
-  await Promise.all(
-    processes.map(
-      (child) =>
-        new Promise((resolve) => {
-          if (child.exitCode !== null) return resolve();
-          child.once("exit", resolve);
-          child.kill("SIGTERM");
-          setTimeout(() => child.kill("SIGKILL"), 2_000).unref();
-        }),
-    ),
-  );
+  progress("stopping test processes");
+  await Promise.all(processes.map(stopProcess));
+}
+
+async function stopProcess(child) {
+  if (child.exitCode !== null) return;
+
+  const exited = new Promise((resolve) => child.once("exit", resolve));
+  child.kill("SIGTERM");
+  await Promise.race([exited, delay(2_000)]);
+  if (child.exitCode !== null) return;
+
+  child.kill("SIGKILL");
+  await Promise.race([exited, delay(2_000)]);
+  if (child.exitCode === null) {
+    throw new Error(`Timed out stopping E2E child process ${child.pid}`);
+  }
 }
 
 async function createPaste(page, content, options = {}) {
@@ -87,6 +97,7 @@ const dataDir = await mkdtemp(join(tmpdir(), "0xbin-e2e-"));
 const binaryPath = join(dataDir, "0xbin");
 let browser;
 try {
+  progress("building Go server");
   await execFileAsync("go", ["build", "-o", binaryPath, "./cmd/0xbin"], {
     cwd: root,
   });
@@ -98,6 +109,7 @@ try {
     },
   });
   await waitFor(`${apiOrigin}/health/ready`);
+  progress("backend ready");
   start(
     "npm",
     [
@@ -116,7 +128,9 @@ try {
     },
   );
   await waitFor(webOrigin);
+  progress("frontend ready");
 
+  progress("launching browser");
   browser = await chromium.launch({
     headless: true,
     executablePath:
@@ -128,6 +142,7 @@ try {
   });
   const page = await context.newPage();
 
+  progress("checking create screen and responsive layout");
   await page.goto(webOrigin);
   await assertNoSeriousAccessibilityIssues(page, "create screen");
   await page.emulateMedia({ reducedMotion: "reduce" });
@@ -197,6 +212,7 @@ try {
     "validation should use the notification stack instead of bottom text",
   );
 
+  progress("checking plaintext paste and search");
   const plaintextURL = await createPaste(page, "package main\npackage docs\n", {
     title: "main.go",
     lifetime: "1h",
@@ -289,6 +305,7 @@ try {
   await assertFocused(page.getByLabel("Search paste"));
   await page.setViewportSize({ width: 1280, height: 900 });
 
+  progress("checking encrypted paste flow");
   const secret = "client-side secret must not reach the server";
   const requests = [];
   page.on("request", (request) => {
@@ -359,6 +376,7 @@ try {
   await page.getByRole("button", { name: "Decrypt" }).click();
   await expectVisible(page, secret);
 
+  progress("checking burn-after-read flow");
   const burnURL = await createPaste(page, "destroy me", { lifetime: "Once" });
   await expectVisible(page, "View-once paste");
   await page.getByRole("button", { name: "Reveal and destroy" }).click();
@@ -369,6 +387,7 @@ try {
   await page.goto(`${webOrigin}/quietbrightotter`);
   await expectVisible(page, "Paste unavailable");
 
+  progress("checking large and hostile paste handling");
   const largeContent = Array.from(
     { length: 10_000 },
     (_, index) => `${String(index + 1).padStart(5, "0")} ${"x".repeat(97)}`,
@@ -401,6 +420,7 @@ try {
     "paste content must not execute as HTML or script",
   );
 
+  progress("checking error handling and clipboard fallback");
   await expectCreateFailure(
     page,
     429,
@@ -429,7 +449,9 @@ try {
   );
   await clipboardFailureContext.close();
   await context.close();
+  progress("all browser journeys passed");
 } finally {
+  progress("cleaning up");
   await browser?.close();
   await stopAll();
   await rm(dataDir, { recursive: true, force: true });
