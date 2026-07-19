@@ -59,18 +59,22 @@ async function stopAll() {
 }
 
 async function stopProcess(child) {
-  if (child.exitCode !== null) return;
+  if (hasExited(child)) return;
 
   const exited = new Promise((resolve) => child.once("exit", resolve));
   child.kill("SIGTERM");
   await Promise.race([exited, delay(2_000)]);
-  if (child.exitCode !== null) return;
+  if (hasExited(child)) return;
 
   child.kill("SIGKILL");
   await Promise.race([exited, delay(2_000)]);
-  if (child.exitCode === null) {
+  if (!hasExited(child)) {
     throw new Error(`Timed out stopping E2E child process ${child.pid}`);
   }
+}
+
+function hasExited(child) {
+  return child.exitCode !== null || child.signalCode !== null;
 }
 
 async function createPaste(page, content, options = {}) {
