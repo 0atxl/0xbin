@@ -5,11 +5,9 @@
 
 Each step ends with a verification gate. Do not begin a dependent step until its gate passes. Commit boundaries may follow steps or coherent substeps; avoid one enormous final commit.
 
-**Current implementation status (2026-07-19):** Steps 0–16 are implemented.
-The self-hosted packaging gate has passed. The viewer and self-host scope
-choices are documented in [`FRONTEND.md`](FRONTEND.md); the remaining Phase 3
-release item is the required quiet one-hour lifetime treatment in Step 13.
-Step 17, hosted security and operational hardening, has not begun.
+**Current implementation status (2026-07-19):** Steps 0–16 are complete and
+their verification gates pass. The self-hosted package is ready to ship. Step
+17, hosted security and operational hardening, has not begun.
 
 ## 0. Repository Baseline
 

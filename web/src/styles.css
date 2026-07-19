@@ -535,6 +535,7 @@ svg {
 }
 
 .viewer-identity {
+  position: relative;
   display: flex;
   align-items: baseline;
   min-width: 0;
@@ -547,6 +548,12 @@ svg {
   font-size: 13px;
   font-weight: 650;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.viewer-expiry {
+  color: var(--text-muted);
+  font-size: 11px;
   white-space: nowrap;
 }
 
@@ -1000,6 +1007,15 @@ svg {
   .viewer-identity h1 {
     font-size: 16px;
     text-align: center;
+  }
+
+  .viewer-identity:has(.viewer-expiry) h1 {
+    max-width: calc(100% - 126px);
+  }
+
+  .viewer-expiry {
+    position: absolute;
+    right: 16px;
   }
 
   .viewer-actions {

@@ -1,8 +1,8 @@
 # 0xbin Frontend Design and Implementation Plan
 
-**Status:** Implemented self-host direction for Steps 11–16  
-**Current release note:** The quiet one-hour viewer lifetime treatment remains
-an outstanding Phase 3 item.  
+**Status:** Implemented self-host direction for Steps 11–16
+**Current release note:** One-hour pastes show quiet relative expiry support in
+the viewer.
 **Sources of truth:** `../spec.md`, `PRD.md`, `TECHNICAL_DESIGN.md`, `IMPLEMENTATION_PLAN.md`, and `../AGENTS.md`
 
 This document settles the visual and interaction direction for the 0xbin MVP
@@ -377,9 +377,10 @@ remain available.
 ### Lifetime display
 
 Show the selected lifetime as quiet supporting information rather than a large
-badge. View-once pastes must make their destructive behaviour prominent before
-reveal. Timed pastes may display a human-readable relative expiry without
-running a distracting second-by-second countdown.
+badge. One-hour pastes show `Expires in about an hour`; ordinary one-day and
+three-day views remain uncluttered. View-once pastes must make their destructive
+behaviour prominent before reveal. Do not run a distracting second-by-second
+countdown.
 
 ## 8. Encrypted Key Gate
 

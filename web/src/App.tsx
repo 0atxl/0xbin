@@ -788,6 +788,7 @@ function PasteViewer({
   const payload =
     paste && "payload" in paste ? paste.payload : decryptedPayload;
   const matchCount = payload ? countMatches(payload.content, query) : 0;
+  const oneHourPaste = paste ? isOneHourPaste(paste) : false;
 
   function focusSearch() {
     setSearchOpen(true);
@@ -982,6 +983,9 @@ function PasteViewer({
               Paste
             </h1>
           )}
+          {oneHourPaste ? (
+            <span className="viewer-expiry">Expires in about an hour</span>
+          ) : null}
         </div>
         <div className="viewer-actions" aria-label="Paste actions">
           {searchOpen || searchClosing ? (
@@ -1194,6 +1198,15 @@ function countMatches(text: string, query: string): number {
     match = lowerText.indexOf(lowerQuery, match + query.length);
   }
   return count;
+}
+
+function isOneHourPaste(
+  paste: RetrievedPaste | RetrievedEncryptedPaste,
+): boolean {
+  const createdAt = Date.parse(paste.createdAt);
+  const expiresAt = Date.parse(paste.expiresAt);
+  const lifetime = expiresAt - createdAt;
+  return lifetime >= 59 * 60 * 1000 && lifetime <= 61 * 60 * 1000;
 }
 
 function matchAt(content: string, query: string, index: number) {
