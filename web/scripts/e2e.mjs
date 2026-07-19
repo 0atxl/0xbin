@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { chromium } from "@playwright/test";
+import AxeBuilder from "@axe-core/playwright";
 
 const root = new URL("../..", import.meta.url);
 const apiPort = 18080;
@@ -114,13 +115,37 @@ try {
   });
   const page = await context.newPage();
 
+  await page.goto(webOrigin);
+  await assertNoSeriousAccessibilityIssues(page, "create screen");
+
   const plaintextURL = await createPaste(page, "package main\n", {
     title: "main.go",
     lifetime: "1h",
   });
   await expectVisible(page, "main.go");
   await expectVisible(page, "package main");
+  await assertNoSeriousAccessibilityIssues(page, "plaintext viewer");
   assert.match(new URL(plaintextURL).pathname, /^\/[a-z]+$/);
+
+  await createPaste(page, "three-day paste", { lifetime: "3d" });
+  await expectVisible(page, "three-day paste");
+
+  await page.goto(plaintextURL);
+  await page.keyboard.press("Control+F");
+  await page.getByLabel("Search paste").fill("package");
+  await page.keyboard.press("Escape");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expectVisible(page, "main.go");
+  await page.getByRole("button", { name: "Search" }).click();
+  await page.getByLabel("Search paste").waitFor({ state: "visible" });
+  await assert.equal(
+    await page
+      .getByLabel("Search paste")
+      .evaluate((input) => input.matches(":focus")),
+    true,
+    "search input should be focused after opening",
+  );
+  await page.setViewportSize({ width: 1280, height: 900 });
 
   const secret = "client-side secret must not reach the server";
   const requests = [];
@@ -197,6 +222,23 @@ async function expectVisible(page, text) {
     .getByText(text, { exact: false })
     .first()
     .waitFor({ state: "visible" });
+}
+
+async function assertNoSeriousAccessibilityIssues(page, screen) {
+  const results = await new AxeBuilder({ page })
+    .withTags(["wcag2a", "wcag2aa"])
+    .analyze();
+  const serious = results.violations.filter(
+    (violation) =>
+      violation.impact === "serious" || violation.impact === "critical",
+  );
+  assert.deepEqual(
+    serious,
+    [],
+    `${screen} has serious accessibility violations: ${serious
+      .map((violation) => violation.id)
+      .join(", ")}`,
+  );
 }
 
 console.log("Browser journeys passed.");

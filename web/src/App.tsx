@@ -295,7 +295,6 @@ function CreationCanvas({
     }
     const request = lifetimeRequest(draft.lifetime);
     setSubmitting(true);
-    onStatus("Creating paste…");
     try {
       const created = draft.encrypted
         ? await createEncryptedDraft(createPasteAPI(), draft, request)
@@ -716,12 +715,16 @@ function PasteViewer({
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "f") {
         event.preventDefault();
         setSearchOpen(true);
-        window.setTimeout(() => searchRef.current?.focus(), 0);
       }
     };
     window.addEventListener("keydown", openSearch);
     return () => window.removeEventListener("keydown", openSearch);
   }, []);
+
+  useEffect(() => {
+    if (!searchOpen) return;
+    searchRef.current?.focus();
+  }, [searchOpen]);
 
   async function copyContent() {
     const payload =
