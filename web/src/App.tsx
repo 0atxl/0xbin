@@ -19,6 +19,7 @@ import {
   keymap,
   lineNumbers,
   placeholder,
+  type ViewUpdate,
 } from "@codemirror/view";
 import { closeBrackets, closeBracketsKeymap } from "@codemirror/autocomplete";
 import {
@@ -633,7 +634,7 @@ function CodeEditor({
               ...closeBracketsKeymap,
               ...defaultKeymap,
             ]),
-            EditorView.updateListener.of((update) => {
+            EditorView.updateListener.of((update: ViewUpdate) => {
               if (update.docChanged) {
                 onChangeRef.current(update.state.doc.toString());
               }
