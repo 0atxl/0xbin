@@ -39,6 +39,12 @@ export type PlaintextPasteRequest = {
   burnAfterRead: boolean;
 };
 
+export type EncryptedPasteRequest = {
+  envelope: CiphertextEnvelope;
+  expiry: "1h" | "24h" | "72h";
+  burnAfterRead: boolean;
+};
+
 export type CreatedPaste = {
   slug: string;
   url: string;
@@ -52,9 +58,23 @@ export type PlaintextPayload = {
   content: string;
 };
 
+export type CiphertextEnvelope = {
+  version: 1;
+  algorithm: "A256GCM";
+  iv: string;
+  ciphertext: string;
+};
+
 export type RetrievedPaste = {
   slug: string;
   payload: PlaintextPayload;
+  expiresAt: string;
+  createdAt: string;
+};
+
+export type RetrievedEncryptedPaste = {
+  slug: string;
+  envelope: CiphertextEnvelope;
   expiresAt: string;
   createdAt: string;
 };
@@ -116,10 +136,32 @@ export async function createPlaintextPaste(
   };
 }
 
+export async function createEncryptedPaste(
+  api: PasteAPI,
+  request: EncryptedPasteRequest,
+): Promise<CreatedPaste> {
+  const response = await api.request<unknown>("/api/v1/pastes", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      mode: "encrypted",
+      payload: request.envelope,
+      expiry: request.expiry,
+      burn_after_read: request.burnAfterRead,
+    }),
+  });
+  if (!isCreatedPaste(response)) throw new PasteAPIError(0, "network_error");
+  return {
+    slug: response.slug,
+    url: response.url,
+    expiresAt: response.expires_at,
+  };
+}
+
 export async function getPaste(
   api: PasteAPI,
   slug: string,
-): Promise<RetrievedPaste | BurnMetadata> {
+): Promise<RetrievedPaste | RetrievedEncryptedPaste | BurnMetadata> {
   const response = await api.request<unknown>(
     `/api/v1/pastes/${encodeURIComponent(slug)}`,
   );
@@ -127,6 +169,14 @@ export async function getPaste(
     return {
       burnAfterRead: true,
       isEncrypted: response.is_encrypted,
+    };
+  }
+  if (isRetrievedEncryptedPaste(response)) {
+    return {
+      slug: response.slug,
+      envelope: response.envelope,
+      expiresAt: response.expires_at,
+      createdAt: response.created_at,
     };
   }
   if (!isRetrievedPaste(response)) {
@@ -138,6 +188,33 @@ export async function getPaste(
     expiresAt: response.expires_at,
     createdAt: response.created_at,
   };
+}
+
+export async function consumePaste(
+  api: PasteAPI,
+  slug: string,
+): Promise<RetrievedPaste | RetrievedEncryptedPaste> {
+  const response = await api.request<unknown>(
+    `/api/v1/pastes/${encodeURIComponent(slug)}/consume`,
+    { method: "POST" },
+  );
+  if (isRetrievedEncryptedPaste(response)) {
+    return {
+      slug: response.slug,
+      envelope: response.envelope,
+      expiresAt: response.expires_at,
+      createdAt: response.created_at,
+    };
+  }
+  if (isRetrievedPaste(response)) {
+    return {
+      slug: response.slug,
+      payload: response.payload,
+      expiresAt: response.expires_at,
+      createdAt: response.created_at,
+    };
+  }
+  throw new PasteAPIError(0, "network_error");
 }
 
 async function request(
@@ -283,5 +360,45 @@ function isRetrievedPaste(value: unknown): value is {
     typeof payload.language === "string" &&
     "content" in payload &&
     typeof payload.content === "string"
+  );
+}
+
+function isRetrievedEncryptedPaste(value: unknown): value is {
+  slug: string;
+  envelope: CiphertextEnvelope;
+  is_encrypted: true;
+  burn_after_read: false;
+  expires_at: string;
+  created_at: string;
+} {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    !("envelope" in value) ||
+    typeof value.envelope !== "object" ||
+    value.envelope === null
+  ) {
+    return false;
+  }
+  const envelope = value.envelope;
+  return (
+    "slug" in value &&
+    typeof value.slug === "string" &&
+    "is_encrypted" in value &&
+    value.is_encrypted === true &&
+    "burn_after_read" in value &&
+    value.burn_after_read === false &&
+    "expires_at" in value &&
+    typeof value.expires_at === "string" &&
+    "created_at" in value &&
+    typeof value.created_at === "string" &&
+    "version" in envelope &&
+    envelope.version === 1 &&
+    "algorithm" in envelope &&
+    envelope.algorithm === "A256GCM" &&
+    "iv" in envelope &&
+    typeof envelope.iv === "string" &&
+    "ciphertext" in envelope &&
+    typeof envelope.ciphertext === "string"
   );
 }

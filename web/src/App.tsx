@@ -17,12 +17,22 @@ import {
 import { tags } from "@lezer/highlight";
 import {
   createPasteAPI,
+  consumePaste,
+  createEncryptedPaste,
   createPlaintextPaste,
   getPaste,
   PasteAPIError,
   type CreatedPaste,
+  type RetrievedEncryptedPaste,
   type RetrievedPaste,
 } from "./api";
+import {
+  decryptPayload,
+  encryptPayload,
+  keyFromFragmentOrURL,
+  withKeyFragment,
+  type PlaintextPayload as EncryptedPlaintextPayload,
+} from "./crypto";
 import {
   lifetimeRequest,
   maxPasteBytes,
@@ -100,6 +110,10 @@ export function App() {
     saveTheme(localStorage, theme);
   }, [theme]);
 
+  useEffect(() => {
+    if (statuses.length === 0) setNotificationsPaused(false);
+  }, [statuses.length]);
+
   useEffect(
     () => () => {
       if (themeTransitionTimeout.current !== undefined) {
@@ -163,7 +177,8 @@ export function App() {
     showStatus(
       copied ? "Link copied" : "Paste created — copy the link manually",
     );
-    navigate(new URL(created.url).pathname);
+    const destination = new URL(created.url);
+    navigate(destination.pathname + destination.hash);
   }
 
   async function retryCopy() {
@@ -278,21 +293,19 @@ function CreationCanvas({
       onStatus("Fix the highlighted fields");
       return;
     }
-    if (draft.encrypted) {
-      onStatus("Encrypted creation arrives in the next security slice");
-      return;
-    }
     const request = lifetimeRequest(draft.lifetime);
     setSubmitting(true);
     onStatus("Creating paste…");
     try {
-      const created = await createPlaintextPaste(createPasteAPI(), {
-        title: draft.title,
-        language: draft.language,
-        content: draft.content,
-        expiry: request.expiry,
-        burnAfterRead: request.burnAfterRead,
-      });
+      const created = draft.encrypted
+        ? await createEncryptedDraft(createPasteAPI(), draft, request)
+        : await createPlaintextPaste(createPasteAPI(), {
+            title: draft.title,
+            language: draft.language,
+            content: draft.content,
+            expiry: request.expiry,
+            burnAfterRead: request.burnAfterRead,
+          });
       await onCreated(created);
     } catch (error) {
       onStatus(createFailureMessage(error));
@@ -402,6 +415,25 @@ function CreationCanvas({
       </footer>
     </main>
   );
+}
+
+async function createEncryptedDraft(
+  api: ReturnType<typeof createPasteAPI>,
+  draft: CreateDraft,
+  request: ReturnType<typeof lifetimeRequest>,
+): Promise<CreatedPaste> {
+  const encrypted = await encryptPayload({
+    version: 1,
+    title: draft.title,
+    language: draft.language,
+    content: draft.content,
+  });
+  const created = await createEncryptedPaste(api, {
+    envelope: encrypted.envelope,
+    expiry: request.expiry,
+    burnAfterRead: request.burnAfterRead,
+  });
+  return { ...created, url: withKeyFragment(created.url, encrypted.key) };
 }
 
 function LanguageMenu({
@@ -522,7 +554,7 @@ function CodeEditor({
           doc: value,
           extensions: [
             lineNumbers(),
-            placeholder("Paste text or code here…"),
+            placeholder("Write text or code here…"),
             closeBrackets(),
             indentOnInput(),
             editorHistoryExtensions,
@@ -591,7 +623,7 @@ function CodeEditor({
       <textarea
         className="editor-fallback"
         aria-label="Paste content"
-        placeholder="Paste text or code here…"
+        placeholder="Write text or code here…"
         value={value}
         onChange={(event) => onChange(event.target.value)}
         onKeyDown={(event) => {
@@ -620,10 +652,18 @@ function PasteViewer({
   onStatus: (message: string) => void;
   onNewPaste: () => void;
 }) {
-  const [paste, setPaste] = useState<RetrievedPaste>();
+  const [paste, setPaste] = useState<
+    RetrievedPaste | RetrievedEncryptedPaste
+  >();
   const [state, setState] = useState<
-    "loading" | "ready" | "burn" | "unavailable" | "error"
+    "loading" | "ready" | "key" | "burn" | "unavailable" | "error"
   >("loading");
+  const [decryptedPayload, setDecryptedPayload] =
+    useState<EncryptedPlaintextPayload>();
+  const [keyInput, setKeyInput] = useState("");
+  const [keyError, setKeyError] = useState(false);
+  const [burnEncrypted, setBurnEncrypted] = useState(false);
+  const [consuming, setConsuming] = useState(false);
   const [wrap, setWrap] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -639,11 +679,26 @@ function PasteViewer({
     getPaste(createPasteAPI(), slug)
       .then((result) => {
         if ("burnAfterRead" in result) {
+          setBurnEncrypted(result.isEncrypted);
           setState("burn");
           return;
         }
         setPaste(result);
-        setState("ready");
+        if (!("envelope" in result)) {
+          setState("ready");
+          return;
+        }
+        try {
+          const key = keyFromFragmentOrURL(window.location.hash);
+          void decryptPayload(result.envelope, key)
+            .then((payload) => {
+              setDecryptedPayload(payload);
+              setState("ready");
+            })
+            .catch(() => setState("key"));
+        } catch {
+          setState("key");
+        }
       })
       .catch((error: unknown) => {
         if (controller.signal.aborted) return;
@@ -669,9 +724,11 @@ function PasteViewer({
   }, []);
 
   async function copyContent() {
-    if (!paste) return;
+    const payload =
+      paste && "payload" in paste ? paste.payload : decryptedPayload;
+    if (!payload) return;
     try {
-      await navigator.clipboard.writeText(paste.payload.content);
+      await navigator.clipboard.writeText(payload.content);
       onStatus("Paste copied");
     } catch {
       onStatus("Could not copy paste");
@@ -679,16 +736,48 @@ function PasteViewer({
   }
 
   function downloadContent() {
-    if (!paste) return;
-    const blob = new Blob([paste.payload.content], {
+    const payload =
+      paste && "payload" in paste ? paste.payload : decryptedPayload;
+    if (!paste || !payload) return;
+    const blob = new Blob([payload.content], {
       type: "text/plain;charset=utf-8",
     });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = safeFilename(paste.payload.title, paste.slug);
+    link.download = safeFilename(payload.title, paste.slug);
     link.click();
     URL.revokeObjectURL(url);
+  }
+
+  async function revealAndDestroy() {
+    let key: string | undefined;
+    if (burnEncrypted) {
+      try {
+        key = keyFromFragmentOrURL(keyInput || window.location.hash);
+      } catch {
+        setKeyError(true);
+        return;
+      }
+    }
+    setConsuming(true);
+    try {
+      const result = await consumePaste(createPasteAPI(), slug);
+      setPaste(result);
+      if ("envelope" in result) {
+        const payload = await decryptPayload(result.envelope, key!);
+        setDecryptedPayload(payload);
+      }
+      setState("ready");
+    } catch (error) {
+      setState(
+        error instanceof PasteAPIError && error.code === "not_found"
+          ? "unavailable"
+          : "error",
+      );
+    } finally {
+      setConsuming(false);
+    }
   }
 
   if (state === "loading") return <CenteredState label="Loading paste…" />;
@@ -715,20 +804,90 @@ function PasteViewer({
   }
   if (state === "burn") {
     return (
-      <CenteredState
-        label="View-once paste"
-        detail="Secure reveal is implemented in the next lifecycle slice."
-      />
+      <main className="centered-state">
+        <h1>View-once paste</h1>
+        <p>Opening this paste will permanently destroy the server copy.</p>
+        {burnEncrypted ? (
+          <>
+            <p>0xbin cannot verify this key before the paste is consumed.</p>
+            <label className="sr-only" htmlFor="burn-decryption-key">
+              Paste decryption key
+            </label>
+            <input
+              id="burn-decryption-key"
+              value={keyInput}
+              onChange={(event) => setKeyInput(event.target.value)}
+            />
+            {keyError ? (
+              <p role="alert">Unable to decrypt — check the key.</p>
+            ) : null}
+          </>
+        ) : null}
+        <button
+          type="button"
+          disabled={consuming}
+          onClick={() => void revealAndDestroy()}
+        >
+          {consuming ? "Revealing…" : "Reveal and destroy"}
+        </button>
+      </main>
+    );
+  }
+  if (state === "key") {
+    return (
+      <main className="centered-state">
+        <h1>Encrypted paste</h1>
+        <p>The key is processed only in this browser.</p>
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (!paste || !("envelope" in paste)) return;
+            let key: string;
+            try {
+              key = keyFromFragmentOrURL(keyInput);
+            } catch {
+              setKeyError(true);
+              return;
+            }
+            setKeyError(false);
+            setState("loading");
+            void decryptPayload(paste.envelope, key)
+              .then((payload) => {
+                setDecryptedPayload(payload);
+                setState("ready");
+              })
+              .catch(() => {
+                setKeyError(true);
+                setState("key");
+              });
+          }}
+        >
+          <label className="sr-only" htmlFor="decryption-key">
+            Paste decryption key
+          </label>
+          <input
+            id="decryption-key"
+            value={keyInput}
+            onChange={(event) => setKeyInput(event.target.value)}
+          />
+          <button type="submit">Decrypt</button>
+          {keyError ? (
+            <p role="alert">Unable to decrypt — check the key.</p>
+          ) : null}
+        </form>
+      </main>
     );
   }
   if (!paste) return null;
+  const payload = "payload" in paste ? paste.payload : decryptedPayload;
+  if (!payload) return <CenteredState label="Decrypting…" />;
 
   return (
     <main className="viewer-canvas" aria-labelledby="viewer-heading">
       <header className="viewer-toolbar">
         <div className="viewer-identity">
-          {paste.payload.title ? (
-            <h1 id="viewer-heading">{paste.payload.title}</h1>
+          {payload.title ? (
+            <h1 id="viewer-heading">{payload.title}</h1>
           ) : (
             <h1 className="sr-only" id="viewer-heading">
               Paste
@@ -758,16 +917,18 @@ function PasteViewer({
           <ActionButton label="Copy" onClick={() => void copyContent()}>
             <CopyIcon />
           </ActionButton>
-          <a
-            className="action-button"
-            href={`/api/v1/pastes/${encodeURIComponent(slug)}/raw`}
-            target="_blank"
-            rel="noreferrer"
-            aria-label="Open raw paste"
-            title="Raw"
-          >
-            <RawIcon />
-          </a>
+          {"payload" in paste ? (
+            <a
+              className="action-button"
+              href={`/api/v1/pastes/${encodeURIComponent(slug)}/raw`}
+              target="_blank"
+              rel="noreferrer"
+              aria-label="Open raw paste"
+              title="Raw"
+            >
+              <RawIcon />
+            </a>
+          ) : null}
           <ActionButton label="Download" onClick={downloadContent}>
             <DownloadIcon />
           </ActionButton>
@@ -791,7 +952,7 @@ function PasteViewer({
       ) : null}
 
       <div className={wrap ? "paste-content wrap" : "paste-content"}>
-        <ContentLines content={paste.payload.content} query={query} />
+        <ContentLines content={payload.content} query={query} />
       </div>
     </main>
   );

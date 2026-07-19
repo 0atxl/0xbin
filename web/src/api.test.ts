@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   apiURL,
+  createEncryptedPaste,
   createPasteAPI,
   createPlaintextPaste,
   getPaste,
@@ -65,6 +66,44 @@ describe("paste API client", () => {
     );
   });
 
+  it("serializes an encrypted envelope without a key", async () => {
+    const request = vi.fn().mockResolvedValue({
+      slug: "quietbrightotter",
+      url: "https://0xbin.app/quietbrightotter",
+      expires_at: "2026-07-22T12:00:00Z",
+    });
+    await createEncryptedPaste(
+      { request },
+      {
+        envelope: {
+          version: 1,
+          algorithm: "A256GCM",
+          iv: "AAECAwQFBgcICQoL",
+          ciphertext: "AAECAwQFBgcICQoLDA0ODw",
+        },
+        expiry: "24h",
+        burnAfterRead: false,
+      },
+    );
+    expect(request).toHaveBeenCalledWith(
+      "/api/v1/pastes",
+      expect.objectContaining({
+        body: JSON.stringify({
+          mode: "encrypted",
+          payload: {
+            version: 1,
+            algorithm: "A256GCM",
+            iv: "AAECAwQFBgcICQoL",
+            ciphertext: "AAECAwQFBgcICQoLDA0ODw",
+          },
+          expiry: "24h",
+          burn_after_read: false,
+        }),
+      }),
+    );
+    expect(request.mock.calls[0][1].body).not.toContain("key");
+  });
+
   it("decodes an active plaintext paste", async () => {
     const request = vi.fn().mockResolvedValue({
       slug: "quietbrightotter",
@@ -84,6 +123,28 @@ describe("paste API client", () => {
     ).resolves.toMatchObject({
       slug: "quietbrightotter",
       payload: { content: "package main" },
+    });
+  });
+
+  it("decodes an active encrypted paste envelope", async () => {
+    const request = vi.fn().mockResolvedValue({
+      slug: "quietbrightotter",
+      envelope: {
+        version: 1,
+        algorithm: "A256GCM",
+        iv: "AAECAwQFBgcICQoL",
+        ciphertext: "AAECAwQFBgcICQoLDA0ODw",
+      },
+      is_encrypted: true,
+      burn_after_read: false,
+      expires_at: "2026-07-22T12:00:00Z",
+      created_at: "2026-07-21T12:00:00Z",
+    });
+    await expect(
+      getPaste({ request }, "quietbrightotter"),
+    ).resolves.toMatchObject({
+      slug: "quietbrightotter",
+      envelope: { algorithm: "A256GCM" },
     });
   });
 });
