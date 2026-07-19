@@ -4,6 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { chromium } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
@@ -13,6 +14,10 @@ const apiPort = 18080;
 const webPort = 15173;
 const apiOrigin = `http://127.0.0.1:${apiPort}`;
 const webOrigin = `http://127.0.0.1:${webPort}`;
+const webDirectory = fileURLToPath(new URL("../", import.meta.url));
+const viteEntryPoint = fileURLToPath(
+  new URL("../node_modules/vite/bin/vite.js", import.meta.url),
+);
 const processes = [];
 const execFileAsync = promisify(execFile);
 
@@ -22,7 +27,7 @@ function progress(message) {
 
 function start(command, args, options = {}) {
   const child = spawn(command, args, {
-    cwd: root,
+    cwd: options.cwd ?? root,
     env: { ...process.env, ...options.env },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -115,19 +120,10 @@ try {
   await waitFor(`${apiOrigin}/health/ready`);
   progress("backend ready");
   start(
-    "npm",
-    [
-      "--prefix",
-      "web",
-      "run",
-      "dev",
-      "--",
-      "--host",
-      "127.0.0.1",
-      "--port",
-      `${webPort}`,
-    ],
+    process.execPath,
+    [viteEntryPoint, "--host", "127.0.0.1", "--port", `${webPort}`],
     {
+      cwd: webDirectory,
       env: { OXBIN_API_PROXY_TARGET: apiOrigin },
     },
   );
