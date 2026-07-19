@@ -235,6 +235,38 @@ try {
   await page.goto(`${webOrigin}/quietbrightotter`);
   await expectVisible(page, "Paste unavailable");
 
+  const largeContent = Array.from(
+    { length: 10_000 },
+    (_, index) => `${String(index + 1).padStart(5, "0")} ${"x".repeat(97)}`,
+  ).join("\n");
+  const largePasteURL = await createServerPaste(largeContent, "large.txt");
+  await page.goto(largePasteURL);
+  await expectVisible(page, "large.txt");
+  const renderedLineCount = await page
+    .locator(".readonly-paste-editor .cm-line")
+    .count();
+  assert.equal(
+    renderedLineCount > 0 && renderedLineCount < 1_000,
+    true,
+    "viewer should virtualize the 10,000-line paste",
+  );
+  await page.locator(".readonly-paste-editor .cm-scroller").evaluate((node) => {
+    node.scrollTop = node.scrollHeight;
+  });
+  await expectVisible(page, "10000");
+
+  const hostilePasteURL = await createServerPaste(
+    '<img src=x onerror="window.__0xbinXSS=true">\n<script>window.__0xbinXSS=true</script>',
+    "untrusted.html",
+  );
+  await page.goto(hostilePasteURL);
+  await expectVisible(page, "untrusted.html");
+  await assert.equal(
+    await page.evaluate(() => "__0xbinXSS" in window),
+    false,
+    "paste content must not execute as HTML or script",
+  );
+
   await expectCreateFailure(
     page,
     429,
@@ -316,6 +348,22 @@ async function expectCreateFailure(page, status, code, expectedMessage) {
   await page.getByRole("button", { name: "Create", exact: true }).click();
   await expectVisible(page, expectedMessage);
   await page.unroute("**/api/v1/pastes");
+}
+
+async function createServerPaste(content, title) {
+  const response = await fetch(`${apiOrigin}/api/v1/pastes`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      mode: "plaintext",
+      payload: { version: 1, title, language: "plaintext", content },
+      expiry: "24h",
+      burn_after_read: false,
+    }),
+  });
+  assert.equal(response.ok, true, "server should accept the large test paste");
+  const created = await response.json();
+  return created.url;
 }
 
 console.log("Browser journeys passed.");

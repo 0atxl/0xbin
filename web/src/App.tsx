@@ -1,12 +1,18 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
-import { Compartment, EditorState } from "@codemirror/state";
+import { Compartment, EditorState, type Extension } from "@codemirror/state";
 import {
   defaultKeymap,
   historyKeymap,
   indentLess,
   insertTab,
 } from "@codemirror/commands";
-import { EditorView, keymap, lineNumbers, placeholder } from "@codemirror/view";
+import {
+  Decoration,
+  EditorView,
+  keymap,
+  lineNumbers,
+  placeholder,
+} from "@codemirror/view";
 import { closeBrackets, closeBracketsKeymap } from "@codemirror/autocomplete";
 import {
   HighlightStyle,
@@ -739,13 +745,6 @@ function PasteViewer({
     paste && "payload" in paste ? paste.payload : decryptedPayload;
   const matchCount = payload ? countMatches(payload.content, query) : 0;
 
-  useEffect(() => {
-    if (!query || matchCount === 0) return;
-    document
-      .querySelector<HTMLElement>(`mark[data-search-match="${activeMatch}"]`)
-      ?.scrollIntoView({ block: "center", inline: "nearest" });
-  }, [activeMatch, matchCount, query]);
-
   function focusSearch() {
     setSearchOpen(true);
     window.setTimeout(() => searchRef.current?.focus(), 0);
@@ -1006,8 +1005,10 @@ function PasteViewer({
       ) : null}
 
       <div className={wrap ? "paste-content wrap" : "paste-content"}>
-        <ContentLines
+        <ReadonlyPasteViewer
           content={payload.content}
+          language={payload.language}
+          wrap={wrap}
           query={query}
           activeMatch={activeMatch}
         />
@@ -1016,34 +1017,97 @@ function PasteViewer({
   );
 }
 
-function ContentLines({
+function ReadonlyPasteViewer({
   content,
+  language,
+  wrap,
   query,
   activeMatch,
 }: {
   content: string;
+  language: string;
+  wrap: boolean;
   query: string;
   activeMatch: number;
 }) {
-  let firstMatch = 0;
-  return (
-    <div className="content-lines" role="region" aria-label="Paste content">
-      {content.split("\n").map((line, index) => {
-        const lineFirstMatch = firstMatch;
-        firstMatch += countMatches(line, query);
-        return (
-          <div className="content-line" key={index}>
-            <span className="line-number" aria-hidden="true">
-              {index + 1}
-            </span>
-            <code>
-              {highlightText(line || " ", query, lineFirstMatch, activeMatch)}
-            </code>
-          </div>
-        );
-      })}
-    </div>
-  );
+  const host = useRef<HTMLDivElement>(null);
+  const view = useRef<EditorView | undefined>(undefined);
+  const languageConfig = useRef(new Compartment());
+  const wrapConfig = useRef(new Compartment());
+  const searchConfig = useRef(new Compartment());
+
+  useEffect(() => {
+    if (!host.current) return;
+    const editor = new EditorView({
+      state: EditorState.create({
+        doc: content,
+        extensions: [
+          lineNumbers(),
+          EditorState.readOnly.of(true),
+          EditorView.editable.of(false),
+          EditorView.contentAttributes.of({
+            "aria-label": "Paste content",
+            tabindex: "0",
+          }),
+          languageConfig.current.of([]),
+          wrapConfig.current.of(wrap ? EditorView.lineWrapping : []),
+          searchConfig.current.of(
+            searchHighlights(content, query, activeMatch),
+          ),
+          syntaxHighlighting(editorHighlightStyle, { fallback: true }),
+        ],
+      }),
+      parent: host.current,
+    });
+    view.current = editor;
+    return () => {
+      view.current = undefined;
+      editor.destroy();
+    };
+  }, [content]);
+
+  useEffect(() => {
+    let active = true;
+    void loadEditorLanguage(language)
+      .then((extension) => {
+        if (!active || !view.current) return;
+        view.current.dispatch({
+          effects: languageConfig.current.reconfigure(extension),
+        });
+      })
+      .catch(() => {
+        if (!active || !view.current) return;
+        view.current.dispatch({
+          effects: languageConfig.current.reconfigure([]),
+        });
+      });
+    return () => {
+      active = false;
+    };
+  }, [language]);
+
+  useEffect(() => {
+    if (!view.current) return;
+    view.current.dispatch({
+      effects: wrapConfig.current.reconfigure(
+        wrap ? EditorView.lineWrapping : [],
+      ),
+    });
+  }, [wrap]);
+
+  useEffect(() => {
+    if (!view.current) return;
+    const match = matchAt(content, query, activeMatch);
+    view.current.dispatch({
+      effects: searchConfig.current.reconfigure(
+        searchHighlights(content, query, activeMatch),
+      ),
+      selection: match ? { anchor: match.from, head: match.to } : undefined,
+      scrollIntoView: Boolean(match),
+    });
+  }, [activeMatch, content, query]);
+
+  return <div className="readonly-paste-editor" ref={host} />;
 }
 
 function countMatches(text: string, query: string): number {
@@ -1059,38 +1123,41 @@ function countMatches(text: string, query: string): number {
   return count;
 }
 
-function highlightText(
-  text: string,
-  query: string,
-  firstMatch: number,
-  activeMatch: number,
-): ReactNode {
-  if (!query) return text;
-  const lowerText = text.toLocaleLowerCase();
+function matchAt(content: string, query: string, index: number) {
+  if (!query) return;
+  const lowerContent = content.toLocaleLowerCase();
   const lowerQuery = query.toLocaleLowerCase();
-  const parts: ReactNode[] = [];
-  let start = 0;
-  let match = lowerText.indexOf(lowerQuery);
-  let matchIndex = firstMatch;
-  while (match !== -1) {
-    parts.push(text.slice(start, match));
-    parts.push(
-      <mark
-        className={
-          matchIndex === activeMatch ? "active-search-match" : undefined
-        }
-        data-search-match={matchIndex}
-        key={`${match}-${parts.length}`}
-      >
-        {text.slice(match, match + query.length)}
-      </mark>,
-    );
-    start = match + query.length;
-    match = lowerText.indexOf(lowerQuery, start);
-    matchIndex += 1;
+  let from = lowerContent.indexOf(lowerQuery);
+  let current = 0;
+  while (from !== -1) {
+    if (current === index) return { from, to: from + query.length };
+    current += 1;
+    from = lowerContent.indexOf(lowerQuery, from + query.length);
   }
-  parts.push(text.slice(start));
-  return parts;
+}
+
+function searchHighlights(
+  content: string,
+  query: string,
+  activeMatch: number,
+): Extension {
+  if (!query) return [];
+  const decorations = [];
+  let matchIndex = 0;
+  let match = matchAt(content, query, matchIndex);
+  while (match) {
+    decorations.push(
+      Decoration.mark({
+        class:
+          matchIndex === activeMatch
+            ? "cm-search-match cm-search-match-active"
+            : "cm-search-match",
+      }).range(match.from, match.to),
+    );
+    matchIndex += 1;
+    match = matchAt(content, query, matchIndex);
+  }
+  return EditorView.decorations.of(Decoration.set(decorations, true));
 }
 
 function ActionButton({

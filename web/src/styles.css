@@ -568,56 +568,53 @@ svg {
 .paste-content {
   min-width: 0;
   min-height: 0;
-  overflow: auto;
+  overflow: hidden;
   font: 13px/1.55 var(--font-code);
 }
 
-.content-lines {
-  width: max-content;
+.readonly-paste-editor,
+.readonly-paste-editor .cm-editor,
+.readonly-paste-editor .cm-scroller {
+  height: 100%;
+  min-height: 0;
+}
+
+.readonly-paste-editor .cm-editor {
+  font: 13px/1.55 var(--font-code);
+}
+
+.readonly-paste-editor .cm-scroller {
+  overflow: auto;
+}
+
+.readonly-paste-editor .cm-content {
   min-width: 100%;
-  padding: 14px 0 50vh;
+  padding: 14px 20px 50vh 10px;
 }
 
-.content-line {
-  display: grid;
-  grid-template-columns: 54px minmax(0, 1fr);
-  min-height: 20px;
-}
-
-.content-line:hover {
-  background: var(--accent-soft);
-}
-
-.line-number {
-  padding: 0 12px 0 8px;
+.readonly-paste-editor .cm-gutters {
+  border-right: 0;
+  background: transparent;
   color: var(--gutter);
-  text-align: right;
-  user-select: none;
 }
 
-.content-line code {
-  padding-right: 20px;
-  color: var(--text-primary);
-  white-space: pre;
+.readonly-paste-editor .cm-lineNumbers .cm-gutterElement {
+  min-width: 46px;
+  padding: 0 12px 0 8px;
 }
 
-.paste-content.wrap .content-lines {
-  width: 100%;
+.readonly-paste-editor .cm-line {
+  padding: 0;
 }
 
-.paste-content.wrap .content-line code {
-  overflow-wrap: anywhere;
-  white-space: pre-wrap;
-}
-
-mark {
+.cm-search-match {
   border-radius: 2px;
   background: #f3c969;
   color: #211b18;
   opacity: 0.42;
 }
 
-mark.active-search-match {
+.cm-search-match-active {
   opacity: 1;
 }
 
