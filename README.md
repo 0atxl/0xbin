@@ -56,45 +56,15 @@ For a bind mount instead, replace the Compose volume with a host directory that
 is writable by the container's non-root user. Run only one 0xbin container per
 SQLite data directory.
 
-### Pulling a new project release
-
-When a new commit is pushed to the project repository, update a checkout on the
-homelab host. Run these commands from the directory containing `compose.yaml`:
+### Upgrade and restart
 
 ```text
-git status
-git pull --ff-only
-docker compose build --pull
-docker compose up -d --force-recreate --remove-orphans
-docker compose ps
-curl --fail http://127.0.0.1:8080/health/ready
+git pull
+docker compose up --build -d
 ```
 
-`docker compose build --pull` refreshes the base image and rebuilds the
-application with the newly pulled source. `up` replaces the application
-container and keeps the named `0xbin-data` volume mounted. Database migrations
-run automatically at startup.
-
-You do not need to remove the old container manually, and you must not run
-`docker compose down -v` or delete `0xbin-data`: containers are replaceable,
-but the volume contains the SQLite database and all active pastes. If you use a
-bind mount instead of the named volume, keep the same host directory in the
-Compose file.
-
-For a quick update where the base image does not need refreshing, this shorter
-form is sufficient:
-
-```text
-git pull --ff-only
-docker compose up --build -d --remove-orphans
-```
-
-Before a release that changes storage or migrations, stop writes briefly and
-take a backup of the mounted `/data` directory or volume. If an update fails,
-inspect `docker compose logs --tail=100 0xbin` and check readiness before
-attempting a rollback. Roll back the checkout to a known-good commit, rebuild,
-and recreate the container only after confirming that the older binary supports
-the database schema already present in the volume.
+Database migrations run automatically at startup. Keep the volume mounted;
+without it, all pastes disappear when the container is removed.
 
 ## SQLite
 
