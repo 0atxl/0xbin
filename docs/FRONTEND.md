@@ -377,15 +377,21 @@ remain available.
 ### Lifetime display
 
 Show the selected lifetime as quiet supporting information rather than a large
-badge. One-hour pastes show a quiet local digital countdown such as `Expires in
-59:42` inside a transparent accent-ring dial. It sits in the desktop title row,
-centered without covering paste content, and becomes its own row beneath the
-title on mobile. Its digits update each second. The time sits inside a full
-elliptical progress ring that drains over the remaining hour; the ring and
-digits get a restrained pulse together only during the final minute. Ordinary
-one-day and three-day views remain uncluttered. View-once
+badge. One-hour pastes show a compact horizontal split-flap countdown such as
+`59:42`. The visible UI omits “Expires in,” while retaining that context for
+assistive technology. Four tinted digit tiles are separated by a plain colon;
+only digits whose values change perform a short vertical flip. The clock sits
+in the desktop title row, centered without covering paste content, and becomes
+its own short row beneath the title on mobile without changing size. Its tiles
+fit within the ordinary desktop toolbar height and use the accent palette
+rather than black flap faces. They use a stronger warning tint during the final
+minute rather than shaking or pulsing. Reduced-motion users receive an
+immediate digit change without a visible flip. Ordinary one-day and three-day
+views remain uncluttered. View-once
 pastes must make their destructive behaviour prominent before reveal. The
 countdown uses the retrieved expiry timestamp and does not poll the server.
+On mobile, the clock is vertically centered within a dedicated row with equal
+clearance above and below it.
 
 ## 8. Encrypted Key Gate
 

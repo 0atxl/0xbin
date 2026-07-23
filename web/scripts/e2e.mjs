@@ -219,7 +219,12 @@ try {
   });
   await expectVisible(page, "main.go");
   await expectVisible(page, "package main");
-  await page.locator(".viewer-expiry").waitFor({ state: "visible" });
+  await page.locator(".flip-clock").waitFor({ state: "visible" });
+  assert.equal(
+    await page.locator(".flip-clock .flip-digit").count(),
+    4,
+    "expiry countdown should render four split-flap digits",
+  );
   await assertNoSeriousAccessibilityIssues(page, "plaintext viewer");
   await assert.equal(
     await page
@@ -247,6 +252,27 @@ try {
   await page.getByLabel("Search paste").waitFor({ state: "hidden" });
   await page.setViewportSize({ width: 390, height: 844 });
   await expectVisible(page, "main.go");
+  await assert.equal(
+    await page.locator(".viewer-expiry-row").evaluate((row) => {
+      const clock = row.querySelector(".flip-clock");
+      const actions = document.querySelector(".viewer-actions");
+      if (!(clock instanceof HTMLElement) || !(actions instanceof HTMLElement))
+        return false;
+      const rowBounds = row.getBoundingClientRect();
+      const clockBounds = clock.getBoundingClientRect();
+      const actionBounds = actions.getBoundingClientRect();
+      const topGap = clockBounds.top - rowBounds.top;
+      const bottomGap = rowBounds.bottom - clockBounds.bottom;
+      return (
+        topGap >= 0 &&
+        bottomGap >= 0 &&
+        Math.abs(topGap - bottomGap) < 2 &&
+        clockBounds.bottom <= actionBounds.top
+      );
+    }),
+    true,
+    "mobile flip clock should be centered within its own row",
+  );
   await page.getByRole("button", { name: "Download" }).waitFor({
     state: "visible",
   });

@@ -442,6 +442,11 @@ their verification gates pass. The self-hosted package is ready to ship. Step
 - A tested rollback exists.
 - Documentation matches the released image.
 
+## 19. Viewer Search Performance
+
+See [`SEARCH_PERFORMANCE.md`](SEARCH_PERFORMANCE.md) for the scoped Phase 5
+requirements and acceptance criteria.
+
 ## Working Rule for Codex
 
 Ask Codex to implement one numbered step or tightly related substep at a time. Example:

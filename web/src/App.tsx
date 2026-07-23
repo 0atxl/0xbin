@@ -1,9 +1,9 @@
 import {
   useEffect,
   useId,
+  useMemo,
   useRef,
   useState,
-  type CSSProperties,
   type ReactNode,
 } from "react";
 import { Compartment, EditorState, type Extension } from "@codemirror/state";
@@ -65,6 +65,7 @@ import {
 } from "./languages";
 import { editorHistoryExtensions } from "./editor-history";
 import { browserShareURL } from "./share-url";
+import { findSearchMatches, type SearchMatch } from "./search";
 import "./styles.css";
 
 const toastDurationMs = 6000;
@@ -801,10 +802,6 @@ function PasteViewer({
   }, [searchOpen]);
 
   useEffect(() => {
-    setActiveMatch(0);
-  }, [query]);
-
-  useEffect(() => {
     if (!paste || !isOneHourPaste(paste)) return;
     const timer = window.setInterval(() => setCurrentTime(Date.now()), 1_000);
     return () => window.clearInterval(timer);
@@ -812,15 +809,17 @@ function PasteViewer({
 
   const payload =
     paste && "payload" in paste ? paste.payload : decryptedPayload;
-  const matchCount = payload ? countMatches(payload.content, query) : 0;
+  const matches = useMemo(
+    () => (payload ? findSearchMatches(payload.content, query) : []),
+    [payload, query],
+  );
+  const matchCount = matches.length;
+  const visibleActiveMatch =
+    matchCount === 0 ? 0 : Math.min(activeMatch, matchCount - 1);
   const oneHourPaste = paste ? isOneHourPaste(paste) : false;
   const expiryCountdown =
     paste && oneHourPaste
       ? formatExpiryCountdown(paste.expiresAt, currentTime)
-      : undefined;
-  const expiryProgress =
-    paste && oneHourPaste
-      ? expiryProgressTurn(paste.expiresAt, currentTime)
       : undefined;
   const expiryLastMinute =
     paste && oneHourPaste
@@ -1026,23 +1025,8 @@ function PasteViewer({
           )}
         </div>
         {expiryCountdown ? (
-          <span className="viewer-expiry">
-            <span>Expires in</span>
-            <span
-              className={
-                expiryLastMinute
-                  ? "viewer-expiry-count expiry-last-minute"
-                  : "viewer-expiry-count"
-              }
-              key={expiryCountdown}
-              style={
-                {
-                  "--expiry-progress": `${expiryProgress ?? 0}turn`,
-                } as CSSProperties
-              }
-            >
-              <span>{expiryCountdown}</span>
-            </span>
+          <span className="viewer-expiry-row">
+            <FlipCountdown value={expiryCountdown} urgent={expiryLastMinute} />
           </span>
         ) : null}
         <div className="viewer-actions" aria-label="Paste actions">
@@ -1063,7 +1047,10 @@ function PasteViewer({
                     value={query}
                     placeholder="Find"
                     aria-label="Search paste"
-                    onChange={(event) => setQuery(event.target.value)}
+                    onChange={(event) => {
+                      setActiveMatch(0);
+                      setQuery(event.target.value);
+                    }}
                     onKeyDown={(event) => {
                       if (event.key === "Escape") {
                         closeSearch();
@@ -1077,6 +1064,7 @@ function PasteViewer({
                       aria-label="Clear search"
                       title="Clear search"
                       onClick={() => {
+                        setActiveMatch(0);
                         setQuery("");
                         searchRef.current?.focus();
                       }}
@@ -1085,6 +1073,11 @@ function PasteViewer({
                     </button>
                   ) : null}
                 </div>
+                <span className="search-count" aria-live="polite">
+                  {matchCount > 0
+                    ? `${visibleActiveMatch + 1} / ${matchCount}`
+                    : "0 / 0"}
+                </span>
                 <div className="search-navigation">
                   <ActionButton
                     label="Previous match"
@@ -1107,13 +1100,6 @@ function PasteViewer({
                     <NextIcon />
                   </ActionButton>
                 </div>
-                {query ? (
-                  <span className="search-count" aria-live="polite">
-                    {matchCount > 0
-                      ? `${activeMatch + 1} / ${matchCount}`
-                      : "0 / 0"}
-                  </span>
-                ) : null}
               </div>
             </div>
           ) : null}
@@ -1156,8 +1142,8 @@ function PasteViewer({
         <ReadonlyPasteViewer
           content={payload.content}
           language={payload.language}
-          query={query}
-          activeMatch={activeMatch}
+          matches={matches}
+          activeMatch={visibleActiveMatch}
         />
       </div>
     </main>
@@ -1167,18 +1153,20 @@ function PasteViewer({
 function ReadonlyPasteViewer({
   content,
   language,
-  query,
+  matches,
   activeMatch,
 }: {
   content: string;
   language: string;
-  query: string;
+  matches: SearchMatch[];
   activeMatch: number;
 }) {
   const host = useRef<HTMLDivElement>(null);
   const view = useRef<EditorView | undefined>(undefined);
   const languageConfig = useRef(new Compartment());
-  const searchConfig = useRef(new Compartment());
+  const searchMatchesConfig = useRef(new Compartment());
+  const activeSearchMatchConfig = useRef(new Compartment());
+  const previousMatches = useRef<SearchMatch[] | undefined>(undefined);
 
   useEffect(() => {
     if (!host.current) return;
@@ -1195,8 +1183,9 @@ function ReadonlyPasteViewer({
           }),
           languageConfig.current.of([]),
           EditorView.lineWrapping,
-          searchConfig.current.of(
-            searchHighlights(content, query, activeMatch),
+          searchMatchesConfig.current.of(searchHighlights(matches)),
+          activeSearchMatchConfig.current.of(
+            activeSearchHighlight(matches[activeMatch]),
           ),
           syntaxHighlighting(editorHighlightStyle, { fallback: true }),
         ],
@@ -1232,30 +1221,28 @@ function ReadonlyPasteViewer({
 
   useEffect(() => {
     if (!view.current) return;
-    const match = matchAt(content, query, activeMatch);
     view.current.dispatch({
-      effects: searchConfig.current.reconfigure(
-        searchHighlights(content, query, activeMatch),
+      effects: searchMatchesConfig.current.reconfigure(
+        searchHighlights(matches),
+      ),
+    });
+  }, [matches]);
+
+  useEffect(() => {
+    if (!view.current) return;
+    const match = matches[activeMatch];
+    const shouldScroll = previousMatches.current === matches;
+    view.current.dispatch({
+      effects: activeSearchMatchConfig.current.reconfigure(
+        activeSearchHighlight(match),
       ),
       selection: match ? { anchor: match.from, head: match.to } : undefined,
-      scrollIntoView: Boolean(match),
+      scrollIntoView: shouldScroll && Boolean(match),
     });
-  }, [activeMatch, content, query]);
+    previousMatches.current = matches;
+  }, [activeMatch, matches]);
 
   return <div className="readonly-paste-editor" ref={host} />;
-}
-
-function countMatches(text: string, query: string): number {
-  if (!query) return 0;
-  const lowerText = text.toLocaleLowerCase();
-  const lowerQuery = query.toLocaleLowerCase();
-  let count = 0;
-  let match = lowerText.indexOf(lowerQuery);
-  while (match !== -1) {
-    count += 1;
-    match = lowerText.indexOf(lowerQuery, match + query.length);
-  }
-  return count;
 }
 
 function isOneHourPaste(
@@ -1277,48 +1264,64 @@ function formatExpiryCountdown(expiresAt: string, currentTime: number): string {
   return `${minutes}:${seconds.toString().padStart(2, "0")}`;
 }
 
-function expiryProgressTurn(expiresAt: string, currentTime: number): number {
-  return Math.max(
-    0,
-    Math.min(1, (Date.parse(expiresAt) - currentTime) / (60 * 60 * 1_000)),
+function FlipCountdown({ value, urgent }: { value: string; urgent: boolean }) {
+  const [minutes = "00", seconds = "00"] = value.split(":");
+  const minuteDigits = minutes.padStart(2, "0").slice(-2).split("");
+  const secondDigits = seconds.padStart(2, "0").slice(-2).split("");
+  return (
+    <span
+      className={urgent ? "flip-clock expiry-last-minute" : "flip-clock"}
+      role="timer"
+      aria-label={`Expires in ${Number(minutes)} minutes ${Number(seconds)} seconds`}
+    >
+      <span className="flip-digit-group" aria-hidden="true">
+        {minuteDigits.map((digit, index) => (
+          <FlipDigit digit={digit} key={`minute-${index}-${digit}`} />
+        ))}
+      </span>
+      <span className="flip-colon" aria-hidden="true">
+        :
+      </span>
+      <span className="flip-digit-group" aria-hidden="true">
+        {secondDigits.map((digit, index) => (
+          <FlipDigit digit={digit} key={`second-${index}-${digit}`} />
+        ))}
+      </span>
+    </span>
   );
 }
 
-function matchAt(content: string, query: string, index: number) {
-  if (!query) return;
-  const lowerContent = content.toLocaleLowerCase();
-  const lowerQuery = query.toLocaleLowerCase();
-  let from = lowerContent.indexOf(lowerQuery);
-  let current = 0;
-  while (from !== -1) {
-    if (current === index) return { from, to: from + query.length };
-    current += 1;
-    from = lowerContent.indexOf(lowerQuery, from + query.length);
-  }
+function FlipDigit({ digit }: { digit: string }) {
+  return <span className="flip-digit">{digit}</span>;
 }
 
-function searchHighlights(
-  content: string,
-  query: string,
-  activeMatch: number,
-): Extension {
-  if (!query) return [];
-  const decorations = [];
-  let matchIndex = 0;
-  let match = matchAt(content, query, matchIndex);
-  while (match) {
-    decorations.push(
-      Decoration.mark({
-        class:
-          matchIndex === activeMatch
-            ? "cm-search-match cm-search-match-active"
-            : "cm-search-match",
-      }).range(match.from, match.to),
-    );
-    matchIndex += 1;
-    match = matchAt(content, query, matchIndex);
-  }
-  return EditorView.decorations.of(Decoration.set(decorations, true));
+function searchHighlights(matches: SearchMatch[]): Extension {
+  if (matches.length === 0) return [];
+  return EditorView.decorations.of(
+    Decoration.set(
+      matches.map((match) =>
+        Decoration.mark({ class: "cm-search-match" }).range(
+          match.from,
+          match.to,
+        ),
+      ),
+      true,
+    ),
+  );
+}
+
+function activeSearchHighlight(match: SearchMatch | undefined): Extension {
+  if (!match) return [];
+  return EditorView.decorations.of(
+    Decoration.set(
+      [
+        Decoration.mark({
+          class: "cm-search-match cm-search-match-active",
+        }).range(match.from, match.to),
+      ],
+      true,
+    ),
+  );
 }
 
 function ActionButton({

@@ -555,89 +555,91 @@ svg {
   white-space: nowrap;
 }
 
-.viewer-expiry {
+.viewer-expiry-row {
   position: absolute;
   z-index: 2;
   top: 50%;
   left: 50%;
+  display: flex;
+  transform: translate(-50%, -50%);
+}
+
+.flip-clock {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
-  height: 38px;
-  padding: 2px 3px 2px 9px;
-  border-radius: 999px;
-  background: var(--accent-soft);
-  color: var(--text-muted);
-  font-size: 12px;
-  transform: translate(-50%, -50%);
-  white-space: nowrap;
-}
-
-.viewer-expiry-count {
-  isolation: isolate;
-  position: relative;
-  display: grid;
-  width: 52px;
-  height: 34px;
-  place-items: center;
-  border-radius: 50%;
-  background: transparent;
+  gap: 4px;
   color: var(--accent);
   font-family: var(--font-code);
-  font-size: 12px;
-  font-weight: 650;
   font-variant-numeric: tabular-nums;
-  letter-spacing: -0.04em;
-  text-shadow: 0 0 7px color-mix(in srgb, var(--accent) 55%, transparent);
+  perspective: 240px;
 }
 
-.viewer-expiry-count::before {
-  position: absolute;
-  z-index: 0;
-  inset: 0;
-  content: "";
-  border-radius: inherit;
-  background: conic-gradient(
-    from -90deg,
-    color-mix(in srgb, var(--accent) 78%, transparent) var(--expiry-progress),
-    color-mix(in srgb, var(--accent) 18%, transparent) 0
-  );
-  -webkit-mask: radial-gradient(
-    farthest-side,
-    transparent calc(100% - 3px),
-    #000 calc(100% - 2px)
-  );
-  mask: radial-gradient(
-    farthest-side,
-    transparent calc(100% - 3px),
-    #000 calc(100% - 2px)
-  );
+.flip-digit-group {
+  display: inline-flex;
+  gap: 2px;
 }
 
-.viewer-expiry-count > span {
+.flip-digit {
   position: relative;
-  z-index: 1;
+  display: grid;
+  width: 21px;
+  height: 26px;
+  place-items: center;
+  overflow: hidden;
+  transform-origin: center;
+  border: 1px solid color-mix(in srgb, var(--accent) 42%, transparent);
+  border-radius: 4px;
+  background: linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--accent) 24%, var(--surface-raised)) 0 49%,
+    color-mix(in srgb, var(--accent) 17%, var(--surface-raised)) 51% 100%
+  );
+  box-shadow:
+    inset 0 1px color-mix(in srgb, var(--accent) 20%, transparent),
+    inset 0 -1px color-mix(in srgb, var(--accent) 14%, transparent);
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 1;
+  animation: flip-digit-turn 360ms cubic-bezier(0.2, 0.72, 0.28, 1);
+  backface-visibility: hidden;
 }
 
-.viewer-expiry-count.expiry-last-minute {
-  animation: expiry-final-minute 1s ease-in-out infinite;
+.flip-digit::after {
+  position: absolute;
+  right: 0;
+  left: 0;
+  top: 50%;
+  content: "";
+  border-top: 1px solid color-mix(in srgb, var(--accent) 24%, transparent);
 }
 
-@keyframes expiry-final-minute {
-  0%,
-  100% {
-    filter: brightness(1);
-    transform: translateX(0);
+.flip-colon {
+  margin-inline: -1px;
+  color: var(--accent);
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.flip-clock.expiry-last-minute .flip-digit {
+  border-color: color-mix(in srgb, var(--danger) 48%, transparent);
+  background: linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--danger) 21%, var(--surface)) 0 49%,
+    color-mix(in srgb, var(--danger) 13%, var(--surface)) 51% 100%
+  );
+  color: var(--danger);
+}
+
+@keyframes flip-digit-turn {
+  from {
+    opacity: 0.35;
+    transform: rotateX(-88deg);
   }
 
-  45% {
-    filter: brightness(1.25);
-    transform: translateX(-1px);
-  }
-
-  55% {
-    filter: brightness(1.4);
-    transform: translateX(1px);
+  to {
+    opacity: 1;
+    transform: rotateX(0);
   }
 }
 
@@ -664,8 +666,8 @@ svg {
 .search-control {
   position: relative;
   display: grid;
-  grid-template-columns: 4fr 1fr 1fr;
-  width: 220px;
+  grid-template-columns: 220px max-content 36px 36px;
+  width: max-content;
   height: 32px;
   overflow: hidden;
   border: 1px solid var(--border-subtle);
@@ -746,14 +748,15 @@ svg {
 }
 
 .search-count {
-  position: absolute;
-  z-index: 1;
-  top: 50%;
-  left: 83.333%;
-  transform: translate(-50%, -50%);
-  pointer-events: none;
+  display: flex;
+  min-width: 5ch;
+  padding-inline: 10px;
+  align-items: center;
+  justify-content: center;
+  border-left: 1px solid var(--border-subtle);
   color: var(--text-muted);
   font-size: 14px;
+  font-variant-numeric: tabular-nums;
   line-height: 1;
   text-align: center;
   white-space: nowrap;
@@ -856,7 +859,8 @@ svg {
   padding: 0;
 }
 
-.cm-search-match {
+.cm-search-match,
+.cm-search-match-active {
   border-radius: 2px;
   background: #f3c969;
   color: #211b18;
@@ -1097,15 +1101,17 @@ svg {
     text-align: center;
   }
 
-  .viewer-expiry {
+  .viewer-expiry-row {
     position: relative;
     top: auto;
     left: auto;
     order: 1;
     flex: 0 0 100%;
+    align-items: center;
     justify-content: center;
-    min-height: 52px;
-    height: 52px;
+    min-height: 40px;
+    height: 40px;
+    padding: 6px 12px;
     transform: none;
     border-top: 1px solid var(--border-subtle);
   }
@@ -1139,6 +1145,7 @@ svg {
   }
 
   .viewer-search-row .search-control {
+    grid-template-columns: minmax(0, 1fr) max-content 38px 38px;
     width: calc(100% + 16px);
     height: 38px;
     margin-inline: -8px;
