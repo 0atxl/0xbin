@@ -376,6 +376,16 @@ In-memory limiting resets on restart and can be bypassed using distributed IPs. 
 
 API routes remain under `/api/v1`; health routes are reserved.
 
+Search discovery is route-aware at the Go HTTP boundary. The configured public
+base URL supplies canonical URLs. Self-hosted instances advertise only their
+homepage; when the configured origin is `0xbin.app`, the sitemap also advertises
+the permanent hosted information and policy routes. The server marks the HTML
+shell so React enables the hosted-only corner menu without baking the operator's
+policies into self-hosted navigation. Paste and unknown browser routes return
+`X-Robots-Tag: noindex, nofollow, noarchive` and equivalent HTML metadata;
+paste URLs never appear in the sitemap. `robots.txt` permits crawling so
+compliant bots can observe those response directives.
+
 ### 10.2 State ownership
 
 - Form state in frontend memory

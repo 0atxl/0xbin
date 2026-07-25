@@ -12,8 +12,10 @@ import AxeBuilder from "@axe-core/playwright";
 const root = new URL("../..", import.meta.url);
 const apiPort = 18080;
 const webPort = 15173;
+const hostedWebPort = 15174;
 const apiOrigin = `http://127.0.0.1:${apiPort}`;
 const webOrigin = `http://127.0.0.1:${webPort}`;
+const hostedWebOrigin = `http://127.0.0.1:${hostedWebPort}`;
 const webDirectory = fileURLToPath(new URL("../", import.meta.url));
 const viteEntryPoint = fileURLToPath(
   new URL("../node_modules/vite/bin/vite.js", import.meta.url),
@@ -129,6 +131,19 @@ try {
   );
   await waitFor(webOrigin);
   progress("frontend ready");
+  start(
+    process.execPath,
+    [viteEntryPoint, "--host", "127.0.0.1", "--port", `${hostedWebPort}`],
+    {
+      cwd: webDirectory,
+      env: {
+        OXBIN_API_PROXY_TARGET: apiOrigin,
+        OXBIN_HOSTED_PREVIEW: "true",
+      },
+    },
+  );
+  await waitFor(hostedWebOrigin);
+  progress("hosted frontend preview ready");
 
   progress("launching browser");
   browser = await chromium.launch({
@@ -158,10 +173,37 @@ try {
   await page.emulateMedia({ reducedMotion: "no-preference" });
   await page.reload();
   await assert.equal(
-    await page.getByRole("button", { name: "Site menu" }).count(),
+    await page.getByLabel("Site menu").count(),
     0,
     "self-hosted UI should not include the policy menu",
   );
+
+  const hostedPage = await context.newPage();
+  await hostedPage.goto(`${hostedWebOrigin}/privacy`);
+  await expectVisible(hostedPage, "Privacy & reports");
+  await expectVisible(hostedPage, "hello@atulk.me");
+  await assertNoSeriousAccessibilityIssues(hostedPage, "privacy and reports");
+  await hostedPage.getByLabel("Site menu").click();
+  await hostedPage
+    .getByRole("link", { name: "Terms & conditions", exact: true })
+    .click();
+  await expectVisible(hostedPage, "Terms & conditions");
+  await assert.equal(
+    new URL(hostedPage.url()).pathname,
+    "/terms",
+    "policy menu should use client-side navigation",
+  );
+  await hostedPage.getByLabel("Site menu").click();
+  await assert.equal(
+    await hostedPage
+      .getByRole("link", { name: "GitHub", exact: true })
+      .getAttribute("href"),
+    "https://github.com/0atxl/0xbin",
+    "hosted menu should link to the public repository",
+  );
+  await hostedPage.keyboard.press("Escape");
+  await hostedPage.close();
+
   await page.locator(".code-editor .cm-content").fill("x".repeat(2_000));
   await assert.equal(
     await page

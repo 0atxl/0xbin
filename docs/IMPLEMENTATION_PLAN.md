@@ -7,7 +7,10 @@ Each step ends with a verification gate. Do not begin a dependent step until its
 
 **Current implementation status (2026-07-19):** Steps 0–16 are complete and
 their verification gates pass. The self-hosted package is ready to ship. Step
-17, hosted security and operational hardening, has not begun.
+17, hosted security and operational hardening, is in progress: the hosted
+information/policy menu and search-discovery boundary are implemented, while
+the remaining security, operator-control, monitoring, and backup gates are
+still open.
 
 ## 0. Repository Baseline
 
@@ -413,8 +416,9 @@ their verification gates pass. The self-hosted package is ready to ship. Step
 6. Implement protected operator delete and creation-disable control.
 7. Add aggregate metrics and alerts.
 8. Create backup/restore script or documented command and test it.
-9. Create Why 0xbin, Who made this, GitHub, privacy, acceptable-use, terms,
-   security, and abuse-contact destinations, then wire the corner menu.
+9. Create consolidated Who & why, Terms & conditions, and Privacy & reports
+   destinations covering maintainer information, acceptable use, service terms,
+   security, privacy, and abuse contact; link GitHub and wire the corner menu.
 
 ### Verification gate
 

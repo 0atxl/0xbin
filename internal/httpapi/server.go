@@ -2,9 +2,12 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
+	"html"
 	"io/fs"
 	"log/slog"
 	"mime"
@@ -20,6 +23,32 @@ import (
 
 // ErrServerClosed is returned by Serve after a graceful shutdown.
 var ErrServerClosed = http.ErrServerClosed
+
+const (
+	hostedDomain           = "0xbin.app"
+	defaultPageTitle       = "0xbin — Ephemeral Paste Service"
+	defaultPageDescription = "Create temporary text and code pastes with memorable links, automatic expiry, and optional client-side encryption."
+)
+
+type publicPageSEO struct {
+	Path        string
+	Title       string
+	Description string
+	Application bool
+}
+
+var homepageSEO = publicPageSEO{
+	Path:        "/",
+	Title:       defaultPageTitle,
+	Description: defaultPageDescription,
+	Application: true,
+}
+
+var hostedPublicPages = []publicPageSEO{
+	{Path: "/about", Title: "Who & Why — 0xbin", Description: "Meet the independent maintainer behind 0xbin and learn why the project uses short expiry, memorable links, and optional browser-side encryption."},
+	{Path: "/terms", Title: "Terms & Conditions — 0xbin", Description: "Terms, acceptable-use rules, and security guidance for the hosted 0xbin temporary paste service."},
+	{Path: "/privacy", Title: "Privacy & Reports — 0xbin", Description: "How the hosted 0xbin service handles information, privacy requests, and reports of misuse."},
+}
 
 // Server owns the configured HTTP server lifecycle.
 type Server struct {
@@ -103,12 +132,20 @@ func newHandler(cfg config.Config, pastes PasteService, frontend fs.FS, readines
 	if frontend == nil {
 		mux.HandleFunc("/", notFound)
 	} else {
-		mux.Handle("/", frontendHandler(frontend))
+		publicURL := strings.TrimSuffix(cfg.BaseURL.String(), "/")
+		hostedService := strings.EqualFold(cfg.BaseURL.Hostname(), hostedDomain)
+		mux.HandleFunc("GET /robots.txt", func(w http.ResponseWriter, r *http.Request) {
+			serveRobots(w, r, publicURL)
+		})
+		mux.HandleFunc("GET /sitemap.xml", func(w http.ResponseWriter, r *http.Request) {
+			serveSitemap(w, r, publicURL, hostedService)
+		})
+		mux.Handle("/", frontendHandler(frontend, publicURL, hostedService))
 	}
 	return requestID(recoverPanics(clientIP(mux, cfg.TrustedProxies)))
 }
 
-func frontendHandler(bundle fs.FS) http.Handler {
+func frontendHandler(bundle fs.FS, publicURL string, hostedService bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -118,6 +155,10 @@ func frontendHandler(bundle fs.FS) http.Handler {
 		name := strings.TrimPrefix(path.Clean(r.URL.Path), "/")
 		if name == "." {
 			name = ""
+		}
+		if name == "index.html" {
+			http.Redirect(w, r, "/", http.StatusPermanentRedirect)
+			return
 		}
 		if name != "" && fs.ValidPath(name) {
 			if contents, err := fs.ReadFile(bundle, name); err == nil {
@@ -137,8 +178,112 @@ func frontendHandler(bundle fs.FS) http.Handler {
 			http.Error(w, "Frontend bundle is unavailable; run make build.", http.StatusServiceUnavailable)
 			return
 		}
+		contents = injectHostedService(contents, hostedService)
+		if page, ok := publicPage(name, hostedService); ok {
+			contents = injectPageSEO(contents, publicURL+page.Path, page)
+		} else {
+			w.Header().Set("X-Robots-Tag", "noindex, nofollow, noarchive")
+			contents = injectNoindex(contents)
+		}
 		serveFrontendFile(w, r, "index.html", contents)
 	})
+}
+
+func publicPage(name string, hostedService bool) (publicPageSEO, bool) {
+	if name == "" {
+		return homepageSEO, true
+	}
+	if !hostedService {
+		return publicPageSEO{}, false
+	}
+	for _, page := range hostedPublicPages {
+		if strings.TrimPrefix(page.Path, "/") == name {
+			return page, true
+		}
+	}
+	return publicPageSEO{}, false
+}
+
+func injectHostedService(contents []byte, hostedService bool) []byte {
+	value := "false"
+	if hostedService {
+		value = "true"
+	}
+	return bytes.Replace(contents, []byte(`data-hosted-service="false"`), []byte(`data-hosted-service="`+value+`"`), 1)
+}
+
+func injectNoindex(contents []byte) []byte {
+	return bytes.Replace(contents, []byte(`<meta name="robots" content="index, follow" />`), []byte(`<meta name="robots" content="noindex, nofollow, noarchive" />`), 1)
+}
+
+func injectPageSEO(contents []byte, canonicalURL string, page publicPageSEO) []byte {
+	contents = bytes.ReplaceAll(contents, []byte(defaultPageTitle), []byte(html.EscapeString(page.Title)))
+	contents = bytes.ReplaceAll(contents, []byte(defaultPageDescription), []byte(html.EscapeString(page.Description)))
+	escapedURL := html.EscapeString(canonicalURL)
+	metadata := []byte(`<link rel="canonical" href="` + escapedURL + `" />
+    <meta property="og:url" content="` + escapedURL + `" />`)
+	if page.Application {
+		structuredData, err := json.Marshal(struct {
+			Context             string `json:"@context"`
+			Type                string `json:"@type"`
+			Name                string `json:"name"`
+			URL                 string `json:"url"`
+			Description         string `json:"description"`
+			ApplicationCategory string `json:"applicationCategory"`
+			OperatingSystem     string `json:"operatingSystem"`
+		}{
+			Context:             "https://schema.org",
+			Type:                "WebApplication",
+			Name:                "0xbin",
+			URL:                 canonicalURL,
+			Description:         "An ephemeral paste service with memorable links, automatic expiry, and optional client-side encryption.",
+			ApplicationCategory: "DeveloperApplication",
+			OperatingSystem:     "Any",
+		})
+		if err == nil {
+			metadata = append(metadata, []byte("\n    <script type=\"application/ld+json\">"+string(structuredData)+"</script>")...)
+		}
+	}
+	const marker = "<!-- OXBIN_RUNTIME_SEO -->"
+	if bytes.Contains(contents, []byte(marker)) {
+		return bytes.Replace(contents, []byte(marker), metadata, 1)
+	}
+	return bytes.Replace(contents, []byte("</head>"), append(metadata, []byte("\n  </head>")...), 1)
+}
+
+func serveRobots(w http.ResponseWriter, r *http.Request, publicURL string) {
+	w.Header().Set("Cache-Control", "public, max-age=3600")
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	if r.Method == http.MethodHead {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	_, _ = w.Write([]byte("User-agent: *\nAllow: /\nSitemap: " + publicURL + "/sitemap.xml\n"))
+}
+
+func serveSitemap(w http.ResponseWriter, r *http.Request, publicURL string, hostedService bool) {
+	w.Header().Set("Cache-Control", "public, max-age=3600")
+	w.Header().Set("Content-Type", "application/xml; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	if r.Method == http.MethodHead {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	var body strings.Builder
+	body.WriteString("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
+	body.WriteString("<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n")
+	pages := []publicPageSEO{homepageSEO}
+	if hostedService {
+		pages = append(pages, hostedPublicPages...)
+	}
+	for _, page := range pages {
+		body.WriteString("  <url><loc>")
+		body.WriteString(html.EscapeString(publicURL + page.Path))
+		body.WriteString("</loc></url>\n")
+	}
+	body.WriteString("</urlset>\n")
+	_, _ = w.Write([]byte(body.String()))
 }
 
 func serveFrontendFile(w http.ResponseWriter, r *http.Request, name string, contents []byte) {

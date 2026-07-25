@@ -66,6 +66,8 @@ import {
 import { editorHistoryExtensions } from "./editor-history";
 import { browserShareURL } from "./share-url";
 import { findSearchMatches, type SearchMatch } from "./search";
+import { isHostedService } from "./hosted";
+import { HostedMenu, PolicyPage } from "./policies";
 import "./styles.css";
 
 const toastDurationMs = 6000;
@@ -95,12 +97,16 @@ const editorHighlightStyle = HighlightStyle.define([
   { tag: tags.comment, color: "var(--syntax-comment)", fontStyle: "italic" },
 ]);
 
-function currentRoute(): Route {
-  return resolveRoute(window.location.pathname);
+function currentRoute(hostedService: boolean): Route {
+  return resolveRoute(window.location.pathname, hostedService);
 }
 
 export function App() {
-  const [route, setRoute] = useState(currentRoute);
+  const hostedService = isHostedService(
+    window.location.hostname,
+    document.documentElement.dataset.hostedService,
+  );
+  const [route, setRoute] = useState<Route>(() => currentRoute(hostedService));
   const [theme, setTheme] = useState<Theme>(() =>
     loadTheme(
       localStorage,
@@ -116,10 +122,10 @@ export function App() {
   const [copyFailed, setCopyFailed] = useState(false);
 
   useEffect(() => {
-    const onPopState = () => setRoute(currentRoute());
+    const onPopState = () => setRoute(currentRoute(hostedService));
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
-  }, []);
+  }, [hostedService]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -143,7 +149,7 @@ export function App() {
   function navigate(path: string) {
     setKeyGateOpen(false);
     window.history.pushState({}, "", path);
-    setRoute(currentRoute());
+    setRoute(currentRoute(hostedService));
   }
 
   function showStatus(message: string) {
@@ -229,7 +235,7 @@ export function App() {
 
       {route.kind === "create" ? (
         <CreationCanvas onStatus={showStatus} onCreated={handleCreated} />
-      ) : (
+      ) : route.kind === "paste" ? (
         <PasteViewer
           slug={route.slug}
           shareURL={shareURL}
@@ -239,7 +245,16 @@ export function App() {
           onNewPaste={() => navigate("/")}
           onKeyGateChange={setKeyGateOpen}
         />
+      ) : (
+        <PolicyPage page={route.page} />
       )}
+
+      {hostedService && !keyGateOpen ? (
+        <HostedMenu
+          currentPage={route.kind === "hosted" ? route.page : undefined}
+          onNavigate={navigate}
+        />
+      ) : null}
 
       {statuses.length > 0 ? (
         <div

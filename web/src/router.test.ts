@@ -10,6 +10,25 @@ describe("route resolution", () => {
     });
   });
 
+  it("reserves permanent policy routes only for the hosted service", () => {
+    expect(resolveRoute("/about", true)).toEqual({
+      kind: "hosted",
+      page: "about",
+    });
+    expect(resolveRoute("/terms", true)).toEqual({
+      kind: "hosted",
+      page: "terms",
+    });
+    expect(resolveRoute("/privacy", true)).toEqual({
+      kind: "hosted",
+      page: "privacy",
+    });
+    expect(resolveRoute("/privacy", false)).toEqual({
+      kind: "paste",
+      slug: "privacy",
+    });
+  });
+
   it("keeps malformed paths in the paste unavailable boundary", () => {
     expect(resolveRoute("/not-a-slug")).toEqual({ kind: "paste", slug: "" });
     expect(pastePath("quietbrightotter")).toBe("/quietbrightotter");

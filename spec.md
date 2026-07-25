@@ -87,7 +87,9 @@ The larger security consideration is enumeration. Rate limiting, missed-slug det
 
 ### 3.3 Enumeration mitigations
 
-- No listing, search, recent-pastes page, or sitemap.
+- No listing, search, or recent-pastes page.
+- The sitemap may advertise only intentionally indexable permanent product or
+  policy pages. It must never include paste URLs.
 - Add `X-Robots-Tag: noindex, nofollow, noarchive` to paste responses.
 - Add equivalent robots metadata to rendered pages.
 - Apply stricter limits to repeated missing-slug requests than to successful reads.
@@ -222,6 +224,12 @@ Do not introduce a storage abstraction or PostgreSQL implementation until a seco
 - Trust forwarded IP headers only from explicitly configured proxies that overwrite client-supplied values.
 
 Before public launch, provide an abuse contact, administrative paste deletion, emergency creation shutdown, storage/bandwidth alerts, and a basic acceptable-use and privacy policy.
+
+The hosted `0xbin.app` shell exposes permanent Who & why, Terms & conditions,
+and Privacy & reports pages through an accessible bottom-left menu. Together
+they cover maintainer information, privacy, acceptable use, service terms,
+security, and abuse reporting. These operator-specific destinations are enabled
+from the configured hosted origin and remain absent from self-hosted navigation.
 
 ## 8. Frontend Behaviour
 

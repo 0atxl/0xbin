@@ -224,9 +224,20 @@ icon, active encryption state, focus details, and brief success feedback.
 ### Self-host navigation
 
 The self-hosted distribution intentionally omits the corner menu and its
-marketing, legal, and policy destinations. Those hosted-public destinations
-belong to Step 17 and may be added in the later public fork. Focused encrypted
-key and View-once gates omit the visible logo and theme toggle.
+marketing, legal, and policy destinations. The same binary enables those
+destinations at runtime only for the configured hosted origin `0xbin.app`;
+self-hosters do not publish the hosted operator's policies or contact details.
+Focused encrypted key and View-once gates omit the visible logo, theme toggle,
+and corner menu.
+
+### Hosted corner menu
+
+The hosted service shows a compact bottom-left menu with crawlable links to Who
+& why, Terms & conditions, Privacy & reports, and the public GitHub repository.
+The three internal pages cover maintainer information, acceptable use, service
+terms, security, privacy, and abuse reporting. The menu opens upward, closes on
+Escape or an outside pointer action, restores focus to its trigger, and remains
+available on creation, viewer, and policy pages.
 
 ### Theme behaviour
 
