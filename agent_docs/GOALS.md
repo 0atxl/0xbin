@@ -2,7 +2,7 @@
 
 **Status:** Active  
 **Scope:** MVP through public beta  
-**Related documents:** `spec.md`, `docs/PRD.md`, `docs/PHASES.md`
+**Related documents:** `../spec.md`, `../docs/PRD.md`, `PHASES.md`
 
 This file defines what 0xbin is trying to achieve and how success will be judged. It does not define implementation details or task order.
 
@@ -58,7 +58,7 @@ Build a small, reliable, ephemeral paste service that is immediately usable at `
 - The viewer supports search and wrap/no-wrap behaviour.
 - The initial 1 MiB paste limit is validated through testing rather than assumed.
 - Browser behaviour is accessible by keyboard and usable on desktop and mobile.
-- A CLI can be added after the web MVP without redesigning the API.
+- The companion CLI can use the stable API without requiring backend redesign.
 
 ## Engineering Goals
 
@@ -143,7 +143,7 @@ When goals compete, use this order:
 
 After the public beta is stable, consider:
 
-- Official CLI with local encryption
+- A separate `0xbin-mcp` interface that reuses the CLI library
 - Longer bounded expiry options
 - Creator-controlled deletion capability
 - Better large-log search and rendering
@@ -152,4 +152,3 @@ After the public beta is stable, consider:
 - More deployment guides
 
 Deferred goals must receive explicit requirements and acceptance criteria before implementation. They are not authorization to expand the MVP.
-

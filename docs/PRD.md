@@ -1,6 +1,6 @@
 # 0xbin Product Requirements Document
 
-**Status:** Draft for MVP implementation  
+**Status:** Active product requirements
 **Owner:** Project maintainer  
 **Related:** `../spec.md`
 
@@ -192,7 +192,7 @@ Requirements use `FR-<area>-<number>` identifiers.
 ## 8. Frontend Behaviour Requirements
 
 This section defines behaviour, not visual design. The visual and interaction
-baseline is documented in [`FRONTEND.md`](FRONTEND.md).
+baseline is documented in [`FRONTEND.md`](../agent_docs/FRONTEND.md).
 
 ### 8.1 Creation state
 
@@ -265,8 +265,7 @@ Do not record paste bodies, titles, encryption keys, or user-level behavioural p
 
 ## 12. Open Product Questions
 
-- Add a bounded 3-day or 7-day expiry after MVP testing?
+- Add a bounded 7-day expiry after MVP testing?
 - Offer a one-time deletion capability to paste creators?
 - Should raw plaintext responses be enabled for burn-after-read pastes? Default answer: no.
 - Which browsers and mobile versions receive official support?
-- What final name should the later CLI use?

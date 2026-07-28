@@ -5,7 +5,9 @@ and optional client-side encryption. It is intended for hosted use and simple
 self-hosting from the same codebase.
 
 The product requirements and architecture are defined in [spec.md](spec.md)
-and [docs/](docs/).
+and [docs/](docs/). Agent-specific guidance and implementation notes are
+grouped in [agent_docs/](agent_docs/); the root
+[AGENTS.md](AGENTS.md) remains the repository instruction entry point.
 
 ## Development
 
@@ -31,7 +33,7 @@ make build
 
 Steps 0–16 are implemented. The production React bundle is embedded in the Go
 binary, and the repository includes self-hosted container packaging. See the
-[implementation plan](docs/IMPLEMENTATION_PLAN.md) for the verification gates.
+[implementation plan](agent_docs/IMPLEMENTATION_PLAN.md) for the verification gates.
 
 ## Self-hosting
 

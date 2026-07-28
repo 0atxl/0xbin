@@ -1,6 +1,6 @@
 # 0xbin Technical Design
 
-**Status:** Proposed MVP design  
+**Status:** Implemented MVP baseline; hosted operational hardening remains pending
 **Source of product truth:** `../spec.md`
 
 ## 1. System Context
@@ -28,7 +28,7 @@ The reverse proxy may be part of the hosting platform. The Go service must also 
 
 ## 2. Repository Structure
 
-Proposed structure:
+Current structure:
 
 ```text
 cmd/0xbin/main.go
@@ -38,12 +38,13 @@ internal/paste/
 internal/slug/
 internal/storage/sqlite/
 internal/ratelimit/
-internal/lifecycle/
-internal/observability/
+internal/cleanup/
+internal/webassets/
 db/migrations/
 web/src/
 wordlists/
 docs/
+agent_docs/
 ```
 
 Avoid premature layers. Packages should correspond to an actual boundary or test seam.
@@ -64,18 +65,25 @@ OXBIN_ALLOWED_EXPIRIES
 OXBIN_CREATE_RATE
 OXBIN_READ_RATE
 OXBIN_MISS_RATE
+OXBIN_CONSUME_RATE
 OXBIN_TRUSTED_PROXIES
 OXBIN_CREATION_ENABLED
+OXBIN_READ_HEADER_TIMEOUT
+OXBIN_READ_TIMEOUT
+OXBIN_WRITE_TIMEOUT
+OXBIN_IDLE_TIMEOUT
+OXBIN_SHUTDOWN_TIMEOUT
 ```
 
 Fail startup on unsafe or incoherent values. Do not log secrets.
 
 ### 3.2 HTTP server
 
-- Go `net/http` with Chi if routing ergonomics justify the dependency
+- Go `net/http` with the standard-library `http.ServeMux`
 - Explicit header, read, write, idle, and shutdown timeouts
-- Middleware order documented and tested
-- Request ID, recovery, security headers, body limits, client-IP resolution, rate limits, then handler
+- Request ID, recovery, and client-IP resolution wrap the root handler
+- API handlers apply body limits and rate limits; additional security-header
+  hardening remains part of pending Step 17 work
 - Frontend fallback must not turn unknown API routes into HTML 200 responses
 
 ### 3.3 Paste service
@@ -98,15 +106,16 @@ Owns SQL, migrations, transactions, and database-specific error mapping. Keep it
 ```go
 type Store interface {
     Create(ctx context.Context, paste NewPaste) (Paste, error)
+    CreateEncrypted(ctx context.Context, paste NewEncryptedPaste) (Paste, error)
     GetActive(ctx context.Context, slug string, now time.Time) (Paste, error)
-    GetBurnMetadata(ctx context.Context, slug string, now time.Time) (BurnMetadata, error)
     ConsumeActive(ctx context.Context, slug string, now time.Time) (Paste, error)
-    DeleteExpiredBatch(ctx context.Context, now time.Time, limit int) (int64, error)
-    Ping(ctx context.Context) error
 }
 ```
 
-The interface exists to isolate storage logic and enable tests, not as a promise to implement PostgreSQL.
+The paste-service interface exists to isolate storage logic and enable tests,
+not as a promise to implement PostgreSQL. The SQLite store additionally exposes
+`Ping` for readiness, while the cleanup worker uses its own narrow
+`DeleteExpiredBatch` interface.
 
 ### 3.5 Cleanup worker
 
@@ -115,7 +124,8 @@ The interface exists to isolate storage logic and enable tests, not as a promise
 - Applies a timeout to each cleanup pass
 - Repeats bounded deletes until fewer than the batch size are removed, with a safety cap per pass
 - Stops ticker on shutdown
-- Emits count, duration, and error metrics
+- Emits structured count, duration, and error logs; metrics remain part of the
+  pending hosted-operational work
 
 ## 4. Data Design
 
@@ -247,7 +257,7 @@ Maintain fixed test vectors for:
 ## 7. API Design
 
 Use JSON with `Content-Type: application/json`. The current endpoint schemas are
-defined in [`openapi.yaml`](openapi.yaml); the document expands as later API
+defined in [`openapi.yaml`](../docs/openapi.yaml); the document expands as later API
 modes are implemented.
 
 ### 7.1 Create paste
@@ -423,6 +433,9 @@ API, and UI change; it is not introduced by the frontend design work.
 
 ## 11. Observability
 
+The following metrics are planned for hosted operational hardening; the current
+service emits structured logs but does not yet expose a metrics system.
+
 Structured server logs:
 
 - Timestamp, level, request ID, route template, status, duration, response bytes
@@ -492,7 +505,8 @@ Metrics:
 - Redis/distributed limits
 - Object storage and attachments
 - User identity and authorization
-- CLI implementation
+- MCP product interface; it must reuse the companion CLI library rather than
+  introducing another protocol implementation
 - Permanent records
 - Advanced moderation automation
 - Custom rendering engine or virtual scroller

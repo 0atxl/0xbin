@@ -74,6 +74,14 @@ Use only if the frontend design actually lives in Figma and Codex needs to inspe
 
 If the hosted service later uses Sentry or a similar platform, its MCP can help investigate live errors. Do not add monitoring MCP before selecting and deploying the monitoring system. Ensure URLs/fragments, paste content, and keys are redacted at the SDK level before any external telemetry.
 
+### 2.5 0xbin MCP product interface — planned separately
+
+The companion [`0xbin-cli`](https://github.com/0atxl/0xbin-cli) project already
+implements the server's create, retrieve, consume, URL-handling, and
+client-side encryption contract. A future `0xbin-mcp` should be a separate
+product interface that reuses that CLI library and its validation and
+cryptography; it is not a development-tool MCP server for this repository.
+
 ## 3. MCPs Not Needed Initially
 
 - **Supabase/PostgreSQL MCP:** The product uses SQLite.
@@ -93,6 +101,7 @@ At repository start:
 Required
 ├── AGENTS.md
 ├── spec.md and docs/
+├── agent_docs/
 ├── local build/test scripts
 └── browser testing capability by frontend Phase 2/3
 
@@ -129,4 +138,3 @@ For 0xbin, begin with:
 5. Figma MCP only if tomorrow's design work uses Figma.
 
 This keeps the setup understandable and prevents tool configuration from becoming a project of its own.
-

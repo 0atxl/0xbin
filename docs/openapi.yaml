@@ -2,7 +2,7 @@ openapi: 3.1.0
 info:
   title: 0xbin API
   version: 0.1.0
-  description: Plaintext and encrypted endpoints implemented through Implementation Plan Step 9.
+  description: API for plaintext and encrypted pastes.
 paths:
   /api/v1/pastes:
     post:

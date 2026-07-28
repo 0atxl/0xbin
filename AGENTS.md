@@ -8,11 +8,17 @@ Read these documents before planning substantial work:
 
 1. `spec.md` — settled product and architecture decisions
 2. `docs/PRD.md` — user-facing requirements and acceptance criteria
-3. `docs/TECHNICAL_DESIGN.md` — component and data design
-4. `docs/IMPLEMENTATION_PLAN.md` — ordered tasks and verification gates
-5. `docs/PHASES.md` — scope boundaries and release phases
+3. `agent_docs/TECHNICAL_DESIGN.md` — component and data design
+4. `agent_docs/IMPLEMENTATION_PLAN.md` — ordered tasks and verification gates
+5. `agent_docs/PHASES.md` — scope boundaries and release phases
 
 If documents conflict, `spec.md` wins. Do not silently change a settled decision; identify the conflict and ask before implementing a materially different design.
+
+For work that changes the public API, encrypted envelope, URL handling, or
+burn semantics, also inspect the companion
+[`0xbin-cli`](https://github.com/0atxl/0xbin-cli) contract before editing.
+The planned `0xbin-mcp` is a separate product interface that will reuse the
+CLI library; do not add MCP runtime dependencies to this service.
 
 ## Non-Negotiable Decisions
 
@@ -25,7 +31,7 @@ If documents conflict, `spec.md` wins. Do not silently change a settled decision
 - SQLite is the only initial database for hosted and self-hosted deployments.
 - Expiry is enforced in read/consume queries; the cleanup worker only reclaims storage.
 - Burn-after-read requires explicit reveal and atomic consume; a GET never burns content.
-- Follow `docs/FRONTEND.md` for the MVP visual and interaction baseline; do not change the settled behaviour or security semantics it records.
+- Follow `agent_docs/FRONTEND.md` for the MVP visual and interaction baseline; do not change the settled behaviour or security semantics it records.
 - Keep the initial deployment to one Go service, one SQLite database, and an embedded frontend.
 - Do not introduce Redis, PostgreSQL, Kubernetes, accounts, or file uploads unless the relevant specification changes first.
 
@@ -37,7 +43,8 @@ internal/           Server packages
 web/                React + TypeScript frontend
 db/migrations/      Ordered SQLite migrations
 wordlists/          Reviewed adjective and noun sources
-docs/               Product and engineering documents
+docs/               Official project documentation
+agent_docs/         Agent-facing implementation guidance
 tests/              Cross-component fixtures where needed
 ```
 
@@ -94,6 +101,6 @@ Security-critical changes require negative tests, including wrong keys, malforme
 
 - Update `spec.md` only when a product or architecture decision changes.
 - Update `docs/PRD.md` when observable requirements or acceptance criteria change.
-- Update `docs/TECHNICAL_DESIGN.md` when APIs, schema, components, or security boundaries change.
-- Update `docs/IMPLEMENTATION_PLAN.md` and `docs/PHASES.md` when sequencing or scope changes.
+- Update `agent_docs/TECHNICAL_DESIGN.md` when APIs, schema, components, or security boundaries change.
+- Update `agent_docs/IMPLEMENTATION_PLAN.md` and `agent_docs/PHASES.md` when sequencing or scope changes.
 - Keep this file concise and focused on durable agent behaviour. Do not duplicate the full specification here.

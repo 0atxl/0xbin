@@ -1,16 +1,17 @@
 # 0xbin Step-by-Step Implementation Plan
 
 **Purpose:** Ordered execution plan for building the MVP without pulling later-phase work forward.  
-**Inputs:** `../spec.md`, `PRD.md`, `TECHNICAL_DESIGN.md`, `../AGENTS.md`
+**Inputs:** `../spec.md`, `../docs/PRD.md`, `TECHNICAL_DESIGN.md`, `../AGENTS.md`
 
 Each step ends with a verification gate. Do not begin a dependent step until its gate passes. Commit boundaries may follow steps or coherent substeps; avoid one enormous final commit.
 
-**Current implementation status (2026-07-19):** Steps 0–16 are complete and
-their verification gates pass. The self-hosted package is ready to ship. Step
-17, hosted security and operational hardening, is in progress: the hosted
-information/policy menu and search-discovery boundary are implemented, while
-the remaining security, operator-control, monitoring, and backup gates are
-still open.
+**Current implementation status (2026-07-29):** Steps 0–16 are complete and
+their verification gates pass. The self-hosted package is ready to ship. The
+viewer-search improvement described in Step 19 is also implemented. Step 17,
+hosted security and operational hardening, remains in progress: hosted
+information/policy pages and the search-discovery boundary are implemented,
+while CSP, protected operator controls, monitoring, and backup/restore gates
+remain open.
 
 ## 0. Repository Baseline
 
@@ -456,9 +457,9 @@ requirements and acceptance criteria.
 Ask Codex to implement one numbered step or tightly related substep at a time. Example:
 
 ```text
-Read AGENTS.md, spec.md, and Step 3 of docs/IMPLEMENTATION_PLAN.md.
-Implement only Step 3. Explain assumptions before editing, run its verification
-gate, and do not begin Step 4.
+Read AGENTS.md, spec.md, and Step 17 of agent_docs/IMPLEMENTATION_PLAN.md.
+Implement only one tightly scoped Step 17 task. Explain assumptions before
+editing, run the relevant verification, and do not begin unrelated work.
 ```
 
 At the end of each step, review the diff and test evidence before proceeding.

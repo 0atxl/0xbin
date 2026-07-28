@@ -1,6 +1,6 @@
 # Viewer Search Performance
 
-**Status:** Phase 5 improvement
+**Status:** Implemented post-MVP improvement (2026-07-24)
 
 ## Scope
 

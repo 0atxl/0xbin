@@ -2,6 +2,9 @@
 
 This document groups the detailed implementation plan into product milestones. A phase is complete only when its exit criteria pass; writing code is not itself completion.
 
+**Current status (2026-07-29):** Phases 0–3 are complete. Phase 4 is in
+progress; its hosted security and operational exit criteria remain open.
+
 ## Phase 0 — Foundation
 
 **Objective:** A reproducible repository and executable service skeleton.
@@ -133,7 +136,7 @@ Exit criteria:
 
 Candidate work, prioritized only from real usage:
 
-- Official CLI using the stable API and local encryption
+- A separate `0xbin-mcp` interface built on the companion CLI library
 - 7-day expiry or longer, following an explicit policy review
 - Creator deletion capability
 - Improved large-log search and rendering
@@ -143,6 +146,10 @@ Candidate work, prioritized only from real usage:
 - Stronger hosted edge abuse controls
 
 Each candidate requires its own requirements and acceptance criteria before implementation.
+
+The companion [`0xbin-cli`](https://github.com/0atxl/0xbin-cli) project already
+implements the stable create, retrieve, consume, and local-encryption contract.
+It is released independently and does not expand the 0xbin server scope.
 
 ## Explicitly Outside the Current Roadmap
 

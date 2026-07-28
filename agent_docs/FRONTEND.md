@@ -1,13 +1,14 @@
 # 0xbin Frontend Design and Implementation Plan
 
-**Status:** Implemented self-host direction for Steps 11–16
+**Status:** Implemented MVP frontend baseline (Steps 11–16)
 **Current release note:** One-hour pastes show quiet relative expiry support in
 the viewer.
-**Sources of truth:** `../spec.md`, `PRD.md`, `TECHNICAL_DESIGN.md`, `IMPLEMENTATION_PLAN.md`, and `../AGENTS.md`
+**Sources of truth:** `../spec.md`, `../docs/PRD.md`, `TECHNICAL_DESIGN.md`, `IMPLEMENTATION_PLAN.md`, and `../AGENTS.md`
 
-This document settles the visual and interaction direction for the 0xbin MVP
-and breaks Step 11 into reviewable implementation slices. Product and security
-semantics from `spec.md` still win if this document is interpreted ambiguously.
+This document records the implemented visual and interaction direction for the
+0xbin MVP. The historical Step 10A and Step 11 sections document completed
+work; product and security semantics from `spec.md` still win if this document
+is interpreted ambiguously.
 
 ## 1. Settled Product Decisions
 
@@ -42,9 +43,10 @@ semantics from `spec.md` still win if this document is interpreted ambiguously.
 - Visual styling must not weaken keyboard access, focus visibility, contrast,
   reduced-motion support, or safe text rendering.
 
-## 2. Codex Change Request — Step 10A: Three-Day Expiry
+## 2. Completed Implementation Record — Step 10A: Three-Day Expiry
 
-This small backend change precedes frontend lifetime controls.
+This completed backend change established the lifetime controls used by the
+frontend.
 
 ### Required behaviour
 
@@ -74,7 +76,7 @@ This small backend change precedes frontend lifetime controls.
 - `docs/openapi.yaml`
   - Add `72h` to the create-request expiry enum.
   - Update the API description if its implementation-step status is stale.
-- `spec.md`, `docs/PRD.md`, `docs/TECHNICAL_DESIGN.md`, and `docs/PHASES.md`
+- `spec.md`, `docs/PRD.md`, `agent_docs/TECHNICAL_DESIGN.md`, and `agent_docs/PHASES.md`
   - Record three-day expiry as an MVP choice rather than a post-MVP candidate.
 - `README.md`
   - Keep implementation status aligned with completed steps.
@@ -594,10 +596,10 @@ in one place rather than scattering string comparisons through components.
 - Test script tags, event attributes, SVG payloads, Markdown HTML, bidi/control
   characters, malformed envelopes, wrong keys, and modified ciphertext.
 
-## 15. Ordered Step 11 Implementation Slices
+## 15. Completed Step 11 Implementation Slices
 
-Each slice should be independently reviewable and finish with tests. Do not
-pull Step 12 embedding/container work into Step 11.
+These historical slices were independently reviewed and verified. They remain
+here as implementation context, not as pending work.
 
 ### 11.1 Frontend foundation
 

@@ -3,9 +3,9 @@
 **Status:** Living specification  
 **Domain:** `0xbin.app`  
 **Product model:** Public hosted service and open-source self-hosted software  
-**Last updated:** 2026-07-19
+**Last updated:** 2026-07-29
 
-This file defines the settled product and architecture boundaries. Detailed product requirements, implementation design, sequencing, and repository instructions live in `docs/PRD.md`, `docs/TECHNICAL_DESIGN.md`, `docs/IMPLEMENTATION_PLAN.md`, `docs/PHASES.md`, and `AGENTS.md`.
+This file defines the settled product and architecture boundaries. Product requirements live in `docs/PRD.md`; agent-facing implementation design and sequencing live in `agent_docs/`; repository instructions live in `AGENTS.md`.
 
 ## 1. Product
 
@@ -31,7 +31,7 @@ Do not describe the entire service as zero-knowledge or private. Those propertie
 | Path suffix, digits, separators | None |
 | Database | SQLite for hosted and self-hosted deployments initially |
 | Backend | Go |
-| Frontend | React + TypeScript + Vite; MVP design baseline in `docs/FRONTEND.md` |
+| Frontend | React + TypeScript + Vite; MVP design baseline in `agent_docs/FRONTEND.md` |
 | Packaging | One Go service with embedded frontend and one SQLite volume |
 | Expiry | 1 hour, 1 day, 3 days, or burn after one deliberate read; unopened burn pastes expire after 3 days |
 | Redis/PostgreSQL | Not part of the initial design |
@@ -234,7 +234,7 @@ from the configured hosted origin and remain absent from self-hosted navigation.
 ## 8. Frontend Behaviour
 
 The MVP interaction and visual baseline is defined in
-[`docs/FRONTEND.md`](docs/FRONTEND.md). That document may refine
+[`agent_docs/FRONTEND.md`](agent_docs/FRONTEND.md). That document may refine
 implementation detail without changing the security and lifecycle behaviour
 settled here.
 
@@ -325,7 +325,8 @@ Deferred:
 - Permanent hosted pastes
 - File/image upload
 - PostgreSQL, Redis, multiple application instances
-- Official CLI (planned after web MVP)
+- CLI or MCP protocol changes; the companion CLI is maintained in the separate
+  [`0xbin-cli`](https://github.com/0atxl/0xbin-cli) repository
 - Automatic language detection if it delays the core flow
 - Custom virtual-scroll implementation
 
