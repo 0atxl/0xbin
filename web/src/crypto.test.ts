@@ -23,6 +23,14 @@ const fixedEnvelope: CiphertextEnvelope = {
     "PCCgfreWq3TjY626ncsMBPe64hbKWbvEroBwCT9FIt5gfsmJzqZ3uk6GD4Hp7kZMiyEUr3b0wLVR4093bMHPzJhZqha881v2JMr0jgcULWciCYGVgohq",
 };
 
+const fixedEmptyMetadataEnvelope: CiphertextEnvelope = {
+  version: encryptionVersion,
+  algorithm: encryptionAlgorithm,
+  iv: "AAECAwQFBgcICQoL",
+  ciphertext:
+    "PCCgfreWq3TjY626ncsMBPe64hbKWX1QGguE63ocYdVkMpTeje0w-xvKC4jm8woCzDEF4Ta5gafIR08a-7DGVjadfHEe_jr1",
+};
+
 const unicodePayload: PlaintextPayload = {
   version: plaintextVersion,
   title: "世界",
@@ -42,6 +50,17 @@ describe("browser crypto", () => {
     await expect(decryptPayload(fixedEnvelope, fixedKey)).resolves.toEqual(
       unicodePayload,
     );
+  });
+
+  it("decrypts the fixed AES-GCM empty-metadata compatibility vector", async () => {
+    await expect(
+      decryptPayload(fixedEmptyMetadataEnvelope, fixedKey),
+    ).resolves.toEqual({
+      version: plaintextVersion,
+      title: "",
+      language: "",
+      content: "hello",
+    });
   });
 
   it("encrypts with a 256-bit key and unique 96-bit IV", async () => {
