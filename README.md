@@ -35,6 +35,30 @@ Steps 0–16 are implemented. The production React bundle is embedded in the Go
 binary, and the repository includes self-hosted container packaging. See the
 [implementation plan](agent_docs/IMPLEMENTATION_PLAN.md) for the verification gates.
 
+## Command-line client
+
+The separate Rust [`0xbin-cli`](https://github.com/0atxl/0xbin-cli) project is
+a client for this service. It uses `https://0xbin.app` by default and can also
+target a self-hosted instance.
+
+Install it with Cargo:
+
+```text
+cargo install zeroxbin-cli
+```
+
+On Arch Linux, install the AUR package with an AUR helper:
+
+```text
+yay -S 0xbin-cli
+# or: paru -S 0xbin-cli
+```
+
+The package is in the AUR, not an official Arch repository, so
+`pacman -S 0xbin-cli` is not available. See the
+[CLI release page](https://github.com/0atxl/0xbin-cli/releases) for release
+archives and checksums.
+
 ## Self-hosting
 
 0xbin runs as one container and stores its SQLite database in `/data`. Set the
