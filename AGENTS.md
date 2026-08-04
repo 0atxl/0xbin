@@ -80,6 +80,27 @@ For each implementation task:
 
 Do not implement later phases opportunistically. Record a follow-up instead.
 
+## Git Branch and CI Workflow
+
+- Start feature work from an up-to-date `main` working tree after checking
+  `git status --short`. Do not switch branches or pull over uncommitted work
+  blindly.
+- Use a dedicated branch such as `feature/live-sharing` for live-sharing
+  implementation. Keep `main` deployable and use focused commits at the
+  documentation, prototype, backend, frontend, and verification gates.
+- Push implementation changes to the feature branch and open a pull request.
+  Do not normally push implementation work directly to `main`.
+- The GitHub Actions workflow in `.github/workflows/ci.yml` defines the
+  required `verify` job. A direct `main` push may be accepted with a message
+  such as `Bypassed rule violations` when the actor can bypass branch rules;
+  that message does not mean the required verification passed.
+- Before merging a feature branch, confirm the pull-request `verify` check is
+  green and review the complete diff. Never claim CI verification from a
+  successful `git push` alone.
+- If a direct `main` push is explicitly requested for a documentation
+  checkpoint, keep it limited to the requested files and still report whether
+  the required `verify` check actually ran and passed.
+
 ## Verification Expectations
 
 Once scaffolding exists, maintain stable repository-level commands for:
