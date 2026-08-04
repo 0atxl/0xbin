@@ -12,10 +12,14 @@ import (
 type Category string
 
 const (
-	Create  Category = "create"
-	Read    Category = "read"
-	Miss    Category = "miss"
-	Consume Category = "consume"
+	Create         Category = "create"
+	Read           Category = "read"
+	Miss           Category = "miss"
+	Consume        Category = "consume"
+	LiveCreate     Category = "live_create"
+	LiveUnlock     Category = "live_unlock"
+	LiveConnection Category = "live_connection"
+	LiveMessage    Category = "live_message"
 )
 
 const consecutiveMissThreshold = 5

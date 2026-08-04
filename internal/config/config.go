@@ -24,26 +24,45 @@ type Rate struct {
 	Window time.Duration
 }
 
+// LiveSnapshotLimits bounds the amount of retained live-room history before
+// the room store must compact it into a current snapshot.
+type LiveSnapshotLimits struct {
+	MaxRows  int
+	MaxBytes int64
+}
+
 // Config is the validated runtime configuration for one 0xbin instance.
 type Config struct {
-	BaseURL           *url.URL
-	ListenAddr        string
-	DataDir           string
-	MaxPasteBytes     int64
-	DefaultExpiry     time.Duration
-	AllowedExpiries   []time.Duration
-	AllowedExpiryIDs  []string
-	CreateRate        Rate
-	ReadRate          Rate
-	MissRate          Rate
-	ConsumeRate       Rate
-	TrustedProxies    []netip.Prefix
-	CreationEnabled   bool
-	ReadHeaderTimeout time.Duration
-	ReadTimeout       time.Duration
-	WriteTimeout      time.Duration
-	IdleTimeout       time.Duration
-	ShutdownTimeout   time.Duration
+	BaseURL               *url.URL
+	ListenAddr            string
+	DataDir               string
+	MaxPasteBytes         int64
+	DefaultExpiry         time.Duration
+	AllowedExpiries       []time.Duration
+	AllowedExpiryIDs      []string
+	CreateRate            Rate
+	ReadRate              Rate
+	MissRate              Rate
+	ConsumeRate           Rate
+	TrustedProxies        []netip.Prefix
+	CreationEnabled       bool
+	ReadHeaderTimeout     time.Duration
+	ReadTimeout           time.Duration
+	WriteTimeout          time.Duration
+	IdleTimeout           time.Duration
+	ShutdownTimeout       time.Duration
+	LiveRoomLifetime      time.Duration
+	LiveMaxTabs           int
+	LiveMaxBytes          int64
+	LiveMaxParticipants   int
+	LiveMaxMessageBytes   int
+	LiveHeartbeatInterval time.Duration
+	LiveCreateRate        Rate
+	LiveUnlockRate        Rate
+	LiveConnectionRate    Rate
+	LiveMessageRate       Rate
+	LiveMaxConnections    int
+	LiveSnapshotLimits    LiveSnapshotLimits
 }
 
 // Load creates a Config from OXBIN_* environment variables.
@@ -127,26 +146,42 @@ func Load(lookup LookupEnv) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	live, err := loadLiveConfig(get)
+	if err != nil {
+		return Config{}, err
+	}
 
 	return Config{
-		BaseURL:           baseURL,
-		ListenAddr:        listenAddr,
-		DataDir:           dataDir,
-		MaxPasteBytes:     maxPasteBytes,
-		DefaultExpiry:     defaultExpiry,
-		AllowedExpiries:   allowedExpiries,
-		AllowedExpiryIDs:  expiryIDs(get("OXBIN_ALLOWED_EXPIRIES", "1h,24h,72h")),
-		CreateRate:        createRate,
-		ReadRate:          readRate,
-		MissRate:          missRate,
-		ConsumeRate:       consumeRate,
-		TrustedProxies:    trustedProxies,
-		CreationEnabled:   creationEnabled,
-		ReadHeaderTimeout: readHeaderTimeout,
-		ReadTimeout:       readTimeout,
-		WriteTimeout:      writeTimeout,
-		IdleTimeout:       idleTimeout,
-		ShutdownTimeout:   shutdownTimeout,
+		BaseURL:               baseURL,
+		ListenAddr:            listenAddr,
+		DataDir:               dataDir,
+		MaxPasteBytes:         maxPasteBytes,
+		DefaultExpiry:         defaultExpiry,
+		AllowedExpiries:       allowedExpiries,
+		AllowedExpiryIDs:      expiryIDs(get("OXBIN_ALLOWED_EXPIRIES", "1h,24h,72h")),
+		CreateRate:            createRate,
+		ReadRate:              readRate,
+		MissRate:              missRate,
+		ConsumeRate:           consumeRate,
+		TrustedProxies:        trustedProxies,
+		CreationEnabled:       creationEnabled,
+		ReadHeaderTimeout:     readHeaderTimeout,
+		ReadTimeout:           readTimeout,
+		WriteTimeout:          writeTimeout,
+		IdleTimeout:           idleTimeout,
+		ShutdownTimeout:       shutdownTimeout,
+		LiveRoomLifetime:      live.roomLifetime,
+		LiveMaxTabs:           live.maxTabs,
+		LiveMaxBytes:          live.maxBytes,
+		LiveMaxParticipants:   live.maxParticipants,
+		LiveMaxMessageBytes:   live.maxMessageBytes,
+		LiveHeartbeatInterval: live.heartbeatInterval,
+		LiveCreateRate:        live.createRate,
+		LiveUnlockRate:        live.unlockRate,
+		LiveConnectionRate:    live.connectionRate,
+		LiveMessageRate:       live.messageRate,
+		LiveMaxConnections:    live.maxConnections,
+		LiveSnapshotLimits:    live.snapshotLimits,
 	}, nil
 }
 

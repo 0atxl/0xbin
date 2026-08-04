@@ -101,12 +101,18 @@ OXBIN_LIVE_MAX_BYTES
 OXBIN_LIVE_MAX_PARTICIPANTS
 OXBIN_LIVE_MAX_MESSAGE_BYTES
 OXBIN_LIVE_HEARTBEAT_INTERVAL
+OXBIN_LIVE_CREATE_RATE
 OXBIN_LIVE_UNLOCK_RATE
+OXBIN_LIVE_CONNECTION_RATE
+OXBIN_LIVE_MESSAGE_RATE
 OXBIN_LIVE_MAX_CONNECTIONS
 OXBIN_LIVE_SNAPSHOT_LIMITS
 ```
 
 Fail startup on unsafe or incoherent values. Do not log secrets.
+`OXBIN_LIVE_SNAPSHOT_LIMITS` uses `rows/bytes` syntax. The fixed validation
+limits are 32 UTF-8 bytes for nicknames, 64 bytes for tab names, 64 bytes for
+language identifiers, and 64 bytes for document identifiers.
 
 ### 3.2 HTTP server
 

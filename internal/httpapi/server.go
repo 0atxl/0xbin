@@ -113,10 +113,14 @@ func newHandler(cfg config.Config, pastes PasteService, frontend fs.FS, readines
 	mux.HandleFunc("GET /health/ready", func(w http.ResponseWriter, r *http.Request) { notReady(w, r, ready) })
 	if pastes != nil {
 		limits, err := ratelimit.NewRegistry(map[ratelimit.Category]config.Rate{
-			ratelimit.Create:  cfg.CreateRate,
-			ratelimit.Read:    cfg.ReadRate,
-			ratelimit.Miss:    cfg.MissRate,
-			ratelimit.Consume: cfg.ConsumeRate,
+			ratelimit.Create:         cfg.CreateRate,
+			ratelimit.Read:           cfg.ReadRate,
+			ratelimit.Miss:           cfg.MissRate,
+			ratelimit.Consume:        cfg.ConsumeRate,
+			ratelimit.LiveCreate:     cfg.LiveCreateRate,
+			ratelimit.LiveUnlock:     cfg.LiveUnlockRate,
+			ratelimit.LiveConnection: cfg.LiveConnectionRate,
+			ratelimit.LiveMessage:    cfg.LiveMessageRate,
 		}, 10_000, 2*time.Hour, time.Now)
 		if err != nil {
 			panic("validated rate limit configuration is invalid: " + err.Error())

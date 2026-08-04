@@ -31,6 +31,7 @@
     "@vitejs/plugin-react": "latest",
     "react": "latest",
     "react-dom": "latest",
+    "topbar": "^3.0.1",
     "vite": "latest"
   },
   "devDependencies": {

@@ -2,7 +2,7 @@
 
 ## Implementation Plan
 
-**Status:** Step 1 compatibility spike complete; full live-room implementation not started
+**Status:** Steps 1–2 complete; full live-room implementation not started
 
 **Related:** [`spec.md`](../spec.md), [`docs/PRD.md`](../docs/PRD.md),
 [`agent_docs/TECHNICAL_DESIGN.md`](TECHNICAL_DESIGN.md),
@@ -620,6 +620,19 @@ wire envelope and add property/fuzz coverage around the configured limits.
 
 **Gate:** Invalid configuration fails at startup; all live limits are tested;
 no existing paste configuration default changes unexpectedly.
+
+**Step 2 result (2026-08-05):** The selected WebSocket, Argon2id, CodeMirror
+collaboration, and topbar dependencies are installed. Live configuration,
+rate-limit categories, bounded label/content validation, supported language
+validation, document-order validation, and adjective+noun participant-name
+generation are implemented and covered by focused tests. The standard `make
+test` and `make test-race` targets regenerate the browser-owned collaboration
+fixtures and fail on fixture drift before running Go tests. Full repository
+lint, unit, race, frontend, formatting, and build verification passed.
+
+This step adds no live routes, room storage, WebSocket handlers, password gate,
+or frontend live UI. Those remain intentionally deferred to the following
+steps.
 
 ### Step 3 — SQLite migration and live store
 
