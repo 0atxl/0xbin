@@ -1,6 +1,7 @@
 # 0xbin Technical Design
 
-**Status:** Implemented MVP baseline; hosted operational hardening remains pending
+**Status:** Implemented MVP baseline; live-sharing extension design aligned;
+hosted operational hardening remains pending
 **Source of product truth:** `../spec.md`
 
 ## 1. System Context
@@ -23,6 +24,27 @@ Go service
   ├── expiry worker
   └── SQLite storage
 ```
+
+The approved post-MVP live mode adds a separate path through the same service:
+
+```text
+Browser live room
+  ├── React/CodeMirror tabs
+  ├── temporary participant presence
+  └── WebSocket collaboration
+            |
+            v
+Go live hub and authority
+  ├── live HTTP bootstrap/create/unlock
+  ├── room-scoped password sessions
+  ├── in-memory presence and connection registry
+  └── SQLite live-room snapshots and bounded change history
+```
+
+Live sharing does not modify paste routes, payloads, encryption, expiry, burn,
+or rendering semantics. The initial deployment remains one Go process and one
+SQLite database; the live hub is process-local and does not support multiple
+application instances.
 
 The reverse proxy may be part of the hosting platform. The Go service must also run directly for local development.
 
@@ -73,6 +95,15 @@ OXBIN_READ_TIMEOUT
 OXBIN_WRITE_TIMEOUT
 OXBIN_IDLE_TIMEOUT
 OXBIN_SHUTDOWN_TIMEOUT
+OXBIN_LIVE_ROOM_LIFETIME
+OXBIN_LIVE_MAX_TABS
+OXBIN_LIVE_MAX_BYTES
+OXBIN_LIVE_MAX_PARTICIPANTS
+OXBIN_LIVE_MAX_MESSAGE_BYTES
+OXBIN_LIVE_HEARTBEAT_INTERVAL
+OXBIN_LIVE_UNLOCK_RATE
+OXBIN_LIVE_MAX_CONNECTIONS
+OXBIN_LIVE_SNAPSHOT_LIMITS
 ```
 
 Fail startup on unsafe or incoherent values. Do not log secrets.
@@ -127,6 +158,28 @@ not as a promise to implement PostgreSQL. The SQLite store additionally exposes
 - Emits structured count, duration, and error logs; metrics remain part of the
   pending hosted-operational work
 
+### 3.6 Live-sharing service
+
+The live extension is kept behind focused packages and uses the same service
+process:
+
+- Live HTTP handlers own room creation, bootstrap, unlock, and WebSocket
+  upgrade boundaries; handlers remain thin.
+- The live room hub serializes room operations and orders document changes,
+  tab metadata changes, presence, cursor/selection updates, reconnects, and
+  expiry transitions.
+- The collaboration authority uses independent metadata/document revisions,
+  persists accepted changes before acknowledging them, and keeps bounded
+  history for reconnect/rebase.
+- Presence and short-lived room password sessions remain process memory only.
+- Passwords use an adaptive Argon2id hash; the password itself never enters
+  URLs, logs, SQLite, or telemetry.
+- The frontend uses a small native WebSocket client and React hooks with
+  Phoenix-style join/rejoin/heartbeat behavior, but does not add Phoenix or
+  LiveView runtime dependencies or protocols.
+- The existing shared top progress bar handles static paste loading and live
+  bootstrap/connect/reconnect/resync states.
+
 ## 4. Data Design
 
 ### 4.1 Schema
@@ -155,6 +208,14 @@ bytes, and language is at most 64 bytes. Empty title and language values are
 valid. Size checks precede full UTF-8 validation.
 
 The server parses plaintext payloads for validation and raw responses. It treats encrypted ciphertext as opaque after structural envelope validation.
+
+The live extension adds separate `live_rooms`, `live_documents`, and bounded
+`live_changes` tables. Live room documents are server-readable text. Room
+metadata and each document have independent revision streams. Presence,
+participant names/colours, cursors, selections, joined times, and room-session
+cookies are not durable database data. The complete migration direction and
+limits are defined in
+[`LIVE_SHARING_IMPLEMENTATION_PLAN.md`](LIVE_SHARING_IMPLEMENTATION_PLAN.md).
 
 Creation accepts an expiry identifier, not a timestamp. The default policy maps
 `1h`, `24h`, and `72h` to their durations and calculates `created_at` and `expires_at`
@@ -341,6 +402,25 @@ Stable structure:
 
 Publicly collapse missing/expired/consumed/deleted into the same code and status. Define separate validation, too-large, rate-limited, unsupported-version, creation-disabled, and internal errors.
 
+### 7.6 Live sharing
+
+Live endpoints are separate from paste endpoints:
+
+```text
+POST /api/v1/live
+GET  /api/v1/live/{slug}
+POST /api/v1/live/{slug}/unlock
+GET  /api/v1/live/{slug}/ws
+```
+
+The HTTP bootstrap returns the bounded full room snapshot. The WebSocket then
+carries join, document changes, tab metadata changes, presence, cursors,
+selections, acknowledgements, reconnect/resync status, and expiry events. A
+protected room requires a short-lived `HttpOnly`, `SameSite=Strict`, `Secure`
+room session under HTTPS. Live responses use `no-store` and no-index headers.
+The detailed message contract is maintained in the live-sharing implementation
+plan rather than mixed into the paste API contract.
+
 ## 8. Expiry and Atomic Consume
 
 Normal retrieval SQL must include expiry in the query. Never retrieve content and decide later that it expired.
@@ -382,6 +462,8 @@ In-memory limiting resets on restart and can be bypassed using distributed IPs. 
 
 - `/` creation experience
 - `/{slug}` paste viewer or burn confirmation
+- `/live` live-room creation
+- `/live/{slug}` live-room password gate or collaborative room
 - Not-found/error state without revealing lifecycle reason
 
 API routes remain under `/api/v1`; health routes are reserved.
@@ -402,6 +484,9 @@ compliant bots can observe those response directives.
 - Encryption key in memory/fragment only
 - No paste body or key in persistent browser storage
 - Server state fetched through a small typed API client
+- Live room state is owned by the live-room hook/socket client and CodeMirror;
+  presence, cursors, selections, reconnect queues, and room revisions remain
+  out of persistent browser storage.
 - Avoid a global state library until demonstrated necessary
 
 ### 10.3 CodeMirror
@@ -409,6 +494,12 @@ compliant bots can observe those response directives.
 Use CodeMirror 6 for the editor. Evaluate read-only CodeMirror for the viewer against a simpler preformatted/text implementation. Benchmark before committing to custom virtualization.
 
 Language selection should be explicit initially. `plaintext` is a safe fallback. Automatic detection is deferred.
+
+The live editor uses one collaborative CodeMirror state per document tab. The
+server is the ordering authority; clients send change sets with document
+revisions and receive rebased accepted updates. Remote cursors and selections
+are ephemeral decorations mapped through document changes and are rendered only
+for active connected participants in the same tab.
 
 ### 10.4 Security
 
@@ -431,6 +522,17 @@ The version-1 payload contains title, language, and content only. A creator
 field or attribution requires an explicit payload, validation, crypto-vector,
 API, and UI change; it is not introduced by the frontend design work.
 
+The live frontend follows the same compact editor-first design. The `Live
+share` control sits immediately left of the theme toggle. It reuses current
+notifications, warnings, validation, unavailable states, and the minimal top
+progress bar. It must not add technical badges, marketing panels, fake
+participants, decorative placeholders, or persistent encryption/storage
+explanations.
+
+The create-page Live Share handoff carries only the unsaved draft in memory.
+The paste viewer action always starts a blank live draft and never copies
+plaintext or decrypted encrypted-paste content automatically.
+
 ## 11. Observability
 
 The following metrics are planned for hosted operational hardening; the current
@@ -445,6 +547,8 @@ Metrics:
 
 - Requests and latency by route template/status
 - Create/read/miss/consume/rate-limit counts
+- Live room creation, connection, expiry, resync, and error categories without
+  room bodies, participant names, cursors, selections, passwords, or raw frames
 - Payload-size buckets
 - SQLite errors and busy duration
 - Cleanup rows/duration/errors
@@ -498,6 +602,8 @@ Metrics:
 - Static analysis and dependency audit
 - Fuzz tests for slug parsing, payload/envelope decoding, and client-IP header parsing
 - Performance tests for 1 MiB and 10,000-line payloads
+- Live room authority, reconnect, cursor mapping, presence, password, expiry,
+  and WebSocket abuse tests, including race and malformed-message cases
 
 ## 15. Deferred Architecture
 
@@ -510,3 +616,5 @@ Metrics:
 - Permanent records
 - Advanced moderation automation
 - Custom rendering engine or virtual scroller
+- Video/audio/screen sharing, execution, accounts, saved live rooms, and
+  user-visible live history remain outside this extension phase

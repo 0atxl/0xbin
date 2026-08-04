@@ -132,7 +132,48 @@ Exit criteria:
 - Trusted proxy and rate limits work in the real hosted topology.
 - Restore and rollback are demonstrated.
 
-## Phase 5 — Post-MVP Improvements
+## Phase 5 — Live Sharing Extension
+
+**Objective:** Add a temporary, account-free collaborative editor as a separate
+post-MVP room mode while preserving every existing paste guarantee.
+
+Includes:
+
+- Dedicated `/live` and `/live/{slug}` routes and live API namespace
+- One 24-hour room with multiple CodeMirror language tabs
+- Real-time concurrent editing with visible cursors and selections
+- Temporary adjective+noun participant names with rename support
+- Session-only presence, joined time, connection state, and participant colour
+- Optional shared password gate without end-to-end encryption
+- HTTP room bootstrap plus WebSocket updates, reconnect, resynchronization,
+  bounded offline text queue, and deterministic tab conflicts
+- SQLite room/document snapshots and bounded change history; no durable presence
+- Shared top progress bar for static paste loading and live loading/connectivity
+- Existing notification, warning, accessibility, reduced-motion, and visual
+  baseline reuse with no technical frontend filler copy
+- One-process, one-SQLite self-hosted deployment
+
+Implementation plan: [`LIVE_SHARING_IMPLEMENTATION_PLAN.md`](LIVE_SHARING_IMPLEMENTATION_PLAN.md),
+Steps 0A–13.
+
+Exit criteria:
+
+- The collaboration authority converges under concurrent edits, Unicode,
+  reconnect, and cursor/selection mapping tests.
+- Password, origin, message-size, connection, expiry, and presence boundaries
+  pass negative tests.
+- A live room survives restart through durable snapshots, but presence and
+  room sessions do not survive.
+- The existing paste API, encryption, burn, expiry, rendering, and action
+  behavior remain unchanged apart from the approved loading-bar visual update.
+- Full repository formatting, lint, unit, race, browser, build, and self-host
+  checks pass.
+
+Not included: accounts, media calls, screen sharing, execution, file uploads,
+saved live rooms, user-visible history, view-only roles, or multi-instance
+coordination.
+
+## Phase 6 — Post-MVP Improvements
 
 Candidate work, prioritized only from real usage:
 

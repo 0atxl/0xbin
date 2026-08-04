@@ -37,7 +37,8 @@ Do not describe the entire service as zero-knowledge or private. Those propertie
 | Redis/PostgreSQL | Not part of the initial design |
 | Maximum paste size | 1 MiB initially; raise only after benchmarks |
 | Public paste index | None |
-| Accounts | Not in MVP |
+| Accounts | Not in MVP; live rooms use temporary session names only |
+| Live sharing | Approved post-MVP extension under `/live`, separate from paste semantics |
 
 ## 3. URL and Slug Model
 
@@ -201,6 +202,11 @@ Go application
 
 The hosted deployment and self-hosted distribution use the same binary and migrations. Differences are configuration only: base URL, trusted proxies, rate limits, storage path, allowed expiry values, and administrative controls.
 
+The approved live-sharing extension uses the same binary and SQLite volume with
+a process-local room hub and WebSocket transport. It does not require Redis,
+PostgreSQL, a broker, or a second service. Multiple application instances are
+not supported for live rooms in this phase.
+
 SQLite requirements:
 
 - Persistent volume
@@ -255,6 +261,36 @@ Required behaviours:
 
 Use CodeMirror 6 for editing and, after benchmarking, potentially for read-only viewing. Automatic language detection and hand-written virtualization are not MVP requirements.
 
+### 8.1 Live-sharing extension
+
+Live sharing is an optional post-MVP mode. It is a separate room namespace and
+does not change paste creation, retrieval, encryption, expiry, burn, or URL
+semantics.
+
+- `/live` creates a temporary live room and `/live/{slug}` opens one.
+- A room expires 24 hours after server-side creation, regardless of activity.
+- A room starts with one CodeMirror document tab and supports up to the
+  configured tab limit with existing language modes.
+- Multiple participants edit the same documents in real time, including
+  visible temporary cursors and selections in the active tab.
+- Each participant receives an adjective+noun temporary display name and can
+  rename it during the session. Presence, colours, cursors, selections, joined
+  time, and connection state are session-only.
+- Live room content is server-readable plaintext. Client-side AES-GCM paste
+  encryption is not used for live rooms.
+- An optional shared password gates entry. It is access control, not
+  end-to-end encryption. No account or recovery flow is required.
+- Live room documents and bounded synchronization history use separate tables
+  and routes from `pastes`; active presence is not stored in SQLite.
+- The live UI keeps the existing editor-first visual baseline and notification
+  treatment. Technical descriptions do not become unnecessary frontend copy.
+- The existing static paste loading state may use the same minimal top progress
+  bar, without changing paste API or security semantics.
+
+The Live Share header action carries an unsaved create-page draft into a live
+draft in browser memory. From an existing paste viewer it opens a blank live
+draft and never automatically transfers viewed or decrypted content.
+
 ## 9. Initial Data Model
 
 SQLite schema direction:
@@ -287,11 +323,19 @@ POST   /api/v1/pastes
 GET    /api/v1/pastes/{slug}
 POST   /api/v1/pastes/{slug}/consume
 GET    /api/v1/pastes/{slug}/raw
+POST   /api/v1/live
+GET    /api/v1/live/{slug}
+POST   /api/v1/live/{slug}/unlock
+GET    /api/v1/live/{slug}/ws   (WebSocket upgrade)
 GET    /health/live
 GET    /health/ready
 ```
 
-All API errors use a stable JSON shape and request ID. Raw access applies to plaintext pastes; encrypted clients fetch the envelope and decrypt locally.
+All API errors use a stable JSON shape and request ID. Raw access applies to
+plaintext pastes; encrypted clients fetch the envelope and decrypt locally.
+Live bootstrap/unlock responses use `no-store` and no-index headers. The live
+WebSocket message contract is maintained in the live-sharing implementation
+plan and does not alter the paste API contract.
 
 ## 11. Security Baseline
 
@@ -330,6 +374,10 @@ Deferred:
 - Automatic language detection if it delays the core flow
 - Custom virtual-scroll implementation
 
+The initial paste MVP remains the scope described above. The approved live
+sharing extension is delivered as a separate post-MVP phase and must pass its
+own collaboration, security, expiry, accessibility, and self-hosting gates.
+
 ## 13. Acceptance Summary
 
 The MVP is ready for public beta when:
@@ -343,3 +391,10 @@ The MVP is ready for public beta when:
 - Arbitrary paste content cannot execute in the application.
 - A self-hoster can run one documented container with one persistent volume.
 - Backup restore and upgrade migrations have been tested.
+
+The live-sharing extension is ready for release only when its separate
+implementation plan passes: concurrent editing converges, reconnect and
+resynchronization preserve acknowledged work, cursors and selections map
+correctly, optional password gates protect every access path, rooms expire and
+clean up after 24 hours, presence remains session-only, and the existing paste
+journeys remain unchanged apart from the approved loading-bar visual update.

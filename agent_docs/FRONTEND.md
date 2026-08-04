@@ -1,6 +1,7 @@
 # 0xbin Frontend Design and Implementation Plan
 
-**Status:** Implemented MVP frontend baseline (Steps 11–16)
+**Status:** Implemented MVP frontend baseline (Steps 11–16); live-sharing
+extension baseline aligned
 **Current release note:** One-hour pastes show quiet relative expiry support in
 the viewer.
 **Sources of truth:** `../spec.md`, `../docs/PRD.md`, `TECHNICAL_DESIGN.md`, `IMPLEMENTATION_PLAN.md`, and `../AGENTS.md`
@@ -42,6 +43,11 @@ is interpreted ambiguously.
   state.
 - Visual styling must not weaken keyboard access, focus visibility, contrast,
   reduced-motion support, or safe text rendering.
+
+The approved live-sharing extension is a separate post-MVP frontend mode. It
+uses the same compact editor-first layout, notifications, warnings, loading
+feedback, accessibility rules, and visual tokens. Its detailed implementation
+sequence is [`LIVE_SHARING_IMPLEMENTATION_PLAN.md`](LIVE_SHARING_IMPLEMENTATION_PLAN.md).
 
 ## 2. Completed Implementation Record — Step 10A: Three-Day Expiry
 
@@ -96,6 +102,8 @@ frontend.
 
 - `/` — creation experience
 - `/{slug}` — paste viewer, encrypted key gate, or View-once confirmation
+- `/live` — live-room creation
+- `/live/{slug}` — live-room password gate or collaborative room
 
 Do not create a separate `/error` route. A failed creation remains on `/`, and
 a failed retrieval retains the requested paste URL. Keeping the original URL
@@ -123,6 +131,19 @@ Viewer:
 - View-once confirmation
 - consuming
 - unavailable
+- service error
+
+Live room:
+
+- creation
+- HTTP bootstrap
+- password required
+- connecting
+- connected
+- reconnecting
+- offline
+- synchronized
+- expired/unavailable
 - service error
 
 Keep state local to the relevant screen. Do not add a global state library
@@ -220,9 +241,16 @@ icon, active encryption state, focus details, and brief success feedback.
 
 - Brand icon: top-left
 - Icon-only theme toggle: top-right; its accessible name describes the action
+- `Live share` control immediately left of the theme toggle
 - Main page content: fixed to the viewport between the top controls and bottom
   actions; the document itself does not scroll
 - Editor/viewer canvas: the only primary scroll region
+
+Use one minimal top progress bar for actual loading work. It covers static
+paste retrieval, live bootstrap, first connection, reconnect, and HTTP
+resynchronization. Delay it briefly so fast work does not flash. Do not show it
+for typing, cursor movement, copy actions, or other optimistic interactions.
+
 ### Self-host navigation
 
 The self-hosted distribution intentionally omits the corner menu and its
@@ -516,8 +544,12 @@ screen-reader users.
 - `Creating…` in the Create action.
 - `Decrypting…` in the key gate.
 - `Revealing…` in the View-once action.
-- Subtle skeleton text lines for a normal viewer load.
-- Avoid blocking spinners that cause layout shifts.
+- A shared minimal top progress bar for normal viewer retrieval. Keep a
+  visually hidden loading announcement for screen readers.
+- The same bar is used for live bootstrap/connect/reconnect/resync. Hide it
+  before rendering a persistent unavailable or service-error state.
+- Under reduced motion, avoid continuous decorative animation while retaining
+  a clear loading state.
 
 ## 11. Component Direction
 
@@ -710,10 +742,45 @@ generically unavailable; encrypted wrong-key risk is clearly presented.
 - [x] Large-content viewer remains usable.
 - [x] All repository verification commands pass.
 
-## 17. Explicitly Deferred
+## 17. Live-Sharing Extension Baseline
+
+The live frontend is a normal extension of 0xbin, not a separate dashboard or
+marketing page.
+
+- `Live share` sits immediately left of the theme toggle.
+- From the create editor, carry the current unsaved title, language, and
+  content into the live creator in browser memory. Do not upload it until the
+  live room is created.
+- From an existing paste viewer, always open a blank live creator. Never copy
+  viewed or decrypted content automatically.
+- The live creator has one initial tab, existing language modes, an optional
+  `Require password` control, and the fixed 24-hour room lifetime.
+- Participants receive unique adjective+noun names automatically, can rename
+  themselves from the participant popover, and retain a stable colour.
+- The participant popover shows only real participants, their joined time,
+  current tab, and observable connection state.
+- Visible cursors and selections use restrained CodeMirror decorations in the
+  active tab. Nickname labels fade while idle, and stale/disconnected
+  decorations disappear.
+- Add, rename, delete, and reorder tab controls remain local-looking and
+  compact. Structural controls are disabled while room metadata reconnects.
+- Reuse the existing toast stack, inline validation, warning treatment,
+  unavailable states, and top progress bar. Do not add a second feedback style.
+- Do not add technical badges, maturity labels, architecture explanations,
+  feature cards, fake participants, sample documents, or decorative
+  placeholders. Every visible string must label a function, report useful
+  state, or support an immediate decision.
+- Presence, cursors, selections, draft handoff state, and room content are not
+  placed in persistent browser storage.
+
+The live route must support full keyboard operation, screen-reader status
+announcements, reduced motion, narrow-screen participant popovers, and safe
+text rendering for nicknames, tab names, and documents.
+
+## 18. Explicitly Deferred
 
 - Creator/author attribution
-- Accounts or identity
+- Permanent accounts or identity
 - Permanent paste storage
 - 7-day or longer expiry
 - Automatic language detection

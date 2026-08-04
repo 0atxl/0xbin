@@ -21,6 +21,10 @@ Developers and technical users frequently need to share a block of text, code, l
 - Keep deployment and maintenance understandable for a student maintainer.
 - Remain usable for large developer-oriented text up to the validated limit.
 
+The approved post-MVP live-sharing extension adds temporary collaborative rooms
+without changing these paste goals or guarantees. It is tracked separately
+from the initial paste MVP.
+
 ## 3. Non-Goals
 
 - Strong secrecy for unencrypted URLs
@@ -33,6 +37,8 @@ Developers and technical users frequently need to share a block of text, code, l
 - Guaranteed anonymity
 - Custom URL slugs
 - Visual design definition in this document
+- Real-time live rooms in the initial paste MVP; live sharing is an approved
+  post-MVP extension with its own requirements and exit criteria
 
 ## 4. Users and Jobs
 
@@ -55,6 +61,11 @@ Developers and technical users frequently need to share a block of text, code, l
 ### 4.5 Hosted-service operator
 
 > When anonymous users abuse the service, I need limits, visibility, deletion controls, and an emergency creation switch.
+
+### 4.6 Live-room participant
+
+> When I need to work on text or code with someone immediately, I want one
+> temporary link where we can edit together without accounts or setup.
 
 ## 5. Product Principles
 
@@ -108,6 +119,23 @@ Developers and technical users frequently need to share a block of text, code, l
 2. Operator starts the documented container with a base URL and storage path.
 3. Application applies migrations, validates configuration, and starts.
 4. Operator can back up, restore, upgrade, and inspect health using documented procedures.
+
+### 6.6 Create and use a live room (post-MVP extension)
+
+1. User selects `Live share` from the existing header.
+2. From the create editor, the current unsaved title, language, and content are
+   carried into a live draft in browser memory. No room is created until the
+   user submits the live form.
+3. From an existing paste viewer, the action opens a blank live draft and does
+   not copy viewed or decrypted content.
+4. User creates a room with one initial tab, an optional shared password, and
+   the fixed 24-hour lifetime.
+5. Browser opens the room, receives a temporary adjective+noun participant
+   name, and shares the room URL.
+6. Participants edit tabs together, see active cursors/selections, observe
+   connection state, and can rename their temporary participant name.
+7. The room expires, closes active connections, and becomes unavailable after
+   24 hours even if cleanup has not yet run.
 
 ## 7. Functional Requirements
 
@@ -189,6 +217,43 @@ Requirements use `FR-<area>-<number>` identifiers.
 - **FR-HOST-04:** Migrations are ordered and repeatable.
 - **FR-HOST-05:** Backup, restore, and upgrade procedures are documented and tested.
 
+### 7.9 Live sharing extension
+
+These requirements apply to the approved post-MVP live mode and do not modify
+the paste requirements above.
+
+- **FR-LIVE-01:** A user can create and join a live room without an account.
+- **FR-LIVE-02:** Live rooms use `/live/{slug}` and a separate live API/SQLite
+  namespace; existing paste routes and payloads remain unchanged.
+- **FR-LIVE-03:** A room starts with one tab, supports configured tab limits,
+  and supports every existing CodeMirror language mode.
+- **FR-LIVE-04:** Participants can edit the same tab concurrently and all
+  connected clients converge without last-write-wins data loss.
+- **FR-LIVE-05:** Participants can add, rename, delete, and reorder tabs using
+  deterministic conflict rules; the last tab cannot be deleted.
+- **FR-LIVE-06:** The browser displays mapped temporary participant cursors and
+  selections in the active tab.
+- **FR-LIVE-07:** Each participant receives a unique adjective+noun temporary
+  name, can rename it during the session, and sees it in the participant
+  popover with joined time and connection state.
+- **FR-LIVE-08:** Presence, participant colours, cursors, selections, and
+  joined time are session-only and are not stored in SQLite.
+- **FR-LIVE-09:** Live room content is server-readable plaintext and does not
+  use the paste AES-GCM envelope.
+- **FR-LIVE-10:** A room may require one shared password; protected bootstrap,
+  unlock, and WebSocket access paths all require the room session.
+- **FR-LIVE-11:** Live rooms expire 24 hours after creation; read, unlock,
+  mutation, WebSocket, and cleanup paths enforce expiry.
+- **FR-LIVE-12:** A temporary disconnect queues bounded text edits, restores
+  them after reconnect, and disables structural tab actions until metadata is
+  synchronized.
+- **FR-LIVE-13:** The live frontend uses the existing visual, notification,
+  warning, accessibility, and reduced-motion treatment without technical
+  marketing copy or decorative placeholders.
+- **FR-LIVE-14:** The shared top progress bar covers static paste loading and
+  live bootstrap/connect/reconnect/resync work without becoming keystroke or
+  cursor feedback.
+
 ## 8. Frontend Behaviour Requirements
 
 This section defines behaviour, not visual design. The visual and interaction
@@ -214,7 +279,19 @@ baseline is documented in [`FRONTEND.md`](../agent_docs/FRONTEND.md).
 - Generic unavailable state remains at the requested paste URL and does not
   expose whether it was missing, expired, deleted, or consumed
 
-### 8.3 Accessibility
+### 8.3 Live-room state
+
+- `/live` creation, room bootstrap, password gate, connected, reconnecting,
+  offline, expired, unavailable, and service-error states
+- The existing top progress bar is used for actual live loading/connectivity
+  work; persistent failures do not disappear when it hides
+- The participant popover shows only real participants, their temporary names,
+  active state, joined time, and current tab
+- Remote cursors and selections remain subtle and do not cover editor content
+- Live screens contain functional labels and concise state copy only; no
+  architecture, maturity, encryption, or collaboration slogans are added
+
+### 8.4 Accessibility
 
 - Semantic labels and headings
 - Full keyboard use
@@ -223,6 +300,8 @@ baseline is documented in [`FRONTEND.md`](../agent_docs/FRONTEND.md).
 - Sufficient contrast in the eventual design
 - Reduced-motion support
 - Mobile-compatible content viewing and horizontal scrolling
+- Live participant popovers, tab operations, cursor/selection state, and
+  reconnect status are keyboard and screen-reader usable
 
 ## 9. Non-Functional Requirements
 
@@ -235,6 +314,10 @@ baseline is documented in [`FRONTEND.md`](../agent_docs/FRONTEND.md).
 - **NFR-REL-02:** Expiry remains correct when the cleanup worker is delayed or fails.
 - **NFR-PORT-01:** Official container runs on common amd64 and arm64 Linux hosts where supported by CI.
 - **NFR-MAINT-01:** Core behaviour has unit, integration, concurrency, and browser tests.
+- **NFR-LIVE-01:** The live extension remains supported as one Go process, one
+  SQLite database, and one embedded frontend instance.
+- **NFR-LIVE-02:** Live collaboration, presence, reconnect, cursor mapping,
+  expiry, password, accessibility, and abuse limits have negative tests.
 
 ## 10. Product Metrics
 
@@ -262,6 +345,10 @@ Do not record paste bodies, titles, encryption keys, or user-level behavioural p
 - Abuse deletion and creation shutdown are operational.
 - Policies and security contact are published.
 - One-command self-host instructions work on a clean environment.
+
+The live-sharing extension has a separate release gate: its dedicated
+implementation plan and browser journeys pass without changing the existing
+paste API, encryption, burn, expiry, or rendering semantics.
 
 ## 12. Open Product Questions
 
