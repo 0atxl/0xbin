@@ -18,6 +18,8 @@ the repository root because agent tools discover that filename there.
 - [`FRONTEND.md`](FRONTEND.md) — frontend design and implementation baseline.
 - [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md) — ordered implementation
   work and verification gates.
+- [`LIVE_SHARING_IMPLEMENTATION_PLAN.md`](LIVE_SHARING_IMPLEMENTATION_PLAN.md)
+  — comprehensive plan for the optional multi-tab live-sharing extension.
 - [`PHASES.md`](PHASES.md) — delivery phases and scope boundaries.
 - [`SEARCH_PERFORMANCE.md`](SEARCH_PERFORMANCE.md) — viewer-search performance
   implementation notes.
