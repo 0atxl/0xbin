@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/0atxl/0xbin/internal/live"
 	"github.com/0atxl/0xbin/internal/paste"
 )
 
@@ -26,7 +27,7 @@ func TestOpenMigratesAndReopens(t *testing.T) {
 	if err := store.DB().QueryRowContext(ctx, "SELECT count(*) FROM schema_migrations").Scan(&count); err != nil {
 		t.Fatal(err)
 	}
-	if count != 1 {
+	if count != 2 {
 		t.Fatalf("migrations = %d", count)
 	}
 	if err := store.Close(); err != nil {
@@ -298,6 +299,274 @@ func TestConsumeActiveRejectsExpiredAndNormalPastes(t *testing.T) {
 			t.Fatalf("ConsumeActive(%q) error = %v", slug, err)
 		}
 	}
+}
+
+func TestLiveRoomRoundTripAndReopen(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	now := time.Date(2026, time.July, 16, 12, 0, 0, 0, time.UTC)
+	want := testLiveRoom("calmbrightotter", now)
+	store, err := Open(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateRoom(ctx, want); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.GetRoomSnapshot(ctx, want.Slug, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("GetRoomSnapshot() = %#v, want %#v", got, want)
+	}
+	var storedPassword string
+	if err := store.DB().QueryRowContext(ctx, "SELECT password_hash FROM live_rooms WHERE slug = ?", want.Slug).Scan(&storedPassword); err != nil {
+		t.Fatal(err)
+	}
+	if storedPassword != want.PasswordHash {
+		t.Fatalf("stored password hash = %q, want %q", storedPassword, want.PasswordHash)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err = Open(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	got, err = store.GetRoomSnapshot(ctx, want.Slug, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("reopened room = %#v, want %#v", got, want)
+	}
+}
+
+func TestLiveRoomExpiryAppliesToEveryAccessPath(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Date(2026, time.July, 16, 12, 0, 0, 0, time.UTC)
+	room := testLiveRoom("quietquickwren", now)
+	room.CreatedAt = now.Add(-2 * time.Hour)
+	room.ExpiresAt = now.Add(-time.Minute)
+	if err := store.CreateRoom(ctx, room); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.GetRoomSnapshot(ctx, room.Slug, now); !errors.Is(err, live.ErrRoomNotFound) {
+		t.Fatalf("expired GetRoomSnapshot() error = %v", err)
+	}
+	if err := store.SaveSnapshot(ctx, room, now); !errors.Is(err, live.ErrRoomNotFound) {
+		t.Fatalf("expired SaveSnapshot() error = %v", err)
+	}
+	change := live.ChangeRecord{
+		StreamKind: live.StreamDocument, StreamID: "main", Revision: 1,
+		Kind: "document_update", Payload: `{"content":"expired"}`,
+	}
+	if err := store.AppendChanges(ctx, room.Slug, []live.ChangeRecord{change}, now); !errors.Is(err, live.ErrRoomNotFound) {
+		t.Fatalf("expired AppendChanges() error = %v", err)
+	}
+	if _, err := store.LoadChangesSince(ctx, room.Slug, live.StreamDocument, "main", 0, now); !errors.Is(err, live.ErrRoomNotFound) {
+		t.Fatalf("expired LoadChangesSince() error = %v", err)
+	}
+	if err := store.CompactChanges(ctx, room.Slug, live.StreamDocument, "main", 0, now); !errors.Is(err, live.ErrRoomNotFound) {
+		t.Fatalf("expired CompactChanges() error = %v", err)
+	}
+}
+
+func TestCreateLiveRoomMapsOnlySlugPrimaryKeyToCollision(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Date(2026, time.July, 16, 12, 0, 0, 0, time.UTC)
+	room := testLiveRoom("calmbrightotter", now)
+	if err := store.CreateRoom(ctx, room); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateRoom(ctx, room); !errors.Is(err, live.ErrRoomSlugCollision) {
+		t.Fatalf("duplicate live room error = %v, want %v", err, live.ErrRoomSlugCollision)
+	}
+}
+
+func TestLiveRoomChangesUseIndependentRevisionStreams(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Date(2026, time.July, 16, 12, 0, 0, 0, time.UTC)
+	room := testLiveRoom("swiftcleverfox", now)
+	if err := store.CreateRoom(ctx, room); err != nil {
+		t.Fatal(err)
+	}
+	changes := []live.ChangeRecord{
+		{StreamKind: live.StreamMetadata, StreamID: live.MetadataStreamID, Revision: 1, Kind: "document_create", Payload: `{"id":"notes"}`},
+		{StreamKind: live.StreamDocument, StreamID: "main", Revision: 1, Kind: "document_update", Payload: `{"content":"package main\n"}`},
+	}
+	if err := store.AppendChanges(ctx, room.Slug, changes, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AppendChanges(ctx, room.Slug, []live.ChangeRecord{
+		{StreamKind: live.StreamMetadata, StreamID: live.MetadataStreamID, Revision: 2, Kind: "document_reorder", Payload: `{"order":["main"]}`},
+	}, now); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.GetRoomSnapshot(ctx, room.Slug, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.MetadataRevision != 2 || got.Documents[0].CurrentRevision != 1 {
+		t.Fatalf("independent revisions = metadata %d, document %d", got.MetadataRevision, got.Documents[0].CurrentRevision)
+	}
+	metadata, err := store.LoadChangesSince(ctx, room.Slug, live.StreamMetadata, live.MetadataStreamID, 0, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	document, err := store.LoadChangesSince(ctx, room.Slug, live.StreamDocument, "main", 0, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(metadata) != 2 || len(document) != 1 || document[0].Revision != 1 {
+		t.Fatalf("loaded changes = metadata %#v, document %#v", metadata, document)
+	}
+
+	updated := got
+	updated.Documents[0].Content = "package main\n\nfunc main() {}\n"
+	if err := store.SaveSnapshot(ctx, updated, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CompactChanges(ctx, room.Slug, live.StreamMetadata, live.MetadataStreamID, 1, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CompactChanges(ctx, room.Slug, live.StreamDocument, "main", 1, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.LoadChangesSince(ctx, room.Slug, live.StreamMetadata, live.MetadataStreamID, 0, now); !errors.Is(err, live.ErrHistoryCompacted) {
+		t.Fatalf("compacted metadata history error = %v", err)
+	}
+	if _, err := store.LoadChangesSince(ctx, room.Slug, live.StreamDocument, "main", 0, now); !errors.Is(err, live.ErrHistoryCompacted) {
+		t.Fatalf("compacted document history error = %v", err)
+	}
+	metadata, err = store.LoadChangesSince(ctx, room.Slug, live.StreamMetadata, live.MetadataStreamID, 1, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(metadata) != 1 || metadata[0].Revision != 2 {
+		t.Fatalf("remaining metadata history = %#v", metadata)
+	}
+}
+
+func TestLiveRoomChangeBatchRollsBackOnRevisionConflict(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Date(2026, time.July, 16, 12, 0, 0, 0, time.UTC)
+	room := testLiveRoom("calmquickwren", now)
+	if err := store.CreateRoom(ctx, room); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AppendChanges(ctx, room.Slug, []live.ChangeRecord{
+		{StreamKind: live.StreamMetadata, StreamID: live.MetadataStreamID, Revision: 1, Kind: "document_create", Payload: `{"id":"notes"}`},
+	}, now); err != nil {
+		t.Fatal(err)
+	}
+	conflicting := []live.ChangeRecord{
+		{StreamKind: live.StreamMetadata, StreamID: live.MetadataStreamID, Revision: 2, Kind: "document_create", Payload: `{"id":"notes"}`},
+		{StreamKind: live.StreamMetadata, StreamID: live.MetadataStreamID, Revision: 2, Kind: "document_delete", Payload: `{"id":"notes"}`},
+	}
+	if err := store.AppendChanges(ctx, room.Slug, conflicting, now); !errors.Is(err, live.ErrRevisionConflict) {
+		t.Fatalf("conflicting AppendChanges() error = %v", err)
+	}
+	got, err := store.GetRoomSnapshot(ctx, room.Slug, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.MetadataRevision != 1 {
+		t.Fatalf("metadata revision after rollback = %d, want 1", got.MetadataRevision)
+	}
+	changes, err := store.LoadChangesSince(ctx, room.Slug, live.StreamMetadata, live.MetadataStreamID, 1, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changes) != 0 {
+		t.Fatalf("changes after rollback = %#v", changes)
+	}
+}
+
+func TestDeleteExpiredLiveRoomsCascades(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Date(2026, time.July, 16, 12, 0, 0, 0, time.UTC)
+	room := testLiveRoom("brightcalmotter", now)
+	room.CreatedAt = now.Add(-2 * time.Hour)
+	if err := store.CreateRoom(ctx, room); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AppendChanges(ctx, room.Slug, []live.ChangeRecord{
+		{StreamKind: live.StreamDocument, StreamID: "main", Revision: 1, Kind: "document_update", Payload: `{"content":"changed"}`},
+	}, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.DB().ExecContext(ctx, "UPDATE live_rooms SET expires_at = ? WHERE slug = ?", now.Add(-time.Minute).Unix(), room.Slug); err != nil {
+		t.Fatal(err)
+	}
+	deleted, err := store.DeleteExpiredRooms(ctx, now, 1)
+	if err != nil || deleted != 1 {
+		t.Fatalf("DeleteExpiredRooms() = %d, %v; want 1, nil", deleted, err)
+	}
+	for _, table := range []string{"live_rooms", "live_documents", "live_changes"} {
+		var count int
+		column := "room_slug"
+		if table == "live_rooms" {
+			column = "slug"
+		}
+		if err := store.DB().QueryRowContext(ctx, "SELECT count(*) FROM "+table+" WHERE "+column+" = ?", room.Slug).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 0 {
+			t.Fatalf("%s rows after cascade = %d", table, count)
+		}
+	}
+}
+
+func testLiveRoom(slug string, now time.Time) live.RoomSnapshot {
+	room := live.RoomSnapshot{
+		Slug:                     slug,
+		PasswordHash:             "$argon2id$v=19$m=65536,t=3,p=1$test$hash",
+		MetadataRevision:         0,
+		MetadataSnapshotRevision: 0,
+		ExpiresAt:                now.Add(24 * time.Hour),
+		CreatedAt:                now,
+		Documents: []live.DocumentSnapshot{
+			{
+				ID: "main", Name: "main.go", Language: "go", Content: "package main\n",
+				Position: 0, CurrentRevision: 0, SnapshotRevision: 0, UpdatedAt: now,
+			},
+			{
+				ID: "notes", Name: "Notes", Language: "plaintext", Content: "shared notes",
+				Position: 1, CurrentRevision: 0, SnapshotRevision: 0, UpdatedAt: now,
+			},
+		},
+	}
+	room.ContentSize = int64(len(room.Documents[0].Content) + len(room.Documents[1].Content))
+	return room
 }
 
 func testNewPaste(slug string, expiresAt, createdAt time.Time) paste.NewPaste {

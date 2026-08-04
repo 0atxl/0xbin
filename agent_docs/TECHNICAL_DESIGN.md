@@ -223,6 +223,15 @@ cookies are not durable database data. The complete migration direction and
 limits are defined in
 [`LIVE_SHARING_IMPLEMENTATION_PLAN.md`](LIVE_SHARING_IMPLEMENTATION_PLAN.md).
 
+The SQLite implementation exposes a focused `live.RoomStore` boundary with
+room creation, active snapshot reads/writes, transactional change appends,
+per-stream history loading and compaction, and bounded expired-room cleanup.
+Snapshot writes use optimistic revision checks; accepted change batches update
+the affected metadata/document revisions in the same transaction as their
+history rows. Reads and mutations treat expired rooms as not found. Loading
+before a compacted revision returns a resynchronization signal rather than
+silently returning an incomplete history.
+
 Creation accepts an expiry identifier, not a timestamp. The default policy maps
 `1h`, `24h`, and `72h` to their durations and calculates `created_at` and `expires_at`
 from the server clock, normalized to UTC Unix seconds.

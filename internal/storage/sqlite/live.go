@@ -1,0 +1,535 @@
+package sqlite
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"math"
+	"strings"
+	"time"
+	"unicode/utf8"
+
+	"github.com/0atxl/0xbin/internal/live"
+	sqliteDriver "modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
+)
+
+func (s *Store) CreateRoom(ctx context.Context, snapshot live.RoomSnapshot) error {
+	normalized, err := prepareRoomSnapshot(snapshot)
+	if err != nil {
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin live room creation: %w", err)
+	}
+	if err := insertRoom(ctx, tx, normalized); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	if err := insertDocuments(ctx, tx, normalized); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit live room creation: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) GetRoomSnapshot(ctx context.Context, slug string, now time.Time) (live.RoomSnapshot, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return live.RoomSnapshot{}, fmt.Errorf("begin live room read: %w", err)
+	}
+	defer tx.Rollback()
+	var snapshot live.RoomSnapshot
+	var passwordHash sql.NullString
+	var expiresAt, createdAt int64
+	if err := tx.QueryRowContext(ctx, `
+		SELECT slug, password_hash, content_size, metadata_revision,
+		       metadata_snapshot_revision, expires_at, created_at
+		FROM live_rooms
+		WHERE slug = ? AND expires_at > ?`, slug, unixSeconds(now)).Scan(
+		&snapshot.Slug, &passwordHash, &snapshot.ContentSize,
+		&snapshot.MetadataRevision, &snapshot.MetadataSnapshotRevision,
+		&expiresAt, &createdAt,
+	); errors.Is(err, sql.ErrNoRows) {
+		return live.RoomSnapshot{}, live.ErrRoomNotFound
+	} else if err != nil {
+		return live.RoomSnapshot{}, fmt.Errorf("get live room: %w", err)
+	}
+	if passwordHash.Valid {
+		snapshot.PasswordHash = passwordHash.String
+	}
+	snapshot.ExpiresAt = unixTime(expiresAt)
+	snapshot.CreatedAt = unixTime(createdAt)
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT document_id, name, language, content, position,
+		       current_revision, snapshot_revision, updated_at
+		FROM live_documents
+		WHERE room_slug = ?
+		ORDER BY position`, slug)
+	if err != nil {
+		return live.RoomSnapshot{}, fmt.Errorf("list live room documents: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var document live.DocumentSnapshot
+		var updatedAt int64
+		if err := rows.Scan(&document.ID, &document.Name, &document.Language,
+			&document.Content, &document.Position, &document.CurrentRevision,
+			&document.SnapshotRevision, &updatedAt); err != nil {
+			return live.RoomSnapshot{}, fmt.Errorf("scan live room document: %w", err)
+		}
+		document.UpdatedAt = unixTime(updatedAt)
+		snapshot.Documents = append(snapshot.Documents, document)
+	}
+	if err := rows.Err(); err != nil {
+		return live.RoomSnapshot{}, fmt.Errorf("read live room documents: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return live.RoomSnapshot{}, fmt.Errorf("close live room documents: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return live.RoomSnapshot{}, fmt.Errorf("commit live room read: %w", err)
+	}
+	return snapshot, nil
+}
+
+func (s *Store) SaveSnapshot(ctx context.Context, snapshot live.RoomSnapshot, now time.Time) error {
+	normalized, err := prepareRoomSnapshot(snapshot)
+	if err != nil {
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin live room snapshot: %w", err)
+	}
+	var metadataRevision, metadataSnapshotRevision int
+	var expiresAt int64
+	if err := tx.QueryRowContext(ctx, `
+		SELECT metadata_revision, metadata_snapshot_revision, expires_at
+		FROM live_rooms
+		WHERE slug = ? AND expires_at > ?`, normalized.Slug, unixSeconds(now)).Scan(
+		&metadataRevision, &metadataSnapshotRevision, &expiresAt,
+	); errors.Is(err, sql.ErrNoRows) {
+		_ = tx.Rollback()
+		return live.ErrRoomNotFound
+	} else if err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("read live room snapshot revision: %w", err)
+	}
+	if metadataRevision != normalized.MetadataRevision || metadataSnapshotRevision > normalized.MetadataSnapshotRevision {
+		_ = tx.Rollback()
+		return live.ErrRevisionConflict
+	}
+	if normalized.ExpiresAt.Unix() != expiresAt {
+		_ = tx.Rollback()
+		return live.ErrRevisionConflict
+	}
+	for _, document := range normalized.Documents {
+		var currentRevision, snapshotRevision int
+		if err := tx.QueryRowContext(ctx, `
+			SELECT current_revision, snapshot_revision FROM live_documents
+			WHERE room_slug = ? AND document_id = ?`, normalized.Slug, document.ID).Scan(&currentRevision, &snapshotRevision); errors.Is(err, sql.ErrNoRows) {
+			_ = tx.Rollback()
+			return live.ErrRoomNotFound
+		} else if err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("read live document revision: %w", err)
+		}
+		if currentRevision != document.CurrentRevision || snapshotRevision > document.SnapshotRevision {
+			_ = tx.Rollback()
+			return live.ErrRevisionConflict
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE live_rooms
+		SET content_size = ?, metadata_revision = ?, metadata_snapshot_revision = ?
+		WHERE slug = ? AND expires_at > ?`, normalized.ContentSize,
+		normalized.MetadataRevision, normalized.MetadataSnapshotRevision,
+		normalized.Slug, unixSeconds(now)); err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("update live room snapshot: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM live_documents WHERE room_slug = ?`, normalized.Slug); err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("replace live room documents: %w", err)
+	}
+	if err := insertDocuments(ctx, tx, normalized); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit live room snapshot: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) AppendChanges(ctx context.Context, slug string, changes []live.ChangeRecord, now time.Time) error {
+	if len(changes) == 0 {
+		return live.ErrInvalidChange
+	}
+	normalized := make([]live.ChangeRecord, len(changes))
+	for i, change := range changes {
+		var err error
+		normalized[i], err = prepareChange(change, now)
+		if err != nil {
+			return err
+		}
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin live changes: %w", err)
+	}
+	var metadataRevision int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT metadata_revision FROM live_rooms
+		WHERE slug = ? AND expires_at > ?`, slug, unixSeconds(now)).Scan(&metadataRevision); errors.Is(err, sql.ErrNoRows) {
+		_ = tx.Rollback()
+		return live.ErrRoomNotFound
+	} else if err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("read live room revision: %w", err)
+	}
+	current := make(map[string]int)
+	current[live.StreamMetadata+"\x00"+live.MetadataStreamID] = metadataRevision
+	for _, change := range normalized {
+		key := change.StreamKind + "\x00" + change.StreamID
+		if _, ok := current[key]; ok {
+			continue
+		}
+		if change.StreamKind != live.StreamDocument {
+			_ = tx.Rollback()
+			return live.ErrInvalidChange
+		}
+		var revision int
+		if err := tx.QueryRowContext(ctx, `
+			SELECT current_revision FROM live_documents
+			WHERE room_slug = ? AND document_id = ?`, slug, change.StreamID).Scan(&revision); errors.Is(err, sql.ErrNoRows) {
+			_ = tx.Rollback()
+			return live.ErrRoomNotFound
+		} else if err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("read live document revision: %w", err)
+		}
+		current[key] = revision
+	}
+	for _, change := range normalized {
+		key := change.StreamKind + "\x00" + change.StreamID
+		want := current[key] + 1
+		if change.Revision != want {
+			_ = tx.Rollback()
+			return live.ErrRevisionConflict
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO live_changes(room_slug, stream_kind, stream_id, revision,
+			                         change_kind, payload, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)`, slug, change.StreamKind, change.StreamID,
+			change.Revision, change.Kind, change.Payload, unixSeconds(change.CreatedAt)); err != nil {
+			_ = tx.Rollback()
+			if isSQLitePrimaryKey(err) {
+				return live.ErrRevisionConflict
+			}
+			return fmt.Errorf("append live change: %w", err)
+		}
+		current[key] = change.Revision
+	}
+	metadataRevision = current[live.StreamMetadata+"\x00"+live.MetadataStreamID]
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE live_rooms SET metadata_revision = ?
+		WHERE slug = ? AND expires_at > ?`, metadataRevision, slug, unixSeconds(now)); err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("update live metadata revision: %w", err)
+	}
+	updatedDocuments := make(map[string]int)
+	for _, change := range normalized {
+		if change.StreamKind == live.StreamDocument {
+			updatedDocuments[change.StreamID] = current[change.StreamKind+"\x00"+change.StreamID]
+		}
+	}
+	for documentID, revision := range updatedDocuments {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE live_documents SET current_revision = ?
+			WHERE room_slug = ? AND document_id = ?`, revision, slug, documentID); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("update live document revision: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit live changes: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) LoadChangesSince(ctx context.Context, slug, streamKind, streamID string, since int, now time.Time) ([]live.ChangeRecord, error) {
+	if err := validateStream(streamKind, streamID); err != nil {
+		return nil, err
+	}
+	if since < 0 {
+		return nil, live.ErrInvalidChange
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin live history read: %w", err)
+	}
+	defer tx.Rollback()
+	var snapshotRevision int
+	if streamKind == live.StreamMetadata {
+		if err := tx.QueryRowContext(ctx, `
+			SELECT metadata_snapshot_revision FROM live_rooms
+			WHERE slug = ? AND expires_at > ?`, slug, unixSeconds(now)).Scan(&snapshotRevision); errors.Is(err, sql.ErrNoRows) {
+			return nil, live.ErrRoomNotFound
+		} else if err != nil {
+			return nil, fmt.Errorf("read live metadata history: %w", err)
+		}
+	} else if err := tx.QueryRowContext(ctx, `
+		SELECT d.snapshot_revision
+		FROM live_documents AS d
+		JOIN live_rooms AS r ON r.slug = d.room_slug
+		WHERE d.room_slug = ? AND d.document_id = ? AND r.expires_at > ?`, slug, streamID, unixSeconds(now)).Scan(&snapshotRevision); errors.Is(err, sql.ErrNoRows) {
+		return nil, live.ErrRoomNotFound
+	} else if err != nil {
+		return nil, fmt.Errorf("read live document history: %w", err)
+	}
+	if since < snapshotRevision {
+		return nil, live.ErrHistoryCompacted
+	}
+	rows, err := tx.QueryContext(ctx, `
+		SELECT stream_kind, stream_id, revision, change_kind, payload, created_at
+		FROM live_changes
+		WHERE room_slug = ? AND stream_kind = ? AND stream_id = ? AND revision > ?
+		ORDER BY revision`, slug, streamKind, streamID, since)
+	if err != nil {
+		return nil, fmt.Errorf("load live changes: %w", err)
+	}
+	defer rows.Close()
+	var result []live.ChangeRecord
+	for rows.Next() {
+		var change live.ChangeRecord
+		var createdAt int64
+		if err := rows.Scan(&change.StreamKind, &change.StreamID, &change.Revision,
+			&change.Kind, &change.Payload, &createdAt); err != nil {
+			return nil, fmt.Errorf("scan live change: %w", err)
+		}
+		change.CreatedAt = unixTime(createdAt)
+		result = append(result, change)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read live changes: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("close live changes: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit live history read: %w", err)
+	}
+	return result, nil
+}
+
+func (s *Store) CompactChanges(ctx context.Context, slug, streamKind, streamID string, throughRevision int, now time.Time) error {
+	if err := validateStream(streamKind, streamID); err != nil {
+		return err
+	}
+	if throughRevision < 0 {
+		return live.ErrInvalidChange
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin live change compaction: %w", err)
+	}
+	var currentRevision, snapshotRevision int
+	if streamKind == live.StreamMetadata {
+		if err := tx.QueryRowContext(ctx, `
+			SELECT metadata_revision, metadata_snapshot_revision
+			FROM live_rooms WHERE slug = ? AND expires_at > ?`, slug, unixSeconds(now)).Scan(&currentRevision, &snapshotRevision); errors.Is(err, sql.ErrNoRows) {
+			_ = tx.Rollback()
+			return live.ErrRoomNotFound
+		} else if err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("read live metadata compaction state: %w", err)
+		}
+	} else if err := tx.QueryRowContext(ctx, `
+		SELECT d.current_revision, d.snapshot_revision
+		FROM live_documents AS d
+		JOIN live_rooms AS r ON r.slug = d.room_slug
+		WHERE d.room_slug = ? AND d.document_id = ? AND r.expires_at > ?`, slug, streamID, unixSeconds(now)).Scan(&currentRevision, &snapshotRevision); errors.Is(err, sql.ErrNoRows) {
+		_ = tx.Rollback()
+		return live.ErrRoomNotFound
+	} else if err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("read live document compaction state: %w", err)
+	}
+	if throughRevision > currentRevision {
+		_ = tx.Rollback()
+		return live.ErrRevisionConflict
+	}
+	if throughRevision > snapshotRevision {
+		if streamKind == live.StreamMetadata {
+			_, err = tx.ExecContext(ctx, `
+				UPDATE live_rooms SET metadata_snapshot_revision = ?
+				WHERE slug = ? AND expires_at > ?`, throughRevision, slug, unixSeconds(now))
+		} else {
+			_, err = tx.ExecContext(ctx, `
+				UPDATE live_documents SET snapshot_revision = ?
+				WHERE room_slug = ? AND document_id = ?`, throughRevision, slug, streamID)
+		}
+		if err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("update live snapshot revision: %w", err)
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM live_changes
+		WHERE room_slug = ? AND stream_kind = ? AND stream_id = ? AND revision <= ?`,
+		slug, streamKind, streamID, throughRevision); err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("delete compacted live changes: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit live change compaction: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) DeleteExpiredRooms(ctx context.Context, now time.Time, limit int) (int64, error) {
+	if limit <= 0 {
+		return 0, errors.New("live room cleanup limit must be positive")
+	}
+	result, err := s.db.ExecContext(ctx, `
+		DELETE FROM live_rooms
+		WHERE slug IN (
+			SELECT slug FROM live_rooms
+			WHERE expires_at <= ?
+			ORDER BY expires_at, slug
+			LIMIT ?
+		)`, unixSeconds(now), limit)
+	if err != nil {
+		return 0, fmt.Errorf("delete expired live rooms: %w", err)
+	}
+	deleted, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("count deleted live rooms: %w", err)
+	}
+	return deleted, nil
+}
+
+func insertRoom(ctx context.Context, tx *sql.Tx, snapshot live.RoomSnapshot) error {
+	var passwordHash any
+	if snapshot.PasswordHash != "" {
+		passwordHash = snapshot.PasswordHash
+	}
+	_, err := tx.ExecContext(ctx, `
+		INSERT INTO live_rooms(
+			slug, password_hash, content_size, metadata_revision,
+			metadata_snapshot_revision, expires_at, created_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?)`, snapshot.Slug, passwordHash,
+		snapshot.ContentSize, snapshot.MetadataRevision,
+		snapshot.MetadataSnapshotRevision, unixSeconds(snapshot.ExpiresAt),
+		unixSeconds(snapshot.CreatedAt))
+	if err != nil {
+		if isSQLitePrimaryKey(err) {
+			return live.ErrRoomSlugCollision
+		}
+		return fmt.Errorf("insert live room: %w", err)
+	}
+	return nil
+}
+
+func insertDocuments(ctx context.Context, tx *sql.Tx, snapshot live.RoomSnapshot) error {
+	for _, document := range snapshot.Documents {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO live_documents(
+				room_slug, document_id, name, language, content, position,
+				current_revision, snapshot_revision, updated_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, snapshot.Slug, document.ID,
+			document.Name, document.Language, document.Content, document.Position,
+			document.CurrentRevision, document.SnapshotRevision,
+			unixSeconds(document.UpdatedAt)); err != nil {
+			return fmt.Errorf("insert live document %q: %w", document.ID, err)
+		}
+	}
+	return nil
+}
+
+func prepareRoomSnapshot(snapshot live.RoomSnapshot) (live.RoomSnapshot, error) {
+	if snapshot.Slug == "" || strings.TrimSpace(snapshot.Slug) != snapshot.Slug {
+		return live.RoomSnapshot{}, live.ErrInvalidSnapshot
+	}
+	if snapshot.MetadataRevision < 0 || snapshot.MetadataSnapshotRevision < 0 || snapshot.MetadataSnapshotRevision > snapshot.MetadataRevision {
+		return live.RoomSnapshot{}, live.ErrInvalidSnapshot
+	}
+	if snapshot.CreatedAt.IsZero() || snapshot.ExpiresAt.IsZero() || !snapshot.ExpiresAt.After(snapshot.CreatedAt) {
+		return live.RoomSnapshot{}, live.ErrInvalidSnapshot
+	}
+	if len(snapshot.Documents) == 0 {
+		return live.RoomSnapshot{}, live.ErrInvalidSnapshot
+	}
+	snapshot.CreatedAt = snapshot.CreatedAt.UTC()
+	snapshot.ExpiresAt = snapshot.ExpiresAt.UTC()
+	snapshot.Documents = append([]live.DocumentSnapshot(nil), snapshot.Documents...)
+	seenIDs := make(map[string]struct{}, len(snapshot.Documents))
+	var contentSize int64
+	for i := range snapshot.Documents {
+		document := &snapshot.Documents[i]
+		if document.Position != i || document.CurrentRevision < 0 || document.SnapshotRevision < 0 || document.SnapshotRevision > document.CurrentRevision {
+			return live.RoomSnapshot{}, live.ErrInvalidSnapshot
+		}
+		if live.ValidateDocumentID(document.ID) != nil || live.ValidateTabName(document.Name) != nil || live.ValidateLanguageID(document.Language) != nil || live.ValidateDocumentContent(document.Content, math.MaxInt64) != nil {
+			return live.RoomSnapshot{}, live.ErrInvalidSnapshot
+		}
+		if _, exists := seenIDs[document.ID]; exists {
+			return live.RoomSnapshot{}, live.ErrInvalidSnapshot
+		}
+		seenIDs[document.ID] = struct{}{}
+		if document.UpdatedAt.IsZero() {
+			document.UpdatedAt = snapshot.CreatedAt
+		} else {
+			document.UpdatedAt = document.UpdatedAt.UTC()
+		}
+		if int64(len(document.Content)) > math.MaxInt64-contentSize {
+			return live.RoomSnapshot{}, live.ErrInvalidSnapshot
+		}
+		contentSize += int64(len(document.Content))
+	}
+	snapshot.ContentSize = contentSize
+	return snapshot, nil
+}
+
+func prepareChange(change live.ChangeRecord, now time.Time) (live.ChangeRecord, error) {
+	if err := validateStream(change.StreamKind, change.StreamID); err != nil {
+		return live.ChangeRecord{}, err
+	}
+	if change.Revision <= 0 || strings.TrimSpace(change.Kind) != change.Kind || change.Kind == "" || live.ValidateRoomOperation(change.Kind) != nil || change.Payload == "" || !utf8.ValidString(change.Payload) {
+		return live.ChangeRecord{}, live.ErrInvalidChange
+	}
+	if change.CreatedAt.IsZero() {
+		change.CreatedAt = now.UTC()
+	} else {
+		change.CreatedAt = change.CreatedAt.UTC()
+	}
+	return change, nil
+}
+
+func validateStream(streamKind, streamID string) error {
+	if streamKind == live.StreamMetadata {
+		if streamID != live.MetadataStreamID {
+			return live.ErrInvalidChange
+		}
+		return nil
+	}
+	if streamKind != live.StreamDocument || live.ValidateDocumentID(streamID) != nil {
+		return live.ErrInvalidChange
+	}
+	return nil
+}
+
+func unixSeconds(value time.Time) int64 { return value.UTC().Unix() }
+
+func isSQLitePrimaryKey(err error) bool {
+	var sqliteErr *sqliteDriver.Error
+	return errors.As(err, &sqliteErr) && sqliteErr.Code() == sqlite3.SQLITE_CONSTRAINT_PRIMARYKEY
+}

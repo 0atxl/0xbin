@@ -2,7 +2,7 @@
 
 ## Implementation Plan
 
-**Status:** Steps 1–2 complete; full live-room implementation not started
+**Status:** Steps 1–3 complete; room domain and live hub not started
 
 **Related:** [`spec.md`](../spec.md), [`docs/PRD.md`](../docs/PRD.md),
 [`agent_docs/TECHNICAL_DESIGN.md`](TECHNICAL_DESIGN.md),
@@ -652,10 +652,25 @@ steps.
 language metadata, expiry, and password requirement intact; presence does not
 survive or appear in the database.
 
+**Implementation result (2026-08-05):** Added migration `002_live_rooms.sql`
+with separate room, document, and bounded change-history tables, foreign-key
+cascades, expiry indexing, and strict SQLite constraints. Added the focused
+`live.RoomStore` boundary and SQLite implementation for room creation,
+active snapshots, independent metadata/document revisions, transactional
+change append, history loading/compaction, and expired-room cleanup. Presence
+and room-session data remain absent from the durable types and schema. Tests
+cover reopen persistence, password-hash storage, expiry on every live access
+path, slug collisions, atomic batch rollback, independent revision streams,
+history compaction, and cascade deletion.
+
+The repository checks for this step pass. No live routes, WebSocket handlers,
+password verification, or frontend live UI were added; those remain in later
+steps.
+
 ### Step 4 — Room domain and in-memory hub
 
-1. Create an `internal/live` domain package for room/document validation and
-   lifecycle rules.
+1. Extend the `internal/live` domain package with room/document lifecycle rules
+   and in-memory authority state.
 2. Create an in-memory room registry keyed by live slug.
 3. Load a room snapshot when the first client connects and evict it after the
    final client leaves or expiry is reached.
