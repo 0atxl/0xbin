@@ -174,6 +174,12 @@ process:
 - The live room hub serializes room operations and orders document changes,
   tab metadata changes, presence, cursor/selection updates, reconnects, and
   expiry transitions.
+- The process-local `live.Hub` lazily loads rooms, exposes session-scoped
+  document and metadata operations, keeps bounded rebase history, and repairs
+  snapshots from committed change rows after an interrupted save. A stale
+  reorder returns the current room state for resynchronization; deletion wins
+  over a later rename/language update, and the final document cannot be
+  deleted.
 - The collaboration authority uses independent metadata/document revisions,
   persists accepted changes before acknowledging them, and keeps bounded
   history for reconnect/rebase.

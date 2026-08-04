@@ -2,7 +2,7 @@
 
 ## Implementation Plan
 
-**Status:** Steps 1–3 complete; room domain and live hub not started
+**Status:** Steps 1–4 complete; HTTP/WebSocket transport not started
 
 **Related:** [`spec.md`](../spec.md), [`docs/PRD.md`](../docs/PRD.md),
 [`agent_docs/TECHNICAL_DESIGN.md`](TECHNICAL_DESIGN.md),
@@ -693,6 +693,23 @@ steps.
 **Gate:** Unit and race tests prove deterministic room mutation, durable-before-
 acknowledgement ordering, tab conflict rules, presence join/leave behavior,
 and clean shutdown.
+
+**Implementation result (2026-08-05):** Added the process-local `live.Hub` and
+`RoomSession` domain boundary. Rooms load lazily from SQLite, serialize all
+document, metadata, presence, reconnect, expiry, and shutdown operations, and
+repair a snapshot from committed history after an interrupted save. Document
+edits use the CodeMirror-compatible Go rebase logic with bounded in-memory
+history; accepted changes append and commit before snapshot save, compaction,
+and acknowledgement. Metadata operations enforce server-generated IDs,
+idempotent creates, deletion-wins behavior, final-tab protection, and stale
+reorder resynchronization.
+
+Participant names, session generations, reconnect grace, colors, cursor and
+selection state, heartbeat status, and joined times remain process memory only.
+The hub has no HTTP or WebSocket routes yet. Focused tests cover concurrent
+edits, persistence ordering, interrupted-save replay, metadata conflicts,
+bounded-history resync, reconnect identity reclamation, stale-connection
+rejection, presence updates, room eviction, and race safety.
 
 ### Step 5 — HTTP handlers, password gate, and WebSocket transport
 

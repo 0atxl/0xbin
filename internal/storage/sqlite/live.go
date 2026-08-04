@@ -135,8 +135,9 @@ func (s *Store) SaveSnapshot(ctx context.Context, snapshot live.RoomSnapshot, no
 		if err := tx.QueryRowContext(ctx, `
 			SELECT current_revision, snapshot_revision FROM live_documents
 			WHERE room_slug = ? AND document_id = ?`, normalized.Slug, document.ID).Scan(&currentRevision, &snapshotRevision); errors.Is(err, sql.ErrNoRows) {
-			_ = tx.Rollback()
-			return live.ErrRoomNotFound
+			// A metadata create can introduce a document in the same full
+			// snapshot transaction. There is no prior row to compare.
+			continue
 		} else if err != nil {
 			_ = tx.Rollback()
 			return fmt.Errorf("read live document revision: %w", err)
