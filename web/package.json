@@ -9,11 +9,13 @@
     "lint": "tsc -b --pretty false",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
+    "generate:live-fixtures": "node --experimental-strip-types ./scripts/generate-live-collab-fixtures.ts",
     "test": "vitest run",
     "test:e2e": "node ./scripts/crypto-network-test.mjs && node ./scripts/e2e.mjs"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.3",
+    "@codemirror/collab": "^6.1.1",
     "@codemirror/commands": "^6.10.4",
     "@codemirror/lang-cpp": "^6.0.3",
     "@codemirror/lang-go": "^6.0.1",

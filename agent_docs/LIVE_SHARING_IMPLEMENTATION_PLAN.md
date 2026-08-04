@@ -2,7 +2,7 @@
 
 ## Implementation Plan
 
-**Status:** Agreed extension scope; implementation not started
+**Status:** Step 1 compatibility spike complete; full live-room implementation not started
 
 **Related:** [`spec.md`](../spec.md), [`docs/PRD.md`](../docs/PRD.md),
 [`agent_docs/TECHNICAL_DESIGN.md`](TECHNICAL_DESIGN.md),
@@ -583,6 +583,23 @@ concurrent editing and reconnect without a last-write-wins data loss path.
 This is a hard stop/go gate: if the Go compatibility layer is not small,
 understandable, and correct under the fixtures, select a maintained CRDT/OT
 library and revise the technical design before building the full feature.
+
+**Step 1 result (2026-08-05):** The spike passes. `@codemirror/collab` is
+installed in the frontend, browser-generated fixtures are written to
+`tests/livecollab/fixtures.json`, and `internal/livecollab` provides the
+minimum JSON decode, UTF-16-safe apply, mapping, selection mapping, stale
+revision rebase, duplicate retry, and inserted-byte accounting needed for the
+compatibility gate. Go replays the browser fixtures for insert/insert,
+insert/delete, overlapping replacement, multi-range, empty-document, and
+Unicode edits. The tests also cover malformed JSON, stale revisions, changed
+duplicate operation IDs, reconnect-style duplicate retries, and cursor/
+selection mapping.
+
+This is deliberately still a prototype: it has no HTTP handlers, WebSocket
+transport, SQLite persistence, room limits/configuration, or production
+history compaction. Those belong to the following steps. Before using the
+authority in the live feature, repeat the fixture suite through the eventual
+wire envelope and add property/fuzz coverage around the configured limits.
 
 ### Step 2 — Dependencies, configuration, and shared limits
 
