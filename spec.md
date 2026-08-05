@@ -267,6 +267,10 @@ Live sharing is an optional post-MVP mode. It is a separate room namespace and
 does not change paste creation, retrieval, encryption, expiry, burn, or URL
 semantics.
 
+- LiveBin is part of the same one-service deployment but can be disabled by a
+  self-hosted operator, leaving the bare paste service available without live
+  routes or room workload.
+
 - `/live` creates a temporary live room and `/live/{slug}` opens one.
 - A room expires 24 hours after server-side creation, regardless of activity.
 - A room starts with one CodeMirror document tab and supports up to the
@@ -280,6 +284,14 @@ semantics.
   encryption is not used for live rooms.
 - An optional shared password gates entry. It is access control, not
   end-to-end encryption. No account or recovery flow is required.
+- The room creator uses a room-scoped temporary session, not an account, to
+  switch the room to watch-only mode and remove active collaborator sessions.
+- A room allows up to 10 writing participants, up to 100 additional
+  watch-only viewers, and 110 total connected participants.
+- Participants can save either the current tab or every tab as one normal
+  paste; the normal paste flow then controls expiry, encryption, and burn.
+- The server is the collaboration authority over WebSockets. P2P/WebRTC is
+  not part of the live extension.
 - Live room documents and bounded synchronization history use separate tables
   and routes from `pastes`; active presence is not stored in SQLite.
 - The live UI keeps the existing editor-first visual baseline and notification
@@ -287,7 +299,7 @@ semantics.
 - The existing static paste loading state may use the same minimal top progress
   bar, without changing paste API or security semantics.
 
-The Live Share header action carries an unsaved create-page draft into a live
+The LiveBin header action carries an unsaved create-page draft into a live
 draft in browser memory. From an existing paste viewer it opens a blank live
 draft and never automatically transfers viewed or decrypted content.
 

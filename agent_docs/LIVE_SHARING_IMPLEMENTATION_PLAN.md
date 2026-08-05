@@ -2,7 +2,7 @@
 
 ## Implementation Plan
 
-**Status:** Steps 1–4 complete; HTTP/WebSocket transport not started
+**Status:** Steps 1–7 complete; Step 8 collaborative room UI remains pending
 
 **Related:** [`spec.md`](../spec.md), [`docs/PRD.md`](../docs/PRD.md),
 [`agent_docs/TECHNICAL_DESIGN.md`](TECHNICAL_DESIGN.md),
@@ -13,22 +13,26 @@ The existing paste routes, payloads, encryption envelope, expiry choices, and
 burn-after-read semantics remain unchanged. Live sharing is a separate room
 namespace and a separate storage/API surface.
 
-The plan deliberately does not introduce accounts, video, audio, screen
-sharing, end-to-end encryption, terminal execution, file uploads, permanent
-storage, or a second service.
+LiveBin remains an optional mode of the same one-service deployment. A
+self-hosted operator can disable live routes and run the bare paste service
+without the live UI or room workload. The live transport is server-authoritative
+WebSocket fan-out; it deliberately does not introduce P2P/WebRTC, accounts,
+video, audio, screen sharing, end-to-end encryption, terminal execution, file
+uploads, permanent storage, or a second service.
 
 ## 1. Settled Product Contract
 
 ### 1.1 Entry point and routes
 
-- Add a `Live share` control to the normal application header immediately to
+- Add a `LiveBin` control to the normal application header immediately to
   the left of the existing theme toggle.
 - The control is available from the normal create/viewer shell and is hidden
   by focused security gates in the same way as the existing shell controls.
-- From the normal create editor, `Live share` carries the current unsaved
+- From the normal create editor, `LiveBin` carries the current unsaved
   title, selected language, and content in browser memory into the first live
-  tab. It does not create or upload a room until `Create live room` is pressed.
-- From any existing paste viewer, `Live share` opens a blank live-room creator.
+  tab. It does not create or upload a room until `Create LiveBin room` is
+  pressed.
+- From any existing paste viewer, `LiveBin` opens a blank live-room creator.
   It never automatically copies or uploads viewed content, including decrypted
   encrypted-paste content.
 - `/live` opens the live-room creation flow.
@@ -53,6 +57,22 @@ storage, or a second service.
 - Expiry is enforced on room bootstrap, password unlock, WebSocket upgrade,
   and every accepted room operation. Cleanup only reclaims storage.
 - Anyone with the room URL can join and edit an unprotected room.
+- The creator receives a room-scoped session at creation time. This is a
+  temporary capability, not an account or durable ownership record. The
+  creator can switch the room to watch-only mode and can remove active
+  collaborator sessions. Kicked sessions cannot continue editing or immediately
+  rejoin with the invalidated session; without accounts, someone who still has
+  the room URL may rejoin as a new session while the room remains open.
+- A room supports at most 10 writing participants, including the creator, up
+  to 100 additional watch-only viewers, and 110 total connected participants.
+  These are hard room bounds; request and message rate limits remain
+  operator-configurable. A hosted deployment may add Cloudflare or another
+  edge limiter, while a personal self-hosted deployment may choose lenient
+  application limits.
+- A participant can save room content as a normal static paste. The action
+  offers `Current tab` or `Every tab`; the latter appends all tabs in one paste
+  with clear tab separators. It returns to the normal paste flow so the user
+  can choose expiry, encryption, and burn-after-read settings before upload.
 - The server automatically assigns each participant a temporary display name
   made from one existing adjective and one existing noun, displayed as two
   readable title-cased words such as `Quiet Otter`.
@@ -397,7 +417,9 @@ Initial safety defaults, subject to benchmark confirmation:
 
 - 8 tabs per room
 - 1 MiB aggregate document content per room
-- 32 participants per room
+- 10 writing participants per room, including the creator
+- 100 additional watch-only viewers per room
+- 110 total participants per room
 - 32 UTF-8 bytes for nicknames
 - 64 UTF-8 bytes for tab names
 - 64 UTF-8 bytes for language identifiers
@@ -555,7 +577,7 @@ Before code changes:
 4. Add this plan to the agent documentation index and add a dedicated live
    sharing phase to `agent_docs/PHASES.md`.
 5. Update `agent_docs/FRONTEND.md` for the shared top loading indicator and
-   Live Share handoff rules. Record the static viewer loading-bar replacement
+   LiveBin handoff rules. Record the static viewer loading-bar replacement
    as the only intentional change to an existing paste journey.
 6. Keep the existing paste API and encrypted envelope unchanged.
 
@@ -606,8 +628,9 @@ wire envelope and add property/fuzz coverage around the configured limits.
 1. Add the selected WebSocket package, password-hashing package, CodeMirror
    collaboration package, and `topbar`.
 2. Add validated configuration for live room lifetime, maximum tabs, total
-   bytes, participants, message size, connection limits, heartbeat, unlock
-   attempts, and snapshot/compaction bounds.
+   bytes, writing-participant/viewer/total-participant bounds, message size,
+   connection limits, heartbeat, unlock attempts, and snapshot/compaction
+   bounds.
 3. Extend the rate limiter with live creation, unlock, connection, and message
    categories, or add a focused live limiter that shares the existing bounded
    registry principles.
@@ -686,7 +709,9 @@ steps.
    last remaining tab cannot be deleted; duplicate creates are idempotent by
    operation ID; and a stale reorder receives the latest metadata state for
    resynchronization instead of partially applying.
-9. Keep generated/renamed nickname uniqueness, cursor presence, and colours in
+9. Enforce creator-scoped watch-only mode, active-session removal, and the
+   10-writer/100-viewer/110-total capacity bounds in the authority.
+10. Keep generated/renamed nickname uniqueness, cursor presence, and colours in
    process memory only. A reconnecting session reclaims its identity during
    the bounded reconnect grace period; a new session receives a new identity.
 
@@ -729,10 +754,26 @@ over HTTP, bridge to WebSocket updates without an edit gap, edit concurrently,
 add/rename/reorder/delete tabs, observe presence changes, reconnect, and
 receive a generic expired-room response.
 
+**Implementation result (2026-08-05):** Added the live create, bootstrap,
+unlock, and WebSocket routes. Protected rooms use bounded Argon2id checks and
+short-lived room-scoped HttpOnly/SameSite cookies; live responses are private
+and no-indexed. The transport validates the configured origin, preserves
+WebSocket hijacking through HTTP middleware, bounds frames and connection
+queues, rate-limits room actions, sends heartbeat pings, and bridges document,
+metadata, presence, rename, acknowledgement, reconnect, and expiry operations
+through the existing `live.Hub`. Focused HTTP and WebSocket integration tests
+cover the bootstrap/password boundary and a durable document change bridge.
+
+The existing Step 6 API client is compatible with these responses: protected
+bootstrap remains an error-only password gate, successful unlock returns the
+full snapshot with `password_required: false`, and document revisions use the
+same snake_case wire fields that the frontend normalizes. The full paste
+frontend E2E suite also remains green.
+
 ### Step 6 — Frontend routing and header entry point
 
 1. Extend `web/src/router.ts` with live-create and live-room routes.
-2. Add a right-side header action group containing `Live share` followed by
+2. Add a right-side header action group containing `LiveBin` followed by
    the theme toggle; preserve the existing logo and hosted menu behavior.
 3. Add live API types and request helpers in a separate module rather than
    mixing them into the paste API client.
@@ -750,7 +791,7 @@ receive a generic expired-room response.
    static-paste retrieval as well as live bootstrap/connect/reconnect/resync;
    remove the visible centered `Loading paste…` placeholder but preserve an
    accessible hidden loading announcement and all existing failure states.
-9. Implement the `Live share` handoff in memory: create-editor title maps to
+9. Implement the `LiveBin` handoff in memory: create-editor title maps to
    the first tab name (falling back to `main`), language maps to language, and
    content maps exactly to content. Do not carry paste expiry, burn, encryption,
    or other paste-only settings.
@@ -766,7 +807,7 @@ viewer content never transfers.
 ### Step 7 — Live creation flow
 
 1. Build `/live` with a first-tab name, language selector, optional password
-   toggle, password field, and `Create live room` action.
+   toggle, password field, and `Create LiveBin room` action.
 2. Reuse the existing reviewed language choices and CodeMirror editor setup.
 3. Show the fixed 24-hour expiry once in compact, functional form. Do not add
    `unencrypted`, `plaintext`, `browser-first`, `collaborative`, or similar
@@ -788,6 +829,53 @@ viewer content never transfers.
 never appears in the returned URL or response; invalid and oversized requests
 are presented clearly.
 
+**Implementation result (2026-08-05):** Added the `/live` first-tab creation
+flow with the existing language selector and CodeMirror editor, visible labels,
+inline name/password/content validation, the compact 24-hour lifetime, and the
+optional `Require password` control. Successful creation copies the room URL,
+navigates to the room, and preserves the creator's scoped session cookie;
+clipboard failure has retryable toast feedback. The live snapshot response now
+always includes its zero-valued metadata revision so the frontend and backend
+share one bootstrap contract. The password, encryption, and paste-only expiry
+settings remain out of the live create request.
+
+**Pre-Step 8 performance cleanup (2026-08-06):** The LiveBin route is now
+loaded as a separate browser chunk, so normal paste routes do not download its
+route code. Vite now cleans the embedded asset directory on each build and
+restores its source marker, preventing old hashed bundles from being embedded
+in the Go binary. Live `changes` WebSocket events carry the CodeMirror change
+set and revisions only; full documents remain in HTTP snapshots and are used
+for initial load or explicit resynchronization.
+
+### Recommended performance sequence
+
+The following order preserves the current editor-first visuals while reducing
+startup and live-room work:
+
+1. Finish Step 8 with CodeMirror-owned document state, immediate local echo,
+   20–50 ms outbound change coalescing, server-authoritative ordering, and
+   bounded reconnect queues.
+2. Run an early benchmark checkpoint after Step 8: measure initial load,
+   editor readiness, edit-to-render latency with 2 and 10 editors, scaling
+   toward 100 viewers, browser memory, server CPU, SQLite write rate, and
+   reconnect/resync behaviour.
+3. Apply safe route splitting: keep the homepage creation editor immediately
+   available, lazy-load the read-only paste viewer route, retain the lazy
+   LiveBin route, and retain lazy language modes.
+4. Tune runtime costs without reducing functionality: avoid React rerenders on
+   each keystroke, throttle cursor/presence traffic, bound tab/history/queue
+   state, batch safe snapshot writes, and serve hashed assets with compression
+   and caching.
+5. Use the formal Step 12 security, accessibility, and performance gate to
+   confirm the changes on the supported browser and self-hosted topology.
+
+Code splitting changes when code is downloaded, not the settled appearance or
+editor capabilities. Do not remove syntax highlighting, replace CodeMirror,
+or introduce P2P merely to improve a bundle-size score. The target is about
+8/10 performance while preserving the current visuals; any remaining score
+should be decided by measured latency and startup data rather than the raw
+bundle warning alone.
+
 ### Step 8 — Multi-tab collaborative room UI
 
 1. Build a tab strip with active, add, rename, delete, and reorder interactions.
@@ -795,29 +883,37 @@ are presented clearly.
    the synchronized state when switching tabs.
 3. Do not keep collaborative documents as React-controlled `value` strings;
    let CodeMirror own document state and dispatch remote transactions.
-4. Load language extensions per tab through the existing language loader.
-5. Keep active tab, local search state, selection, scroll position, and theme
+4. Apply local edits immediately for local echo, coalesce outbound changes over
+   a short 20–50 ms window, and apply accepted remote change sets as they
+   arrive. Do not wait for a full document response after each keystroke.
+5. Load language extensions per tab through the existing language loader.
+6. Keep active tab, local search state, selection, scroll position, and theme
    local to each browser.
-6. Show room URL copy, expiry, participant status, and connection status in the
+7. Show room URL copy, expiry, participant status, and connection status in the
    room toolbar.
-7. While disconnected, keep a bounded queue of local text changes and replay
+8. Show creator-only controls for watch-only mode and active-session removal;
+   make kicked sessions read-only/denied and do not present account ownership.
+9. Add `Save as paste` with `Current tab` and `Every tab` choices. For every
+   tab, append clearly separated tab contents into one normal paste and return
+   to the standard paste options before upload.
+10. While disconnected, keep a bounded queue of local text changes and replay
    them through normal revision/rebase handling after reconnect. When the
    queue limit is reached, make the editor read-only and clearly preserve the
    unsent local text for manual recovery.
-8. Disable tab create, rename, language change, delete, and reorder while
+11. Disable tab create, rename, language change, delete, and reorder while
    reconnecting or offline. Restore them only after room metadata has
    resynchronized.
-9. Apply the settled conflict rules: the room always has at least one tab,
+12. Apply the settled conflict rules: the room always has at least one tab,
    deletion wins over concurrent metadata edits, and stale reorder reloads the
    latest server order.
-10. Keep room chrome limited to working controls and current state. Do not add
+13. Keep room chrome limited to working controls and current state. Do not add
     editor welcome text, instructional panels, fake cursors/participants,
     empty metadata rows, or badges describing the collaboration technology.
-11. Add remote cursor and selection CodeMirror decorations for participants in
+14. Add remote cursor and selection CodeMirror decorations for participants in
     the active tab. Keep colours stable by session ID, render a compact name
     label while active, fade the label when idle, and clear decorations on tab
     switch, leave, timeout, and resync.
-12. Throttle/coalesce cursor traffic, bound presence payloads, associate every
+15. Throttle/coalesce cursor traffic, bound presence payloads, associate every
     cursor with a document revision, map positions through collaborative
     changes, and drop stale/unmappable cursor state rather than moving it to an
     incorrect location.
@@ -825,8 +921,10 @@ are presented clearly.
 **Gate:** A user can use every existing language, switch tabs without data
 loss, edit a room from two browser contexts while changes converge, recover
 queued text after a temporary disconnect, and cannot perform unsafe structural
-tab operations before metadata resynchronizes. Remote cursors and selections
-track the correct text under concurrent edits without entering durable state.
+tab operations before metadata resynchronizes. Creator watch-only and
+session-removal controls, capacity bounds, and current/all-tab paste export
+work without introducing durable accounts. Remote cursors and selections track
+the correct text under concurrent edits without entering durable state.
 
 ### Step 9 — Presence and network-status popover
 
@@ -950,10 +1048,10 @@ container and one SQLite volume.
 
 ### Product journeys
 
-- Live Share button opens the live creation flow.
-- From the create editor, Live Share carries the unsaved title/language/content
+- LiveBin button opens the live creation flow.
+- From the create editor, LiveBin carries the unsaved title/language/content
   into the first live draft without uploading it before room creation.
-- From every existing paste viewer, Live Share opens a blank live draft and
+- From every existing paste viewer, LiveBin opens a blank live draft and
   never transfers viewed or decrypted content.
 - Live creation and room pages match the current 0xbin interface and contain
   no marketing hero, architecture explanation, maturity badge, fake data,
@@ -978,7 +1076,7 @@ container and one SQLite volume.
 - Room expires after 24 hours and becomes unavailable.
 - Existing paste, encrypted paste, burn, theme, policy, and CLI semantics and
   actions are unchanged; only the settled static-loading indicator and new
-  Live Share entry point differ visually.
+  LiveBin entry point differ visually.
 
 ### Concurrency and recovery
 
@@ -1019,7 +1117,7 @@ container and one SQLite volume.
 - Nicknames, cursor positions, selections, participant colours, and other
   presence are not durable and are not exposed after room shutdown/restart.
 - Decrypted encrypted-paste content is never placed in a live handoff or live
-  create request by the viewer's Live Share control.
+  create request by the viewer's LiveBin control.
 - Live plaintext storage is documented honestly; no end-to-end-encryption claim
   is made.
 - Privacy/security documentation explains that an unprotected room is editable
@@ -1032,7 +1130,7 @@ The extension is complete when:
 
 - Existing paste API, encryption, URL, expiry, burn, rendering, and action
   behavior remains unchanged. The only existing-journey visual change is the
-  settled minimal loading bar, alongside the new Live Share entry point.
+  settled minimal loading bar, alongside the new LiveBin entry point.
 - A user can create a plaintext or password-gated 24-hour live room without an
   account.
 - Multiple CodeMirror language tabs synchronize correctly under concurrency.

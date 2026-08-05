@@ -82,6 +82,106 @@ For a bind mount instead, replace the Compose volume with a host directory that
 is writable by the container's non-root user. Run only one 0xbin container per
 SQLite data directory.
 
+### Reverse proxying live rooms
+
+The live editor uses `GET /api/v1/live/{slug}/ws`. A reverse proxy must pass
+through the WebSocket `Upgrade` and `Connection` headers, preserve the
+`Origin` and room-session cookie, avoid response buffering on the WebSocket
+route, and allow an idle timeout longer than the configured heartbeat interval
+(the default heartbeat is 20 seconds; a 60-second or longer proxy timeout is
+recommended). Keep the proxy and application on the same public HTTPS origin
+so the `Secure`, `HttpOnly`, `SameSite=Strict` room cookie and origin check
+continue to work.
+
+### Public deployment: Cloudflare Tunnel and rate limiting
+
+The current public deployment uses one host with this path:
+
+```text
+Browser
+  -> Cloudflare edge (TLS, WAF/DDoS controls, optional rate limiting)
+  -> cloudflared outbound tunnel
+  -> Docker host loopback :8080
+  -> 0xbin-0xbin-1 (0xbin :8080)
+```
+
+The application container is published only on `127.0.0.1:8080`; Tailscale
+is used for administration rather than public application ingress. Cloudflare
+Tunnel is outbound-only, so the laptop does not need a public inbound port.
+The current container uses `OXBIN_BASE_URL=https://0xbin.app` and
+`OXBIN_TRUSTED_PROXIES=172.18.0.1/32`, the Docker gateway through which the
+host's `cloudflared` process reaches the container. Do not broaden that value
+to arbitrary networks. Keep the tunnel token outside the repository.
+
+Cloudflare rate limiting is an edge safety layer; the application's own
+bounded rate limits remain enabled because Cloudflare rules do not replace
+per-message WebSocket limits and distributed clients can still use multiple
+IP addresses. Configure rules in Cloudflare under **Security rules → Create
+rule → Rate limiting rules**. Start each rule in **Log** mode, compare it with
+normal traffic, then change it to **Block** after false positives are ruled
+out. Available matching fields and counting characteristics vary by Cloudflare
+plan, so use method matching when available and otherwise scope the path
+carefully.
+
+Recommended hosted starting points:
+
+| Traffic | Match | Counter | Starting threshold |
+| --- | --- | --- | --- |
+| Paste creation | `POST /api/v1/pastes` | IP | 20 requests / 10 minutes |
+| Live room creation | `POST /api/v1/live` | IP | 10 requests / hour |
+| Live password unlock | `POST /api/v1/live/*/unlock` | IP | 15 requests / 15 minutes |
+| Burn consumption | `POST /api/v1/pastes/*/consume` | IP | 30 requests / 10 minutes |
+
+Keep `/health/live`, `/health/ready`, static assets, and ordinary paste reads
+out of the initial strict rules. Do not apply a low per-IP rule to the live
+WebSocket upgrade path: a dorm or campus NAT can put many legitimate viewers
+behind one public IP, and Cloudflare counts the HTTP upgrade rather than the
+ongoing WebSocket messages. If connection abuse appears, add a generous,
+separately monitored handshake rule and continue relying on the application's
+room, connection, and message bounds.
+
+After deployment changes, verify both layers: `https://0xbin.app/health/live`
+must remain reachable, application `429` responses must retain `Retry-After`,
+and Cloudflare Security Events should show only the intended API rules being
+triggered. Cloudflare's [rate limiting rules documentation](https://developers.cloudflare.com/waf/rate-limiting-rules/),
+[dashboard guide](https://developers.cloudflare.com/waf/rate-limiting-rules/create-zone-dashboard/),
+[Tunnel documentation](https://developers.cloudflare.com/tunnel/), and
+[HTTP header guidance](https://developers.cloudflare.com/fundamentals/reference/http-headers/)
+are the operational references.
+
+#### Logs and observability
+
+There is no single network log on the laptop. The current sources are:
+
+| Layer | Where to inspect | What it contains |
+| --- | --- | --- |
+| 0xbin application | `docker logs 0xbin-0xbin-1` | Startup/shutdown errors and expiry-cleanup counts; no per-request access log currently |
+| Cloudflare edge | Security/Events and Security Analytics in the Cloudflare dashboard | Requests flagged or acted on by Cloudflare, plus aggregate traffic analysis |
+| Detailed Cloudflare requests | Instant Logs or a configured Logpush destination, if available on the plan | Request metadata for correlating edge traffic and origin behaviour |
+| Tunnel transport | `sudo journalctl -u cloudflared.service` | Tunnel connection, reconnect, and transport diagnostics; not a normal HTTP access log |
+| Tailscale administration | `sudo journalctl -u tailscaled.service` | Tailscale control/data-plane diagnostics, not public 0xbin traffic |
+
+Cloudflare Security Events shows traffic that a security product flagged or
+acted on; it is not a complete request log. Use Security Analytics for broader
+traffic summaries and Instant Logs/Logpush for detailed request metadata when
+the account plan supports them. Do not enable request-body logging for 0xbin:
+paste bodies, encryption keys in URL fragments, passwords, room cookies, and
+raw live change payloads must stay out of logs. [Cloudflare Logs](https://developers.cloudflare.com/logs/)
+and [Security Events](https://developers.cloudflare.com/waf/analytics/security-events/)
+describe those distinctions.
+
+For the anonymous default, do not enable persistent request-level application
+logging. Keep only aggregate counts, latency buckets, cleanup results, health,
+and security/error categories. If request-level visibility is temporarily
+needed during an incident, use a short-lived redacted access mode that records
+only the route template, method, status, duration, response bytes, client-IP
+class, and `X-Request-Id`; never log the full URL, query string, paste body, or
+WebSocket frames. Keep the application rate limiter and Cloudflare `CF-Ray`/
+request identifiers available for manual correlation, then disable the mode
+and remove the temporary logs. The current Docker `json-file` logging driver
+has no size-rotation options configured, so configure bounded rotation before
+enabling any high-volume access logs.
+
 ### Upgrade and restart
 
 ```text

@@ -122,7 +122,7 @@ from the initial paste MVP.
 
 ### 6.6 Create and use a live room (post-MVP extension)
 
-1. User selects `Live share` from the existing header.
+1. User selects `LiveBin` from the existing header.
 2. From the create editor, the current unsaved title, language, and content are
    carried into a live draft in browser memory. No room is created until the
    user submits the live form.
@@ -134,7 +134,13 @@ from the initial paste MVP.
    name, and shares the room URL.
 6. Participants edit tabs together, see active cursors/selections, observe
    connection state, and can rename their temporary participant name.
-7. The room expires, closes active connections, and becomes unavailable after
+7. The creator can switch the room to watch-only mode or remove an active
+   collaborator. The room supports up to 10 writers, 100 watch-only viewers,
+   and 110 total participants.
+8. A participant can save either the current tab or every tab appended into a
+   single normal paste, then choose the normal paste's expiry and protection
+   options.
+9. The room expires, closes active connections, and becomes unavailable after
    24 hours even if cleanup has not yet run.
 
 ## 7. Functional Requirements
@@ -253,6 +259,21 @@ the paste requirements above.
 - **FR-LIVE-14:** The shared top progress bar covers static paste loading and
   live bootstrap/connect/reconnect/resync work without becoming keystroke or
   cursor feedback.
+- **FR-LIVE-15:** LiveBin is optional in the same one-service deployment and
+  can be disabled for self-hosted bare-paste installations.
+- **FR-LIVE-16:** The creator's room-scoped temporary session can switch the
+  room to watch-only mode and remove active collaborator sessions without
+  introducing accounts or durable ownership.
+- **FR-LIVE-17:** A room enforces a maximum of 10 writing participants, 100
+  watch-only viewers, and 110 total participants.
+- **FR-LIVE-18:** A participant can export the current tab or all tabs as one
+  normal paste, with the normal paste flow choosing expiry, encryption, and
+  burn-after-read settings.
+- **FR-LIVE-19:** Live collaboration uses a server-authoritative WebSocket
+  transport; P2P/WebRTC is not required.
+- **FR-LIVE-20:** Live application limits remain configurable for operators;
+  hosted deployments may add an edge rate limiter, while self-hosted
+  installations are not forced to use hosted-service rate-limit values.
 
 ## 8. Frontend Behaviour Requirements
 

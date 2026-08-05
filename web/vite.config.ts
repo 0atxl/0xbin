@@ -22,7 +22,7 @@ export default defineConfig(({ mode }) => {
     ],
     build: {
       outDir: "../internal/webassets/dist",
-      emptyOutDir: false,
+      emptyOutDir: true,
     },
     server: {
       proxy: {

@@ -183,6 +183,11 @@ process:
 - The collaboration authority uses independent metadata/document revisions,
   persists accepted changes before acknowledging them, and keeps bounded
   history for reconnect/rebase.
+- Room capacity distinguishes up to 10 writing sessions, 100 watch-only
+  viewer sessions, and 110 total sessions. The creator's room-scoped session
+  authorizes the mode change and active-session removal; this is temporary
+  capability, not durable account ownership. A kick invalidates that session,
+  not the underlying uncredentialed person.
 - Presence and short-lived room password sessions remain process memory only.
 - Passwords use an adaptive Argon2id hash; the password itself never enters
   URLs, logs, SQLite, or telemetry.
@@ -550,19 +555,30 @@ progress bar. It must not add technical badges, marketing panels, fake
 participants, decorative placeholders, or persistent encryption/storage
 explanations.
 
-The create-page Live Share handoff carries only the unsaved draft in memory.
+The create-page LiveBin handoff carries only the unsaved draft in memory.
 The paste viewer action always starts a blank live draft and never copies
 plaintext or decrypted encrypted-paste content automatically.
 
 ## 11. Observability
 
-The following metrics are planned for hosted operational hardening; the current
-service emits structured logs but does not yet expose a metrics system.
+The default observability model is aggregate and privacy-preserving; client IP
+may be held ephemerally for rate limiting but is not persisted as an access
+log. The current service emits startup, shutdown, error, and cleanup logs but
+does not emit a per-request access log or expose a metrics system.
 
-Structured server logs:
+Default structured logs:
 
-- Timestamp, level, request ID, route template, status, duration, response bytes
-- No raw URL query/fragment, paste slug where avoidable, payload, title, language, or key
+- Timestamp, level, safe error category, and bounded cleanup/health counts
+- Request IDs only where needed for an error response, without a request log
+- No raw URL query/fragment, paste slug where avoidable, payload, title,
+  language, client IP, cookie, password, or key
+
+An incident-only access mode may be added later, disabled by default and
+explicitly time-bounded. It may record route template, method, status,
+duration, response bytes, client-IP class, and request ID, but never full URLs,
+request bodies, WebSocket frames, cookies, passwords, fragments, or paste
+content. Temporary access logs must be deleted after the incident and use
+bounded rotation.
 
 Metrics:
 
@@ -589,6 +605,9 @@ Metrics:
 - One instance initially.
 - Persistent disk in one region.
 - TLS/reverse proxy in front.
+- The current public single-host topology uses Cloudflare Tunnel in front of
+  the loopback-published Docker port; its rate-limit runbook is maintained in
+  the public deployment section of `README.md`.
 - Automated database backup with restore test.
 - Do not horizontally scale multiple independent SQLite copies.
 

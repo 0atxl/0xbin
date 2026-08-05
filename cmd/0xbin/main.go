@@ -15,6 +15,7 @@ import (
 	"github.com/0atxl/0xbin/internal/cleanup"
 	"github.com/0atxl/0xbin/internal/config"
 	"github.com/0atxl/0xbin/internal/httpapi"
+	"github.com/0atxl/0xbin/internal/live"
 	"github.com/0atxl/0xbin/internal/paste"
 	"github.com/0atxl/0xbin/internal/slug"
 	"github.com/0atxl/0xbin/internal/storage/sqlite"
@@ -62,12 +63,25 @@ func run() error {
 		<-cleanupDone
 	}()
 
+	hubOptions := live.DefaultHubOptions()
+	hubOptions.MaxTabs = cfg.LiveMaxTabs
+	hubOptions.MaxBytes = cfg.LiveMaxBytes
+	hubOptions.MaxParticipants = cfg.LiveMaxParticipants
+	hubOptions.MaxMessageBytes = cfg.LiveMaxMessageBytes
+	hubOptions.MaxHistoryRows = cfg.LiveSnapshotLimits.MaxRows
+	hubOptions.MaxHistoryBytes = cfg.LiveSnapshotLimits.MaxBytes
+	hubOptions.HeartbeatInterval = cfg.LiveHeartbeatInterval
+	hub, err := live.NewHub(store, nil, hubOptions)
+	if err != nil {
+		return err
+	}
+
 	listener, err := net.Listen("tcp", cfg.ListenAddr)
 	if err != nil {
 		return fmt.Errorf("listen on %q: %w", cfg.ListenAddr, err)
 	}
 
-	server := httpapi.NewServerWithFrontend(cfg, pastes, webassets.FS(), store.Ping)
+	server := httpapi.NewServerWithFrontendAndLive(cfg, pastes, webassets.FS(), &httpapi.LiveDependencies{Store: store, Hub: hub, Slugs: slug.NewDefaultGenerator()}, store.Ping)
 	serveErr := make(chan error, 1)
 	go func() {
 		serveErr <- server.Serve(listener)

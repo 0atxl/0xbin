@@ -2,11 +2,13 @@
 package httpapi
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"html"
 	"io/fs"
 	"log/slog"
@@ -53,28 +55,40 @@ var hostedPublicPages = []publicPageSEO{
 // Server owns the configured HTTP server lifecycle.
 type Server struct {
 	server *http.Server
+	live   *liveAPI
 }
 
 // NewServer creates the HTTP server. Database readiness is deliberately not
 // wired until Step 2.
 func NewServer(cfg config.Config, pastes PasteService, readiness ...func(context.Context) error) *Server {
-	return newServer(cfg, pastes, nil, readiness...)
+	return newServerWithLive(cfg, pastes, nil, nil, readiness...)
 }
 
 // NewServerWithFrontend creates a server that serves the embedded frontend
 // for browser routes while keeping API and health routes separate.
 func NewServerWithFrontend(cfg config.Config, pastes PasteService, frontend fs.FS, readiness ...func(context.Context) error) *Server {
-	return newServer(cfg, pastes, frontend, readiness...)
+	return newServerWithLive(cfg, pastes, frontend, nil, readiness...)
 }
 
 func newServer(cfg config.Config, pastes PasteService, frontend fs.FS, readiness ...func(context.Context) error) *Server {
+	return newServerWithLive(cfg, pastes, frontend, nil, readiness...)
+}
+
+// NewServerWithFrontendAndLive creates a server with the live-room transport
+// wired alongside the existing paste API and embedded frontend.
+func NewServerWithFrontendAndLive(cfg config.Config, pastes PasteService, frontend fs.FS, dependencies *LiveDependencies, readiness ...func(context.Context) error) *Server {
+	return newServerWithLive(cfg, pastes, frontend, dependencies, readiness...)
+}
+
+func newServerWithLive(cfg config.Config, pastes PasteService, frontend fs.FS, dependencies *LiveDependencies, readiness ...func(context.Context) error) *Server {
 	var ready func(context.Context) error
 	if len(readiness) > 0 {
 		ready = readiness[0]
 	}
-	return &Server{server: &http.Server{
+	live := newLiveAPI(cfg, dependencies)
+	return &Server{live: live, server: &http.Server{
 		Addr:              cfg.ListenAddr,
-		Handler:           newHandler(cfg, pastes, frontend, ready),
+		Handler:           newHandlerWithAPI(cfg, pastes, frontend, ready, live),
 		ReadHeaderTimeout: cfg.ReadHeaderTimeout,
 		ReadTimeout:       cfg.ReadTimeout,
 		WriteTimeout:      cfg.WriteTimeout,
@@ -89,29 +103,50 @@ func (s *Server) Serve(listener net.Listener) error {
 
 // Shutdown gracefully stops accepting requests and waits for active requests.
 func (s *Server) Shutdown(ctx context.Context) error {
-	return s.server.Shutdown(ctx)
+	var liveErr error
+	if s.live != nil {
+		liveErr = s.live.shutdown(ctx)
+	}
+	serverErr := s.server.Shutdown(ctx)
+	if liveErr != nil {
+		return liveErr
+	}
+	return serverErr
 }
 
 // NewHandler creates the root router and its foundational middleware.
 func NewHandler(cfg config.Config, pastes PasteService, readiness ...func(context.Context) error) http.Handler {
-	return newHandler(cfg, pastes, nil, readiness...)
+	return newHandlerWithLive(cfg, pastes, nil, nil, readiness...)
 }
 
 // NewHandlerWithFrontend attaches a frontend filesystem to browser routes.
 // It is useful for integration tests and the embedded production bundle.
 func NewHandlerWithFrontend(cfg config.Config, pastes PasteService, frontend fs.FS, readiness ...func(context.Context) error) http.Handler {
-	return newHandler(cfg, pastes, frontend, readiness...)
+	return newHandlerWithLive(cfg, pastes, frontend, nil, readiness...)
 }
 
 func newHandler(cfg config.Config, pastes PasteService, frontend fs.FS, readiness ...func(context.Context) error) http.Handler {
+	return newHandlerWithLive(cfg, pastes, frontend, nil, readiness...)
+}
+
+// NewHandlerWithLive attaches live-room routes to a test or custom handler.
+func NewHandlerWithLive(cfg config.Config, pastes PasteService, dependencies *LiveDependencies, readiness ...func(context.Context) error) http.Handler {
+	return newHandlerWithLive(cfg, pastes, nil, dependencies, readiness...)
+}
+
+func newHandlerWithLive(cfg config.Config, pastes PasteService, frontend fs.FS, dependencies *LiveDependencies, readiness ...func(context.Context) error) http.Handler {
 	var ready func(context.Context) error
 	if len(readiness) > 0 {
 		ready = readiness[0]
 	}
+	return newHandlerWithAPI(cfg, pastes, frontend, ready, newLiveAPI(cfg, dependencies))
+}
+
+func newHandlerWithAPI(cfg config.Config, pastes PasteService, frontend fs.FS, ready func(context.Context) error, liveAPI *liveAPI) http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /health/live", live)
+	mux.HandleFunc("GET /health/live", liveness)
 	mux.HandleFunc("GET /health/ready", func(w http.ResponseWriter, r *http.Request) { notReady(w, r, ready) })
-	if pastes != nil {
+	if pastes != nil || liveAPI != nil {
 		limits, err := ratelimit.NewRegistry(map[ratelimit.Category]config.Rate{
 			ratelimit.Create:         cfg.CreateRate,
 			ratelimit.Read:           cfg.ReadRate,
@@ -125,11 +160,20 @@ func newHandler(cfg config.Config, pastes PasteService, frontend fs.FS, readines
 		if err != nil {
 			panic("validated rate limit configuration is invalid: " + err.Error())
 		}
-		api := pasteAPI{pastes: pastes, baseURL: cfg.BaseURL, maxContentBytes: cfg.MaxPasteBytes, limits: limits}
-		mux.HandleFunc("POST /api/v1/pastes", api.create)
-		mux.HandleFunc("GET /api/v1/pastes/{slug}", api.get)
-		mux.HandleFunc("POST /api/v1/pastes/{slug}/consume", api.consume)
-		mux.HandleFunc("GET /api/v1/pastes/{slug}/raw", api.raw)
+		if pastes != nil {
+			api := pasteAPI{pastes: pastes, baseURL: cfg.BaseURL, maxContentBytes: cfg.MaxPasteBytes, limits: limits}
+			mux.HandleFunc("POST /api/v1/pastes", api.create)
+			mux.HandleFunc("GET /api/v1/pastes/{slug}", api.get)
+			mux.HandleFunc("POST /api/v1/pastes/{slug}/consume", api.consume)
+			mux.HandleFunc("GET /api/v1/pastes/{slug}/raw", api.raw)
+		}
+		if liveAPI != nil {
+			liveAPI.limits = limits
+			mux.HandleFunc("POST /api/v1/live", liveAPI.create)
+			mux.HandleFunc("GET /api/v1/live/{slug}", liveAPI.bootstrap)
+			mux.HandleFunc("POST /api/v1/live/{slug}/unlock", liveAPI.unlock)
+			mux.HandleFunc("GET /api/v1/live/{slug}/ws", liveAPI.websocket)
+		}
 	}
 	mux.HandleFunc("/api/", apiNotFound)
 	mux.HandleFunc("/api", apiNotFound)
@@ -306,7 +350,7 @@ func serveFrontendFile(w http.ResponseWriter, r *http.Request, name string, cont
 	_, _ = w.Write(contents)
 }
 
-func live(w http.ResponseWriter, _ *http.Request) {
+func liveness(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -368,6 +412,25 @@ type responseWriter struct {
 	http.ResponseWriter
 	wroteHeader bool
 }
+
+// Hijack preserves WebSocket upgrades through the panic-recovery wrapper.
+// The websocket transport intentionally uses the standard HTTP hijacker so
+// the live route remains compatible with the embedded server and proxies.
+func (w *responseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hijacker, ok := w.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, errors.New("response writer does not support hijacking")
+	}
+	return hijacker.Hijack()
+}
+
+func (w *responseWriter) Flush() {
+	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+func (w *responseWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
 func (w *responseWriter) WriteHeader(status int) {
 	w.wroteHeader = true

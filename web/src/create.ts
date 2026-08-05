@@ -12,6 +12,16 @@ export type CreateDraft = {
   encrypted: boolean;
 };
 
+export function defaultCreateDraft(): CreateDraft {
+  return {
+    title: "",
+    language: "plaintext",
+    content: "",
+    lifetime: "24h",
+    encrypted: false,
+  };
+}
+
 export type CreateValidation = Partial<
   Record<"title" | "language" | "content", string>
 >;

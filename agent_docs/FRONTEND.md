@@ -241,7 +241,10 @@ icon, active encryption state, focus details, and brief success feedback.
 
 - Brand icon: top-left
 - Icon-only theme toggle: top-right; its accessible name describes the action
-- `Live share` control immediately left of the theme toggle
+- `LiveBin` control immediately left of the theme toggle
+- `LiveBin` and the encryption control use a slightly muted grey resting
+  treatment, match the theme toggle's control height, and use the accent colour
+  on hover and keyboard focus.
 - Main page content: fixed to the viewport between the top controls and bottom
   actions; the document itself does not scroll
 - Editor/viewer canvas: the only primary scroll region
@@ -747,7 +750,7 @@ generically unavailable; encrypted wrong-key risk is clearly presented.
 The live frontend is a normal extension of 0xbin, not a separate dashboard or
 marketing page.
 
-- `Live share` sits immediately left of the theme toggle.
+- `LiveBin` sits immediately left of the theme toggle.
 - From the create editor, carry the current unsaved title, language, and
   content into the live creator in browser memory. Do not upload it until the
   live room is created.
@@ -764,6 +767,12 @@ marketing page.
   decorations disappear.
 - Add, rename, delete, and reorder tab controls remain local-looking and
   compact. Structural controls are disabled while room metadata reconnects.
+- The creator-only room controls can switch participants to watch-only mode
+  and remove active collaborator sessions. They are not shown as account or
+  ownership UI to ordinary participants.
+- `Save as paste` offers `Current tab` or `Every tab`; the latter appends tabs
+  into one paste with clear separators and then returns to the normal paste
+  options before uploading.
 - Reuse the existing toast stack, inline validation, warning treatment,
   unavailable states, and top progress bar. Do not add a second feedback style.
 - Do not add technical badges, maturity labels, architecture explanations,
