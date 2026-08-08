@@ -31,6 +31,21 @@ material conflict rather than silently choosing new behavior.
 7. Never claim CI verification from a local test or successful push. Confirm
    the pull request's required `verify` check directly.
 
+## Checkpoint and release sequence
+
+1. After a phase passes its local gate and the requested checkpoint commit is
+   clean, push `feature/live-sharing` as a remote backup and for early CI
+   feedback. A feature-branch push is not a release, merge, or deployment.
+2. Continue Phases 4–5A with focused checkpoint commits and pushes only when
+   explicitly requested. Keep `main` deployable throughout.
+3. In Phase 6, run the complete release gate, review the full branch diff and
+   embedded application, then open the pull request only when explicitly
+   requested.
+4. Confirm the pull request's required `verify` check directly, then perform
+   the review-only Phase 7 independent release audit.
+5. Merge and deploy only when Phase 7 recommends release, no blocker remains,
+   the required CI is green, and the user explicitly authorizes those actions.
+
 ## Phase 0 — Preserve and review the audit baseline
 
 **Severity:** Release-process gate
