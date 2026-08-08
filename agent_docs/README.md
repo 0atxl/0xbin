@@ -4,6 +4,11 @@ This directory contains internal implementation guidance, design decisions,
 delivery plans, and tooling notes intended for AI coding agents and
 maintainers working on the project.
 
+The live-sharing extension is implemented through remediation Phase 5. Its
+settled scope includes creator-operated room-wide watch-only mode, but excludes
+accounts and per-participant permission roles; later remediation phases remain
+separate follow-up work.
+
 The repository-level instructions remain in [`AGENTS.md`](../AGENTS.md) at
 the repository root because agent tools discover that filename there.
 
@@ -20,6 +25,9 @@ the repository root because agent tools discover that filename there.
   work and verification gates.
 - [`LIVE_SHARING_IMPLEMENTATION_PLAN.md`](LIVE_SHARING_IMPLEMENTATION_PLAN.md)
   — comprehensive plan for the optional multi-tab live-sharing extension.
+- [`LIVE_SHARING_REMEDIATION_PLAN.md`](LIVE_SHARING_REMEDIATION_PLAN.md) —
+  phased, usage-conscious execution plan for findings from the final
+  live-sharing audit.
 - [`PHASES.md`](PHASES.md) — delivery phases and scope boundaries.
 - [`SEARCH_PERFORMANCE.md`](SEARCH_PERFORMANCE.md) — viewer-search performance
   implementation notes.

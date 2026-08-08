@@ -757,7 +757,7 @@ marketing page.
 - From an existing paste viewer, always open a blank live creator. Never copy
   viewed or decrypted content automatically.
 - The live creator has one initial tab, existing language modes, an optional
-  `Require password` control, and the fixed 24-hour room lifetime.
+  `Require password` control, and the server-provided room lifetime.
 - Participants receive unique adjective+noun names automatically, can rename
   themselves from the participant popover, and retain a stable colour.
 - The participant popover shows only real participants, their joined time,

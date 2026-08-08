@@ -2,7 +2,9 @@
 
 ## Implementation Plan
 
-**Status:** Steps 1–7 complete; Step 8 collaborative room UI remains pending
+**Status:** Implemented through Steps 0A–13. Follow-up remediation phases 1–5
+are complete; remaining work is limited to later remediation phases and normal
+operational review.
 
 **Related:** [`spec.md`](../spec.md), [`docs/PRD.md`](../docs/PRD.md),
 [`agent_docs/TECHNICAL_DESIGN.md`](TECHNICAL_DESIGN.md),
@@ -52,8 +54,9 @@ uploads, permanent storage, or a second service.
 - The active tab is local to each browser. It is not a shared room setting.
 - All tabs are plaintext/server-readable. The live feature does not use the
   existing client-side AES-GCM paste mode.
-- The default room lifetime is 24 hours from server-side creation time. Editing
-  or joining does not extend expiry.
+- The default room lifetime is 24 hours from server-side creation time; an
+  operator may configure a shorter lifetime. Editing or joining does not
+  extend expiry.
 - Expiry is enforced on room bootstrap, password unlock, WebSocket upgrade,
   and every accepted room operation. Cleanup only reclaims storage.
 - Anyone with the room URL can join and edit an unprotected room.
@@ -122,7 +125,8 @@ data is ephemeral presence and is never written to SQLite or change history.
 ### 1.4 Explicit non-goals
 
 - Signup, login, accounts, ownership, or room recovery
-- Per-user permissions or view-only access
+- Per-user permissions or user-selected view-only access; the creator's
+  room-wide watch-only mode remains part of the settled contract
 - Saved rooms, user-visible version history, revisions, or forks (internal
   synchronization counters and bounded rebase history are not product
   versioning)
@@ -809,7 +813,7 @@ viewer content never transfers.
 1. Build `/live` with a first-tab name, language selector, optional password
    toggle, password field, and `Create LiveBin room` action.
 2. Reuse the existing reviewed language choices and CodeMirror editor setup.
-3. Show the fixed 24-hour expiry once in compact, functional form. Do not add
+3. Show the server-provided room lifetime once in compact, functional form. Do not add
    `unencrypted`, `plaintext`, `browser-first`, `collaborative`, or similar
    descriptive copy to the page.
 4. Label the optional control simply as `Require password`; do not surround it
@@ -846,6 +850,12 @@ restores its source marker, preventing old hashed bundles from being embedded
 in the Go binary. Live `changes` WebSocket events carry the CodeMirror change
 set and revisions only; full documents remain in HTTP snapshots and are used
 for initial load or explicit resynchronization.
+
+**Completion update (2026-08-08):** The collaborative room UI, creator-only
+watch-only/session-removal controls, reconnect/cursor hardening, API contract,
+and browser coverage are implemented. The remediation plan records any
+remaining later-phase follow-up without reopening completed implementation
+steps.
 
 ### Recommended performance sequence
 
@@ -1073,7 +1083,8 @@ container and one SQLite volume.
 - Static paste loads and live connect/reconnect/resync states use the same
   minimal delayed top progress bar without replacing persistent failures.
 - Room URL copies successfully or presents a retry action.
-- Room expires after 24 hours and becomes unavailable.
+- Room expires at its configured lifetime (up to 24 hours) and becomes
+  unavailable.
 - Existing paste, encrypted paste, burn, theme, policy, and CLI semantics and
   actions are unchanged; only the settled static-loading indicator and new
   LiveBin entry point differ visually.
@@ -1131,8 +1142,8 @@ The extension is complete when:
 - Existing paste API, encryption, URL, expiry, burn, rendering, and action
   behavior remains unchanged. The only existing-journey visual change is the
   settled minimal loading bar, alongside the new LiveBin entry point.
-- A user can create a plaintext or password-gated 24-hour live room without an
-  account.
+- A user can create a plaintext or password-gated live room, with a
+  server-configured lifetime up to 24 hours, without an account.
 - Multiple CodeMirror language tabs synchronize correctly under concurrency.
 - Participants can see temporary nicknames and connection state.
 - Participants can rename generated adjective+noun identities and see remote

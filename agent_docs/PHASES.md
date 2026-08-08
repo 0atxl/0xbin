@@ -2,8 +2,10 @@
 
 This document groups the detailed implementation plan into product milestones. A phase is complete only when its exit criteria pass; writing code is not itself completion.
 
-**Current status (2026-07-29):** Phases 0–3 are complete. Phase 4 is in
-progress; its hosted security and operational exit criteria remain open.
+**Current status (2026-08-08):** Phases 0–3 are complete. Phase 4 hosted
+public-beta work remains open. The separate Phase 5 live-sharing extension and
+its remediation phases 1–5 are implemented; later remediation phases remain
+explicit follow-up work.
 
 ## Phase 0 — Foundation
 
@@ -170,8 +172,9 @@ Exit criteria:
   checks pass.
 
 Not included: accounts, media calls, screen sharing, execution, file uploads,
-saved live rooms, user-visible history, view-only roles, or multi-instance
-coordination.
+saved live rooms, user-visible history, per-participant permissions or
+user-selected view-only roles, or multi-instance coordination. The creator's
+room-wide watch-only mode is included.
 
 ## Phase 6 — Post-MVP Improvements
 

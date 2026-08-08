@@ -66,6 +66,96 @@ paths:
               schema: { type: string }
         '404': { $ref: '#/components/responses/NotFound' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /api/v1/live/config:
+    get:
+      summary: Retrieve public LiveBin limits
+      description: Available only when live sharing is enabled. Returns no secrets, rate-limit settings, or operational topology.
+      responses:
+        '200':
+          description: Configured room lifetime, content limits, and capacity.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LiveConfigResponse' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/v1/live:
+    post:
+      summary: Create a temporary LiveBin room
+      description: Room content is server-readable plaintext. A successful protected-room creation sets short-lived room-access and room-scoped creator-capability cookies; neither is returned in JSON or a URL.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateLiveRoomRequest' }
+      responses:
+        '201':
+          description: Created room; its URL is unlisted and expires at expires_at.
+          headers:
+            Set-Cookie:
+              description: HttpOnly SameSite=Strict room-access and creator-capability cookies, scoped to the room API path.
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CreateLiveRoomResponse' }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /api/v1/live/{slug}:
+    get:
+      summary: Bootstrap an active LiveBin room
+      description: Returns the server-authoritative snapshot. Expired and missing rooms share the public 404 response. Protected rooms require the room-access cookie.
+      parameters:
+        - $ref: '#/components/parameters/Slug'
+      responses:
+        '200':
+          description: Active room bootstrap and configured room limits.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LiveRoomResponse' }
+        '401': { $ref: '#/components/responses/PasswordRequired' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /api/v1/live/{slug}/unlock:
+    post:
+      summary: Unlock a password-protected active LiveBin room
+      description: Valid credentials set a short-lived HttpOnly SameSite=Strict room-access cookie. The password is never returned or placed in the room URL.
+      parameters:
+        - $ref: '#/components/parameters/Slug'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LiveUnlockRequest' }
+      responses:
+        '200':
+          description: Authorized room bootstrap.
+          headers:
+            Set-Cookie:
+              description: Room-access cookie scoped to the room API path.
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LiveRoomResponse' }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '401': { $ref: '#/components/responses/InvalidPassword' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /api/v1/live/{slug}/ws:
+    get:
+      summary: Upgrade to the LiveBin WebSocket transport
+      description: Requires an exact same-origin Origin header. Protected rooms require a valid room-access cookie before the HTTP upgrade; unauthorized requests receive HTTP 401 and never establish a WebSocket. The JSON WebSocket envelope is specified in docs/live-sharing-websocket.md.
+      parameters:
+        - $ref: '#/components/parameters/Slug'
+      responses:
+        '101':
+          description: WebSocket protocol switched after origin, expiry, capacity, and protected-room authorization checks.
+        '401': { $ref: '#/components/responses/PasswordRequired' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
 components:
   parameters:
     Slug:
@@ -102,6 +192,110 @@ components:
         slug: { type: string }
         url: { type: string, format: uri }
         expires_at: { type: string, format: date-time }
+    LiveDocument:
+      type: object
+      additionalProperties: false
+      required: [id, name, language, content, position, revision, snapshot_revision]
+      properties:
+        id: { type: string }
+        name: { type: string, description: At most 64 UTF-8 bytes; unique in the active room. }
+        language: { type: string }
+        content: { type: string }
+        position: { type: integer, minimum: 0 }
+        revision: { type: integer, minimum: 0 }
+        snapshot_revision: { type: integer, minimum: 0 }
+    CreateLiveDocument:
+      type: object
+      additionalProperties: false
+      required: [name, language, content]
+      properties:
+        name: { type: string, description: At most 64 UTF-8 bytes. }
+        language: { type: string }
+        content: { type: string, description: Bounded by max_document_bytes and max_bytes. }
+    CreateLiveRoomRequest:
+      type: object
+      additionalProperties: false
+      required: [documents]
+      properties:
+        password: { type: string, maxLength: 256, description: Optional shared room password. }
+        documents:
+          type: array
+          minItems: 1
+          items: { $ref: '#/components/schemas/CreateLiveDocument' }
+    CreateLiveRoomResponse:
+      type: object
+      additionalProperties: false
+      required: [slug, url, expires_at, password_required]
+      properties:
+        slug: { type: string }
+        url: { type: string, format: uri }
+        expires_at: { type: string, format: date-time }
+        password_required: { type: boolean }
+    LiveConfigResponse:
+      type: object
+      additionalProperties: false
+      required: [max_bytes, max_document_bytes, max_tabs, max_writers, max_viewers, max_participants, room_lifetime_seconds]
+      properties:
+        max_bytes: { type: integer, minimum: 1, description: Aggregate UTF-8 content-byte limit across a room. }
+        max_document_bytes: { type: integer, minimum: 1, description: Per-document UTF-8 content-byte limit. }
+        max_tabs: { type: integer, minimum: 1 }
+        max_writers: { type: integer, minimum: 1 }
+        max_viewers: { type: integer, minimum: 0 }
+        max_participants: { type: integer, minimum: 1 }
+        room_lifetime_seconds: { type: integer, minimum: 1 }
+    LiveParticipant:
+      type: object
+      additionalProperties: false
+      required: [id, nickname, role, joined_at, color, current_tab, status, last_seen_at]
+      properties:
+        id: { type: string }
+        nickname: { type: string }
+        role: { type: string, enum: [writer, watch_only] }
+        joined_at: { type: string, format: date-time }
+        color: { type: string }
+        current_tab: { type: string }
+        status: { type: string, enum: [connected, connection_lost, offline] }
+        last_seen_at: { type: string, format: date-time }
+        cursor:
+          type: object
+          additionalProperties: false
+          required: [document_id, revision, anchor, head]
+          properties:
+            document_id: { type: string }
+            revision: { type: integer, minimum: 0 }
+            anchor: { type: integer, minimum: 0 }
+            head: { type: integer, minimum: 0 }
+    LiveRoomResponse:
+      type: object
+      additionalProperties: false
+      required: [slug, expires_at, password_required, metadata_revision, metadata_snapshot_revision, max_bytes, max_document_bytes, max_tabs, max_writers, max_viewers, max_participants, room_lifetime_seconds, creator, documents, participants]
+      properties:
+        slug: { type: string }
+        url: { type: string, format: uri }
+        expires_at: { type: string, format: date-time }
+        password_required: { type: boolean }
+        metadata_revision: { type: integer, minimum: 0 }
+        metadata_snapshot_revision: { type: integer, minimum: 0 }
+        max_bytes: { type: integer, minimum: 1, description: Aggregate UTF-8 content-byte limit across a room. }
+        max_document_bytes: { type: integer, minimum: 1, description: Per-document UTF-8 content-byte limit. }
+        max_tabs: { type: integer, minimum: 1 }
+        max_writers: { type: integer, minimum: 1 }
+        max_viewers: { type: integer, minimum: 0 }
+        max_participants: { type: integer, minimum: 1 }
+        room_lifetime_seconds: { type: integer, minimum: 1 }
+        creator: { type: boolean }
+        documents:
+          type: array
+          items: { $ref: '#/components/schemas/LiveDocument' }
+        participants:
+          type: array
+          items: { $ref: '#/components/schemas/LiveParticipant' }
+    LiveUnlockRequest:
+      type: object
+      additionalProperties: false
+      required: [password]
+      properties:
+        password: { type: string, maxLength: 256 }
     PasteResponse:
       type: object
       required: [slug, is_encrypted, burn_after_read, expires_at, created_at]
@@ -149,4 +343,13 @@ components:
       content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
     RateLimited:
       description: Rate limit exceeded; response includes Retry-After
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    PasswordRequired:
+      description: The protected live room requires a valid room-access session.
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    InvalidPassword:
+      description: The supplied live-room password is invalid.
+      content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    Forbidden:
+      description: The WebSocket Origin is not permitted.
       content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }

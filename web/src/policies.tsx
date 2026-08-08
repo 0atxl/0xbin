@@ -5,7 +5,7 @@ const contactEmail = "hello@atulk.me";
 const contactHref = `mailto:${contactEmail}`;
 const githubURL = "https://github.com/0atxl/0xbin";
 const cloudflarePrivacyURL = "https://www.cloudflare.com/privacypolicy/";
-const lastUpdated = "26 July 2026";
+const lastUpdated = "8 August 2026";
 
 type Navigate = (path: string) => void;
 
@@ -273,6 +273,12 @@ function TermsPage() {
           obtains trustworthy 0xbin code. A compromised frontend could still
           capture plaintext or keys.
         </p>
+        <p>
+          LiveBin rooms are server-readable plaintext collaboration rooms. Their
+          optional shared password controls entry but does not encrypt room
+          content from the service. Participant presence is temporary and used
+          only while the room is active.
+        </p>
       </section>
       <section>
         <h2>Availability and liability</h2>
@@ -341,6 +347,22 @@ function PrivacyPage() {
           reached. A background cleanup process subsequently reclaims the
           expired database rows. View-once content is deleted by the first
           successful deliberate reveal.
+        </p>
+      </section>
+      <section>
+        <h2>Live room data</h2>
+        <p>
+          LiveBin rooms are collaborative plaintext rooms. The service
+          transiently processes and stores their unencrypted text, tab details,
+          and optional password verifier to provide the room until expiry. Live
+          rooms are not protected by the paste encryption feature.
+        </p>
+        <p>
+          While a room is active, the service also keeps participant display
+          names, joined time, connection state, selected tab, and cursor or
+          selection information in process memory to show collaboration. This
+          presence data is not stored in SQLite and is cleared on expiry or a
+          service restart.
         </p>
       </section>
       <section>

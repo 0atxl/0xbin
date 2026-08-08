@@ -129,7 +129,7 @@ from the initial paste MVP.
 3. From an existing paste viewer, the action opens a blank live draft and does
    not copy viewed or decrypted content.
 4. User creates a room with one initial tab, an optional shared password, and
-   the fixed 24-hour lifetime.
+   the operator-configured lifetime (up to 24 hours).
 5. Browser opens the room, receives a temporary adjective+noun participant
    name, and shares the room URL.
 6. Participants edit tabs together, see active cursors/selections, observe
@@ -140,8 +140,8 @@ from the initial paste MVP.
 8. A participant can save either the current tab or every tab appended into a
    single normal paste, then choose the normal paste's expiry and protection
    options.
-9. The room expires, closes active connections, and becomes unavailable after
-   24 hours even if cleanup has not yet run.
+9. The room expires, closes active connections, and becomes unavailable at its
+   server-configured lifetime (up to 24 hours) even if cleanup has not yet run.
 
 ## 7. Functional Requirements
 
@@ -248,8 +248,9 @@ the paste requirements above.
   use the paste AES-GCM envelope.
 - **FR-LIVE-10:** A room may require one shared password; protected bootstrap,
   unlock, and WebSocket access paths all require the room session.
-- **FR-LIVE-11:** Live rooms expire 24 hours after creation; read, unlock,
-  mutation, WebSocket, and cleanup paths enforce expiry.
+- **FR-LIVE-11:** Live rooms expire at their server-configured lifetime (no
+  longer than 24 hours); read, unlock, mutation, WebSocket, and cleanup paths
+  enforce expiry.
 - **FR-LIVE-12:** A temporary disconnect queues bounded text edits, restores
   them after reconnect, and disables structural tab actions until metadata is
   synchronized.

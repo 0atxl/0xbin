@@ -272,7 +272,9 @@ semantics.
   routes or room workload.
 
 - `/live` creates a temporary live room and `/live/{slug}` opens one.
-- A room expires 24 hours after server-side creation, regardless of activity.
+- A room defaults to a 24-hour lifetime from server-side creation; a
+  self-hosted operator may configure a shorter lifetime, but never a longer
+  one. Editing or joining never extends expiry.
 - A room starts with one CodeMirror document tab and supports up to the
   configured tab limit with existing language modes.
 - Multiple participants edit the same documents in real time, including
@@ -336,6 +338,7 @@ GET    /api/v1/pastes/{slug}
 POST   /api/v1/pastes/{slug}/consume
 GET    /api/v1/pastes/{slug}/raw
 POST   /api/v1/live
+GET    /api/v1/live/config
 GET    /api/v1/live/{slug}
 POST   /api/v1/live/{slug}/unlock
 GET    /api/v1/live/{slug}/ws   (WebSocket upgrade)
@@ -408,5 +411,5 @@ The live-sharing extension is ready for release only when its separate
 implementation plan passes: concurrent editing converges, reconnect and
 resynchronization preserve acknowledged work, cursors and selections map
 correctly, optional password gates protect every access path, rooms expire and
-clean up after 24 hours, presence remains session-only, and the existing paste
+clean up at their configured lifetime (never longer than 24 hours), presence remains session-only, and the existing paste
 journeys remain unchanged apart from the approved loading-bar visual update.

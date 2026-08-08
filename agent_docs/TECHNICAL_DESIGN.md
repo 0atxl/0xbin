@@ -1,7 +1,7 @@
 # 0xbin Technical Design
 
-**Status:** Implemented MVP baseline; live-sharing extension design aligned;
-hosted operational hardening remains pending
+**Status:** Implemented MVP baseline and live-sharing extension; hosted
+operational hardening remains pending
 **Source of product truth:** `../spec.md`
 
 ## 1. System Context
@@ -95,12 +95,17 @@ OXBIN_READ_TIMEOUT
 OXBIN_WRITE_TIMEOUT
 OXBIN_IDLE_TIMEOUT
 OXBIN_SHUTDOWN_TIMEOUT
+OXBIN_LIVE_ENABLED
 OXBIN_LIVE_ROOM_LIFETIME
 OXBIN_LIVE_MAX_TABS
 OXBIN_LIVE_MAX_BYTES
+OXBIN_LIVE_MAX_WRITERS
+OXBIN_LIVE_MAX_VIEWERS
 OXBIN_LIVE_MAX_PARTICIPANTS
 OXBIN_LIVE_MAX_MESSAGE_BYTES
 OXBIN_LIVE_HEARTBEAT_INTERVAL
+OXBIN_LIVE_RECONNECT_GRACE
+OXBIN_LIVE_PARTICIPANT_TIMEOUT
 OXBIN_LIVE_CREATE_RATE
 OXBIN_LIVE_UNLOCK_RATE
 OXBIN_LIVE_CONNECTION_RATE
@@ -109,7 +114,14 @@ OXBIN_LIVE_MAX_CONNECTIONS
 OXBIN_LIVE_SNAPSHOT_LIMITS
 ```
 
-Fail startup on unsafe or incoherent values. Do not log secrets.
+Set `OXBIN_LIVE_ENABLED=false` for bare-paste deployments; the process then
+does not construct the live hub, register live routes, or expose the LiveBin
+entry point, and ordinary paste cleanup skips live-room cleanup queries. When
+live mode is enabled, fail startup on unsafe or incoherent
+values. Writer, viewer, and total limits must satisfy
+`writers + viewers = total`. Do not log secrets.
+The participant timeout must be at least twice the heartbeat interval and
+longer than the reconnect grace period.
 `OXBIN_LIVE_SNAPSHOT_LIMITS` uses `rows/bytes` syntax. The fixed validation
 limits are 32 UTF-8 bytes for nicknames, 64 bytes for tab names, 64 bytes for
 language identifiers, and 64 bytes for document identifiers.
@@ -175,25 +187,44 @@ process:
   tab metadata changes, presence, cursor/selection updates, reconnects, and
   expiry transitions.
 - The process-local `live.Hub` lazily loads rooms, exposes session-scoped
-  document and metadata operations, keeps bounded rebase history, and repairs
-  snapshots from committed change rows after an interrupted save. A stale
-  reorder returns the current room state for resynchronization; deletion wins
-  over a later rename/language update, and the final document cannot be
-  deleted.
+  document and metadata operations, and keeps bounded rebase history. Each
+  accepted operation and its current snapshot are one atomic durable commit,
+  so a failed commit is not acknowledged or broadcast. A stale reorder returns
+  the current room state for resynchronization; deletion wins over a later
+  rename/language update, and the final document cannot be deleted.
 - The collaboration authority uses independent metadata/document revisions,
   persists accepted changes before acknowledging them, and keeps bounded
   history for reconnect/rebase.
+- Retained delta history is process-local authority state after it is loaded.
+  Following a service restart, a client whose known revision trails the current
+  durable snapshot receives `http_resync_required` and reloads that snapshot.
+  Cross-restart delta bridging is not an MVP guarantee; the resync fallback is
+  the correctness boundary and does not discard acknowledged edits.
 - Room capacity distinguishes up to 10 writing sessions, 100 watch-only
-  viewer sessions, and 110 total sessions. The creator's room-scoped session
-  authorizes the mode change and active-session removal; this is temporary
-  capability, not durable account ownership. A kick invalidates that session,
-  not the underlying uncredentialed person.
-- Presence and short-lived room password sessions remain process memory only.
+  viewer sessions, and 110 total sessions. The creator's room-scoped
+  capability authorizes the mode change and active-session removal; this is a
+  temporary capability, not durable account ownership. A kick invalidates that
+  session, not the underlying uncredentialed person.
+- Ordinary protected-room access uses a short-lived, room-scoped HttpOnly
+  session. Creation also sets a separate HttpOnly creator-capability cookie
+  that is valid through the room expiry. After ordinary access expires, a
+  protected creator must reauthenticate with the shared password; that renewal
+  does not replace the still-valid creator capability. Both opaque credentials
+  and the Hub's creator registry remain process-local and are never persisted
+  in SQLite. After a process restart, an existing creator-capability cookie has
+  no authority; a password unlock restores ordinary room access only, and the
+  room has no creator recovery flow.
+- Presence and ordinary room password sessions remain process memory only.
+  A reconnect-grace expiry publishes a deterministic participant-removal event
+  before process-local presence and cursor state are discarded.
 - Passwords use an adaptive Argon2id hash; the password itself never enters
   URLs, logs, SQLite, or telemetry.
 - The frontend uses a small native WebSocket client and React hooks with
   Phoenix-style join/rejoin/heartbeat behavior, but does not add Phoenix or
   LiveView runtime dependencies or protocols.
+- The complete version-1 WebSocket envelope, revision ordering, close behavior,
+  transient presence lifecycle, and creator-capability boundary are specified
+  in [`docs/live-sharing-websocket.md`](../docs/live-sharing-websocket.md).
 - The existing shared top progress bar handles static paste loading and live
   bootstrap/connect/reconnect/resync states.
 
@@ -235,13 +266,15 @@ limits are defined in
 [`LIVE_SHARING_IMPLEMENTATION_PLAN.md`](LIVE_SHARING_IMPLEMENTATION_PLAN.md).
 
 The SQLite implementation exposes a focused `live.RoomStore` boundary with
-room creation, active snapshot reads/writes, transactional change appends,
+room creation, active snapshot reads/writes, atomic change-and-snapshot commits,
 per-stream history loading and compaction, and bounded expired-room cleanup.
-Snapshot writes use optimistic revision checks; accepted change batches update
-the affected metadata/document revisions in the same transaction as their
-history rows. Reads and mutations treat expired rooms as not found. Loading
-before a compacted revision returns a resynchronization signal rather than
-silently returning an incomplete history.
+Document edits update one document row rather than replacing every room
+document. Retained changes compact only after the configured row or byte
+threshold. Snapshot writes use optimistic revision checks; accepted changes
+update the affected metadata/document revision and snapshot in the same
+transaction as their history row. Reads and mutations treat expired rooms as
+not found. Loading before a compacted revision returns a resynchronization
+signal rather than silently returning an incomplete history.
 
 Creation accepts an expiry identifier, not a timestamp. The default policy maps
 `1h`, `24h`, and `72h` to their durations and calculates `created_at` and `expires_at`
@@ -254,6 +287,7 @@ from the server clock, normalized to UTC Unix seconds.
 - Configure busy timeout.
 - Limit open connections appropriately for SQLite; start with one writer-oriented connection policy and benchmark.
 - Use short transactions.
+- Keep the max-room WAL benchmark and physical-write regression as the write-amplification baseline; checkpoint setup writes before measuring edit traffic.
 - Do not run `VACUUM` during ordinary cleanup.
 - Consider incremental vacuum only after observing file-growth behaviour.
 
@@ -434,12 +468,16 @@ Live endpoints are separate from paste endpoints:
 
 ```text
 POST /api/v1/live
+GET  /api/v1/live/config
 GET  /api/v1/live/{slug}
 POST /api/v1/live/{slug}/unlock
 GET  /api/v1/live/{slug}/ws
 ```
 
-The HTTP bootstrap returns the bounded full room snapshot. The WebSocket then
+The public config response exposes the configured lifetime, aggregate and
+per-document content limits, and room capacity limits without operational or
+secret configuration. The HTTP bootstrap returns the bounded full room snapshot.
+The WebSocket then
 carries join, document changes, tab metadata changes, presence, cursors,
 selections, acknowledgements, reconnect/resync status, and expiry events. A
 protected room requires a short-lived `HttpOnly`, `SameSite=Strict`, `Secure`
