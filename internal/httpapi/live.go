@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
@@ -9,6 +10,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -46,13 +49,16 @@ type liveAPI struct {
 	cfg               config.Config
 	limits            *ratelimit.Registry
 	sessions          *liveSessionStore
+	creators          *liveSessionStore
 	peers             *livePeerRegistry
+	publications      *livePublicationRegistry
 	activeConnections atomic.Int64
 	passwordSlots     chan struct{}
 }
 
 const (
 	liveSessionCookie       = "oxbin_live_session"
+	liveCreatorCookie       = "oxbin_live_creator"
 	liveSessionLifetime     = 15 * time.Minute
 	livePasswordMaxBytes    = 256
 	livePasswordSaltBytes   = 16
@@ -61,6 +67,7 @@ const (
 	livePasswordIterations  = 3
 	livePasswordParallelism = 1
 	livePeerQueueSize       = 32
+	livePresenceInterval    = 50 * time.Millisecond
 	liveJoinTimeout         = 10 * time.Second
 	liveMaxSessions         = 10_000
 )
@@ -68,7 +75,7 @@ const (
 var errLivePasswordBusy = errors.New("live password verification is busy")
 
 func newLiveAPI(cfg config.Config, dependencies *LiveDependencies) *liveAPI {
-	if dependencies == nil {
+	if !cfg.LiveEnabled || dependencies == nil {
 		return nil
 	}
 	if dependencies.Store == nil || dependencies.Hub == nil || dependencies.Slugs == nil {
@@ -81,7 +88,9 @@ func newLiveAPI(cfg config.Config, dependencies *LiveDependencies) *liveAPI {
 		baseURL:       cfg.BaseURL,
 		cfg:           cfg,
 		sessions:      newLiveSessionStore(),
+		creators:      newLiveSessionStore(),
 		peers:         newLivePeerRegistry(),
+		publications:  newLivePublicationRegistry(),
 		passwordSlots: make(chan struct{}, 4),
 	}
 }
@@ -108,6 +117,19 @@ type liveCreateResponse struct {
 	PasswordRequired bool      `json:"password_required"`
 }
 
+// liveConfigResponse contains the public, non-secret limits needed before a
+// browser creates its first room. It deliberately excludes rate-limit and
+// operational details.
+type liveConfigResponse struct {
+	MaxBytes            int64 `json:"max_bytes"`
+	MaxDocumentBytes    int64 `json:"max_document_bytes"`
+	MaxTabs             int   `json:"max_tabs"`
+	MaxWriters          int   `json:"max_writers"`
+	MaxViewers          int   `json:"max_viewers"`
+	MaxParticipants     int   `json:"max_participants"`
+	RoomLifetimeSeconds int64 `json:"room_lifetime_seconds"`
+}
+
 type liveRoomResponse struct {
 	Slug                     string                    `json:"slug"`
 	URL                      string                    `json:"url,omitempty"`
@@ -115,6 +137,14 @@ type liveRoomResponse struct {
 	PasswordRequired         bool                      `json:"password_required"`
 	MetadataRevision         int                       `json:"metadata_revision"`
 	MetadataSnapshotRevision int                       `json:"metadata_snapshot_revision"`
+	MaxBytes                 int64                     `json:"max_bytes"`
+	MaxDocumentBytes         int64                     `json:"max_document_bytes"`
+	MaxTabs                  int                       `json:"max_tabs"`
+	MaxWriters               int                       `json:"max_writers"`
+	MaxViewers               int                       `json:"max_viewers"`
+	MaxParticipants          int                       `json:"max_participants"`
+	RoomLifetimeSeconds      int64                     `json:"room_lifetime_seconds"`
+	Creator                  bool                      `json:"creator"`
 	Documents                []liveDocumentResponse    `json:"documents,omitempty"`
 	Participants             []liveParticipantResponse `json:"participants,omitempty"`
 }
@@ -144,6 +174,7 @@ type liveParticipantResponse struct {
 	CurrentTab string                 `json:"current_tab"`
 	Cursor     *liveCursorResponse    `json:"cursor,omitempty"`
 	Status     live.ParticipantStatus `json:"status"`
+	Role       live.ParticipantRole   `json:"role"`
 	LastSeenAt time.Time              `json:"last_seen_at"`
 }
 
@@ -196,8 +227,12 @@ func (api *liveAPI) create(w http.ResponseWriter, r *http.Request) {
 		documents = append(documents, live.DocumentSnapshot{ID: id, Name: input.Name, Language: input.Language, Content: input.Content, Position: index, UpdatedAt: now})
 	}
 
-	passwordHash, err := hashLivePassword(request.Password)
+	passwordHash, err := api.hashPassword(request.Password)
 	if err != nil {
+		if errors.Is(err, errLivePasswordBusy) {
+			writeLiveError(w, r, http.StatusTooManyRequests, "rate_limited", "Too many requests")
+			return
+		}
 		writeLiveError(w, r, http.StatusBadRequest, "invalid_request", "Invalid live room request")
 		return
 	}
@@ -214,12 +249,20 @@ func (api *liveAPI) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	snapshot.Slug = slugValue
+	creator, err := api.hub.IssueCreatorCapability(slugValue, snapshot.ExpiresAt)
+	if err != nil {
+		api.writeStoreError(w, r, err)
+		return
+	}
 	api.limits.RecordSuccess(clientIPFromContext(r.Context()))
 	setLiveHeaders(w.Header())
-	if passwordHash != "" {
-		api.setSessionCookie(w, slugValue, now)
-	}
+	api.setSessionCookie(w, slugValue, now)
+	api.setCreatorCookie(w, slugValue, creator)
 	writeJSON(w, http.StatusCreated, liveCreateResponse{Slug: slugValue, URL: liveRoomURL(api.baseURL, slugValue), ExpiresAt: snapshot.ExpiresAt, PasswordRequired: passwordHash != ""})
+}
+
+func (api *liveAPI) config(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, api.publicConfig())
 }
 
 func slugInsertRoom(ctx context.Context, generator liveSlugGenerator, store live.RoomStore, snapshot live.RoomSnapshot) (string, error) {
@@ -270,7 +313,9 @@ func (api *liveAPI) bootstrap(w http.ResponseWriter, r *http.Request) {
 	}
 	api.limits.RecordSuccess(clientIPFromContext(r.Context()))
 	setLiveHeaders(w.Header())
-	writeJSON(w, http.StatusOK, responseForLiveSnapshot(snapshot))
+	response := api.responseForLiveSnapshot(snapshot)
+	_, response.Creator = api.creatorCapability(r, slugValue, time.Now().UTC())
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (api *liveAPI) unlock(w http.ResponseWriter, r *http.Request) {
@@ -318,7 +363,7 @@ func (api *liveAPI) unlock(w http.ResponseWriter, r *http.Request) {
 	if snapshot.PasswordHash != "" {
 		api.setSessionCookie(w, slugValue, now)
 	}
-	writeJSON(w, http.StatusOK, responseForLiveSnapshot(snapshot))
+	writeJSON(w, http.StatusOK, api.responseForLiveSnapshot(snapshot))
 }
 
 func (api *liveAPI) writeRequestError(w http.ResponseWriter, r *http.Request, err error) {
@@ -386,6 +431,30 @@ func responseForLiveSnapshot(snapshot live.RoomSnapshot) liveRoomResponse {
 	return response
 }
 
+func (api *liveAPI) responseForLiveSnapshot(snapshot live.RoomSnapshot) liveRoomResponse {
+	response := responseForLiveSnapshot(snapshot)
+	response.MaxBytes = api.cfg.LiveMaxBytes
+	response.MaxDocumentBytes = api.cfg.LiveMaxBytes
+	response.MaxTabs = api.cfg.LiveMaxTabs
+	response.MaxWriters = api.cfg.LiveMaxWriters
+	response.MaxViewers = api.cfg.LiveMaxViewers
+	response.MaxParticipants = api.cfg.LiveMaxParticipants
+	response.RoomLifetimeSeconds = int64(api.cfg.LiveRoomLifetime.Seconds())
+	return response
+}
+
+func (api *liveAPI) publicConfig() liveConfigResponse {
+	return liveConfigResponse{
+		MaxBytes:            api.cfg.LiveMaxBytes,
+		MaxDocumentBytes:    api.cfg.LiveMaxBytes,
+		MaxTabs:             api.cfg.LiveMaxTabs,
+		MaxWriters:          api.cfg.LiveMaxWriters,
+		MaxViewers:          api.cfg.LiveMaxViewers,
+		MaxParticipants:     api.cfg.LiveMaxParticipants,
+		RoomLifetimeSeconds: int64(api.cfg.LiveRoomLifetime.Seconds()),
+	}
+}
+
 func responseForLiveState(state live.RoomState) liveRoomResponse {
 	response := liveRoomResponse{Slug: state.Slug, ExpiresAt: state.ExpiresAt, MetadataRevision: state.MetadataRevision, MetadataSnapshotRevision: state.MetadataSnapshotRevision, Documents: make([]liveDocumentResponse, 0, len(state.Documents)), Participants: make([]liveParticipantResponse, 0, len(state.Participants))}
 	for _, document := range state.Documents {
@@ -398,7 +467,7 @@ func responseForLiveState(state live.RoomState) liveRoomResponse {
 }
 
 func responseForLiveParticipant(participant live.ParticipantSnapshot) liveParticipantResponse {
-	response := liveParticipantResponse{ID: participant.ID, Nickname: participant.Nickname, JoinedAt: participant.JoinedAt, Color: participant.Color, CurrentTab: participant.CurrentTab, Status: participant.Status, LastSeenAt: participant.LastSeenAt}
+	response := liveParticipantResponse{ID: participant.ID, Nickname: participant.Nickname, JoinedAt: participant.JoinedAt, Color: participant.Color, CurrentTab: participant.CurrentTab, Status: participant.Status, Role: participant.Role, LastSeenAt: participant.LastSeenAt}
 	if participant.Cursor != nil {
 		response.Cursor = &liveCursorResponse{DocumentID: participant.Cursor.DocumentID, Revision: participant.Cursor.Revision, Anchor: participant.Cursor.Anchor, Head: participant.Cursor.Head}
 	}
@@ -419,10 +488,14 @@ func newLiveDocumentID(used map[string]struct{}) (string, error) {
 	return "", errors.New("document ID attempts exhausted")
 }
 
-func hashLivePassword(password string) (string, error) {
+func (api *liveAPI) hashPassword(password string) (string, error) {
 	if password == "" {
 		return "", nil
 	}
+	if !api.acquirePasswordSlot() {
+		return "", errLivePasswordBusy
+	}
+	defer api.releasePasswordSlot()
 	salt := make([]byte, livePasswordSaltBytes)
 	if _, err := rand.Read(salt); err != nil {
 		return "", err
@@ -432,12 +505,10 @@ func hashLivePassword(password string) (string, error) {
 }
 
 func (api *liveAPI) verifyPassword(password, encoded string) (bool, error) {
-	select {
-	case api.passwordSlots <- struct{}{}:
-		defer func() { <-api.passwordSlots }()
-	default:
+	if !api.acquirePasswordSlot() {
 		return false, errLivePasswordBusy
 	}
+	defer api.releasePasswordSlot()
 	parts := strings.Split(encoded, "$")
 	if len(parts) != 5 || parts[0] != "v1" || parts[1] != "argon2id" {
 		return false, errors.New("invalid password hash")
@@ -460,9 +531,23 @@ func (api *liveAPI) verifyPassword(password, encoded string) (bool, error) {
 	return subtle.ConstantTimeCompare(actual, expected) == 1, nil
 }
 
+func (api *liveAPI) acquirePasswordSlot() bool {
+	select {
+	case api.passwordSlots <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+func (api *liveAPI) releasePasswordSlot() {
+	<-api.passwordSlots
+}
+
 type liveSessionRecord struct {
 	slug    string
 	expires time.Time
+	creator live.CreatorCapability
 }
 
 type liveSessionStore struct {
@@ -474,7 +559,7 @@ func newLiveSessionStore() *liveSessionStore {
 	return &liveSessionStore{records: make(map[string]liveSessionRecord)}
 }
 
-func (store *liveSessionStore) put(slugValue string, expires time.Time) string {
+func (store *liveSessionStore) put(slugValue string, expires time.Time, creator live.CreatorCapability) string {
 	tokenBytes := make([]byte, 32)
 	if _, err := rand.Read(tokenBytes); err != nil {
 		return ""
@@ -494,14 +579,14 @@ func (store *liveSessionStore) put(slugValue string, expires time.Time) string {
 			}
 		}
 	}
-	store.records[token] = liveSessionRecord{slug: slugValue, expires: expires}
+	store.records[token] = liveSessionRecord{slug: slugValue, expires: expires, creator: creator}
 	store.mu.Unlock()
 	return token
 }
 
-func (store *liveSessionStore) valid(token, slugValue string, now time.Time) bool {
+func (store *liveSessionStore) get(token, slugValue string, now time.Time) (liveSessionRecord, bool) {
 	if token == "" {
-		return false
+		return liveSessionRecord{}, false
 	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
@@ -510,56 +595,162 @@ func (store *liveSessionStore) valid(token, slugValue string, now time.Time) boo
 		if ok && !record.expires.After(now) {
 			delete(store.records, token)
 		}
-		return false
+		return liveSessionRecord{}, false
 	}
-	return true
+	return record, true
 }
 
 func (api *liveAPI) sessionAuthorized(r *http.Request, slugValue string, now time.Time) bool {
+	_, ok := api.session(r, slugValue, now)
+	return ok
+}
+
+func (api *liveAPI) session(r *http.Request, slugValue string, now time.Time) (liveSessionRecord, bool) {
 	cookie, err := r.Cookie(liveSessionCookie)
-	return err == nil && api.sessions.valid(cookie.Value, slugValue, now)
+	if err != nil {
+		return liveSessionRecord{}, false
+	}
+	return api.sessions.get(cookie.Value, slugValue, now)
 }
 
 func (api *liveAPI) setSessionCookie(w http.ResponseWriter, slugValue string, now time.Time) {
-	token := api.sessions.put(slugValue, now.Add(liveSessionLifetime))
+	token := api.sessions.put(slugValue, now.Add(liveSessionLifetime), live.CreatorCapability{})
 	if token == "" {
 		return
 	}
-	http.SetCookie(w, &http.Cookie{Name: liveSessionCookie, Value: token, Path: "/api/v1/live", Expires: now.Add(liveSessionLifetime), MaxAge: int(liveSessionLifetime.Seconds()), HttpOnly: true, Secure: strings.EqualFold(api.baseURL.Scheme, "https"), SameSite: http.SameSiteStrictMode})
+	http.SetCookie(w, &http.Cookie{Name: liveSessionCookie, Value: token, Path: "/api/v1/live/" + slugValue, Expires: now.Add(liveSessionLifetime), MaxAge: int(liveSessionLifetime.Seconds()), HttpOnly: true, Secure: strings.EqualFold(api.baseURL.Scheme, "https"), SameSite: http.SameSiteStrictMode})
 }
 
-// liveWireMessage is deliberately flat: the type field selects which other
-// fields are meaningful, and unknown fields remain forward-compatible.
+// The creator credential is independent from the short-lived room-access
+// session. It remains only in process memory and is scoped to one room, so a
+// restart drops creator authority even when a browser still holds the cookie.
+func (api *liveAPI) setCreatorCookie(w http.ResponseWriter, slugValue string, creator live.CreatorCapability) {
+	if creator == (live.CreatorCapability{}) {
+		return
+	}
+	token := api.creators.put(slugValue, creator.ExpiresAt(), creator)
+	if token == "" {
+		return
+	}
+	now := time.Now().UTC()
+	http.SetCookie(w, &http.Cookie{Name: liveCreatorCookie, Value: token, Path: "/api/v1/live/" + slugValue, Expires: creator.ExpiresAt(), MaxAge: int(creator.ExpiresAt().Sub(now).Seconds()), HttpOnly: true, Secure: strings.EqualFold(api.baseURL.Scheme, "https"), SameSite: http.SameSiteStrictMode})
+}
+
+func (api *liveAPI) creatorCapability(r *http.Request, slugValue string, now time.Time) (live.CreatorCapability, bool) {
+	cookie, err := r.Cookie(liveCreatorCookie)
+	if err != nil {
+		return live.CreatorCapability{}, false
+	}
+	record, ok := api.creators.get(cookie.Value, slugValue, now)
+	if !ok || record.creator == (live.CreatorCapability{}) || !api.hub.ValidCreatorCapability(slugValue, record.creator, now) {
+		return live.CreatorCapability{}, false
+	}
+	return record.creator, true
+}
+
+// liveWireMessage is the canonical snake_case client-to-server envelope. The
+// type field selects which other fields are meaningful.
 type liveWireMessage struct {
-	Type         string          `json:"type"`
-	SessionID    string          `json:"session_id,omitempty"`
-	ClientID     string          `json:"client_id,omitempty"`
-	OperationID  string          `json:"operation_id,omitempty"`
-	DocumentID   string          `json:"document_id,omitempty"`
-	BaseVersion  int             `json:"base_version,omitempty"`
-	BaseRevision int             `json:"base_revision,omitempty"`
-	Changes      json.RawMessage `json:"changes,omitempty"`
-	Name         string          `json:"name,omitempty"`
-	Language     string          `json:"language,omitempty"`
-	Content      string          `json:"content,omitempty"`
-	Order        []string        `json:"order,omitempty"`
-	CurrentTab   string          `json:"current_tab,omitempty"`
-	Revision     int             `json:"revision,omitempty"`
-	Anchor       int             `json:"anchor,omitempty"`
-	Head         int             `json:"head,omitempty"`
+	Type              string                     `json:"type"`
+	SessionID         string                     `json:"session_id,omitempty"`
+	ClientID          string                     `json:"client_id,omitempty"`
+	OperationID       string                     `json:"operation_id,omitempty"`
+	DocumentID        string                     `json:"document_id,omitempty"`
+	BaseVersion       int                        `json:"base_version,omitempty"`
+	Changes           json.RawMessage            `json:"changes,omitempty"`
+	Name              string                     `json:"name,omitempty"`
+	Language          string                     `json:"language,omitempty"`
+	Content           string                     `json:"content,omitempty"`
+	Order             []string                   `json:"order,omitempty"`
+	CurrentTab        string                     `json:"current_tab,omitempty"`
+	Revision          int                        `json:"revision,omitempty"`
+	Anchor            int                        `json:"anchor,omitempty"`
+	Head              int                        `json:"head,omitempty"`
+	ParticipantID     string                     `json:"participant_id,omitempty"`
+	WatchOnly         bool                       `json:"watch_only,omitempty"`
+	MetadataRevision  int                        `json:"metadata_revision,omitempty"`
+	DocumentRevisions []liveWireDocumentRevision `json:"document_revisions,omitempty"`
+}
+
+type liveWireDocumentRevision struct {
+	DocumentID string `json:"document_id"`
+	Revision   int    `json:"revision"`
+}
+
+type liveJoinedEvent struct {
+	Type              string                     `json:"type"`
+	ExpiresAt         time.Time                  `json:"expires_at"`
+	MetadataRevision  int                        `json:"metadata_revision"`
+	DocumentRevisions []liveWireDocumentRevision `json:"document_revisions"`
+	Participants      []liveParticipantResponse  `json:"participants"`
+	Participant       liveParticipantResponse    `json:"participant"`
+	Creator           bool                       `json:"creator"`
+	WatchOnly         bool                       `json:"watch_only"`
+	Reconnected       bool                       `json:"reconnected"`
+}
+
+type liveRoomModeEvent struct {
+	Type         string                    `json:"type"`
+	WatchOnly    bool                      `json:"watch_only"`
+	Participants []liveParticipantResponse `json:"participants"`
+}
+
+type liveParticipantRemovedEvent struct {
+	Type          string `json:"type"`
+	ParticipantID string `json:"participant_id"`
+}
+
+type liveChangesEvent struct {
+	Type        string          `json:"type"`
+	OperationID string          `json:"operation_id"`
+	ClientID    string          `json:"client_id"`
+	DocumentID  string          `json:"document_id"`
+	BaseVersion int             `json:"base_version"`
+	Revision    int             `json:"revision"`
+	Changes     json.RawMessage `json:"changes"`
+	Duplicate   bool            `json:"duplicate,omitempty"`
+}
+
+type liveStatusEvent struct {
+	Type   string `json:"type"`
+	Status string `json:"status"`
+}
+
+type liveMetadataEvent struct {
+	Type             string                `json:"type"`
+	OperationID      string                `json:"operation_id"`
+	ClientID         string                `json:"client_id"`
+	DocumentID       string                `json:"document_id,omitempty"`
+	MetadataRevision int                   `json:"metadata_revision"`
+	Document         *liveDocumentResponse `json:"document,omitempty"`
+	Name             string                `json:"name,omitempty"`
+	Language         string                `json:"language,omitempty"`
+	Order            []string              `json:"order,omitempty"`
+	Duplicate        bool                  `json:"duplicate,omitempty"`
 }
 
 type livePeer struct {
-	api           *liveAPI
-	conn          *websocket.Conn
-	slug          string
-	session       *live.RoomSession
-	clientID      string
-	rateIdentity  string
-	participantID string
-	out           chan []byte
-	done          chan struct{}
-	stopOnce      sync.Once
+	api            *liveAPI
+	conn           *websocket.Conn
+	slug           string
+	session        *live.RoomSession
+	clientID       string
+	rateIdentity   string
+	participantID  string
+	out            chan livePeerFrame
+	control        chan livePeerFrame
+	done           chan struct{}
+	stopOnce       sync.Once
+	presenceMu     sync.Mutex
+	presence       *liveWireMessage
+	rateNoticeMu   sync.Mutex
+	lastRateNotice time.Time
+}
+
+type livePeerFrame struct {
+	data        []byte
+	closeCode   websocket.StatusCode
+	closeReason string
 }
 
 type livePeerRegistry struct {
@@ -601,30 +792,111 @@ func (registry *livePeerRegistry) list(slugValue string) []*livePeer {
 }
 
 func (peer *livePeer) enqueue(data []byte) {
+	if len(data) > peer.api.cfg.LiveMaxMessageBytes {
+		peer.stop(websocket.StatusMessageTooBig, "live message too large")
+		return
+	}
 	select {
 	case <-peer.done:
 		return
-	case peer.out <- data:
+	case peer.out <- livePeerFrame{data: data}:
 	default:
 		peer.stop(websocket.StatusTryAgainLater, "connection is overloaded")
 	}
 }
 
+func (peer *livePeer) closeAfter(data []byte, code websocket.StatusCode, reason string) {
+	peer.stopOnce.Do(func() {
+		peer.control <- livePeerFrame{data: data, closeCode: code, closeReason: reason}
+	})
+}
+
+func (peer *livePeer) expire() {
+	peer.closeAfter(
+		encodeLiveWireEvent(liveStatusEvent{Type: "status", Status: "expired"}),
+		websocket.StatusTryAgainLater,
+		"room expired",
+	)
+}
+
 func (peer *livePeer) stop(code websocket.StatusCode, reason string) {
 	peer.stopOnce.Do(func() {
 		close(peer.done)
-		_ = peer.conn.CloseNow()
+		_ = peer.conn.Close(code, reason)
 	})
+}
+
+// queuePresence replaces an unsent cursor update with the newest state. The
+// durable edit path never waits on or shares this ephemeral queue.
+func (peer *livePeer) queuePresence(message liveWireMessage) {
+	peer.presenceMu.Lock()
+	peer.presence = &message
+	peer.presenceMu.Unlock()
+}
+
+func (peer *livePeer) takePresence() (liveWireMessage, bool) {
+	peer.presenceMu.Lock()
+	defer peer.presenceMu.Unlock()
+	if peer.presence == nil {
+		return liveWireMessage{}, false
+	}
+	message := *peer.presence
+	peer.presence = nil
+	return message, true
+}
+
+func (peer *livePeer) presenceLoop(ctx context.Context) {
+	ticker := time.NewTicker(livePresenceInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-peer.done:
+			return
+		case <-ticker.C:
+			message, ok := peer.takePresence()
+			if !ok {
+				continue
+			}
+			if err := peer.api.handleWireMessage(ctx, peer, message); err != nil {
+				if errors.Is(err, live.ErrRoomExpired) {
+					peer.expire()
+					return
+				}
+				peer.api.sendOperationError(peer, message.OperationID, err)
+			}
+		}
+	}
+}
+
+func (peer *livePeer) notifyRateLimited(now time.Time) {
+	peer.rateNoticeMu.Lock()
+	defer peer.rateNoticeMu.Unlock()
+	if !peer.lastRateNotice.IsZero() && now.Sub(peer.lastRateNotice) < time.Second {
+		return
+	}
+	peer.lastRateNotice = now
+	peer.enqueue(liveEvent("status", map[string]any{"status": "rate_limited"}))
 }
 
 func (peer *livePeer) writer(ctx context.Context) {
 	for {
 		select {
+		case frame := <-peer.control:
+			peer.writeFinalFrame(ctx, frame)
+			return
+		default:
+		}
+		select {
 		case <-peer.done:
 			return
-		case data := <-peer.out:
+		case frame := <-peer.control:
+			peer.writeFinalFrame(ctx, frame)
+			return
+		case frame := <-peer.out:
 			writeCtx, cancel := context.WithTimeout(ctx, peer.api.cfg.WriteTimeout)
-			err := peer.conn.Write(writeCtx, websocket.MessageText, data)
+			err := peer.conn.Write(writeCtx, websocket.MessageText, frame.data)
 			cancel()
 			if err != nil {
 				peer.stop(websocket.StatusGoingAway, "write failed")
@@ -632,6 +904,14 @@ func (peer *livePeer) writer(ctx context.Context) {
 			}
 		}
 	}
+}
+
+func (peer *livePeer) writeFinalFrame(ctx context.Context, frame livePeerFrame) {
+	writeCtx, cancel := context.WithTimeout(ctx, peer.api.cfg.WriteTimeout)
+	_ = peer.conn.Write(writeCtx, websocket.MessageText, frame.data)
+	cancel()
+	close(peer.done)
+	_ = peer.conn.Close(frame.closeCode, frame.closeReason)
 }
 
 func (api *liveAPI) broadcast(slugValue string, data []byte, except *livePeer) {
@@ -661,7 +941,10 @@ func (api *liveAPI) websocket(w http.ResponseWriter, r *http.Request) {
 		api.writeStoreError(w, r, err)
 		return
 	}
-	if snapshot.PasswordHash != "" && !api.sessionAuthorized(r, slugValue, time.Now().UTC()) {
+	_, sessionAuthorized := api.session(r, slugValue, time.Now().UTC())
+	if snapshot.PasswordHash != "" && !sessionAuthorized {
+		// Authorization must complete before Accept: an unauthorized protected
+		// room request is an HTTP failure, never a briefly established socket.
 		writeLiveError(w, r, http.StatusUnauthorized, "password_required", "Password required")
 		return
 	}
@@ -675,6 +958,7 @@ func (api *liveAPI) websocket(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
+	creator, _ := api.creatorCapability(r, slugValue, time.Now().UTC())
 	conn.SetReadLimit(int64(api.cfg.LiveMaxMessageBytes))
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -685,8 +969,8 @@ func (api *liveAPI) websocket(w http.ResponseWriter, r *http.Request) {
 		_ = conn.Close(websocket.StatusProtocolError, "join required")
 		return
 	}
-	var join liveWireMessage
-	if json.Unmarshal(data, &join) != nil || join.Type != "join" {
+	join, err := decodeLiveWireMessage(data)
+	if err != nil || join.Type != "join" {
 		_ = conn.Close(websocket.StatusProtocolError, "join required")
 		return
 	}
@@ -698,8 +982,21 @@ func (api *liveAPI) websocket(w http.ResponseWriter, r *http.Request) {
 		_ = conn.Close(websocket.StatusPolicyViolation, "session ID required")
 		return
 	}
-	joined, err := api.hub.Join(ctx, slugValue, sessionID, time.Now().UTC())
+	known, ok := knownLiveRevisions(join)
+	if !ok {
+		_ = conn.Close(websocket.StatusProtocolError, "known revisions required")
+		return
+	}
+	unlockPublication := api.publications.lock(slugValue)
+	joined, err := api.hub.JoinWithCreator(ctx, slugValue, sessionID, creator, time.Now().UTC())
 	if err != nil {
+		unlockPublication()
+		api.closeHandshakeError(conn, err)
+		return
+	}
+	bridge, err := joined.Session.Bridge(known, time.Now().UTC())
+	if err != nil {
+		unlockPublication()
 		api.closeHandshakeError(conn, err)
 		return
 	}
@@ -707,17 +1004,40 @@ func (api *liveAPI) websocket(w http.ResponseWriter, r *http.Request) {
 	if clientID == "" {
 		clientID = sessionID
 	}
-	peer := &livePeer{api: api, conn: conn, slug: slugValue, session: joined.Session, clientID: clientID, rateIdentity: identity, participantID: joined.Participant.ID, out: make(chan []byte, livePeerQueueSize), done: make(chan struct{})}
+	peer := &livePeer{api: api, conn: conn, slug: slugValue, session: joined.Session, clientID: clientID, rateIdentity: identity, participantID: joined.Participant.ID, out: make(chan livePeerFrame, livePeerQueueSize), control: make(chan livePeerFrame, 1), done: make(chan struct{})}
 	go peer.writer(ctx)
+	go peer.presenceLoop(ctx)
 	api.peers.add(peer)
+	state := responseForLiveState(joined.State)
+	peer.enqueue(encodeLiveWireEvent(liveJoinedEvent{
+		Type: "joined", ExpiresAt: joined.State.ExpiresAt,
+		MetadataRevision:  joined.State.MetadataRevision,
+		DocumentRevisions: liveDocumentRevisions(joined.State),
+		Participants:      state.Participants, Participant: responseForLiveParticipant(joined.Participant),
+		Creator: joined.Session.IsCreator(), WatchOnly: joined.State.WatchOnly,
+		Reconnected: joined.Reconnected,
+	}))
+	if bridge.Resync {
+		peer.enqueue(encodeLiveWireEvent(liveStatusEvent{Type: "status", Status: "http_resync_required"}))
+	} else {
+		for _, accepted := range bridge.MetadataChanges {
+			peer.enqueue(encodeLiveWireEvent(metadataWireEvent(accepted)))
+		}
+		for _, accepted := range bridge.DocumentChanges {
+			peer.enqueue(encodeLiveWireEvent(documentWireEvent(accepted)))
+		}
+	}
+	api.broadcast(slugValue, encodeLiveWireEvent(struct {
+		Type        string                  `json:"type"`
+		Participant liveParticipantResponse `json:"participant"`
+	}{Type: "presence_joined", Participant: responseForLiveParticipant(joined.Participant)}), peer)
+	unlockPublication()
 	defer func() {
 		api.peers.remove(peer)
 		_ = joined.Session.Disconnect(time.Now().UTC())
 		api.broadcast(slugValue, liveEvent("presence_left", map[string]any{"participant_id": joined.Participant.ID}), peer)
 		peer.stop(websocket.StatusNormalClosure, "")
 	}()
-	peer.enqueue(liveEvent("joined", map[string]any{"slug": slugValue, "expires_at": joined.State.ExpiresAt, "metadata_revision": joined.State.MetadataRevision, "metadata_snapshot_revision": joined.State.MetadataSnapshotRevision, "documents": responseForLiveState(joined.State).Documents, "participants": responseForLiveState(joined.State).Participants, "participant": responseForLiveParticipant(joined.Participant), "reconnected": joined.Reconnected}))
-	api.broadcast(slugValue, liveEvent("presence_joined", map[string]any{"participant": responseForLiveParticipant(joined.Participant)}), peer)
 	pingDone := make(chan struct{})
 	go peer.heartbeatLoop(ctx, pingDone)
 	defer close(pingDone)
@@ -732,16 +1052,24 @@ func (api *liveAPI) websocket(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		if !api.allowMessage(peer) {
-			return
+			continue
 		}
-		var message liveWireMessage
-		if json.Unmarshal(data, &message) != nil {
+		message, err := decodeLiveWireMessage(data)
+		if err != nil {
 			peer.enqueue(liveEvent("error", map[string]any{"code": "invalid_request", "message": "Invalid live message"}))
 			continue
 		}
+		if message.Type == "presence" {
+			peer.queuePresence(message)
+			continue
+		}
 		if err := api.handleWireMessage(ctx, peer, message); err != nil {
-			api.sendOperationError(peer, err)
-			if errors.Is(err, live.ErrRoomExpired) || errors.Is(err, live.ErrParticipantInactive) {
+			if errors.Is(err, live.ErrRoomExpired) {
+				peer.expire()
+				return
+			}
+			api.sendOperationError(peer, message.OperationID, err)
+			if errors.Is(err, live.ErrParticipantInactive) {
 				return
 			}
 		}
@@ -759,7 +1087,11 @@ func (peer *livePeer) heartbeatLoop(ctx context.Context, done chan struct{}) {
 			return
 		case <-ticker.C:
 			if err := peer.session.Heartbeat(time.Now().UTC()); err != nil {
-				peer.stop(websocket.StatusGoingAway, "room expired")
+				if errors.Is(err, live.ErrRoomExpired) {
+					peer.expire()
+				} else {
+					peer.stop(websocket.StatusGoingAway, "heartbeat failed")
+				}
 				return
 			}
 			pingCtx, cancel := context.WithTimeout(ctx, peer.api.cfg.LiveHeartbeatInterval/2)
@@ -799,11 +1131,13 @@ func (api *liveAPI) allowMessage(peer *livePeer) bool {
 	if api.limits == nil {
 		return true
 	}
-	allowed, _ := api.limits.Allow(ratelimit.LiveMessage, peer.rateIdentity, 1)
-	if allowed {
+	sessionAllowed, _ := api.limits.Allow(ratelimit.LiveMessage, "session:"+peer.slug+":"+peer.participantID, 1)
+	roomAllowed, _ := api.limits.Allow(ratelimit.LiveMessageRoom, "room:"+peer.slug, 1)
+	ipAllowed, _ := api.limits.Allow(ratelimit.LiveMessageIP, "ip:"+peer.rateIdentity, 1)
+	if sessionAllowed && roomAllowed && ipAllowed {
 		return true
 	}
-	peer.enqueue(liveEvent("status", map[string]any{"status": "rate_limited"}))
+	peer.notifyRateLimited(time.Now().UTC())
 	return false
 }
 
@@ -820,11 +1154,13 @@ func (api *liveAPI) handleWireMessage(ctx context.Context, peer *livePeer, messa
 		if err != nil {
 			return live.ErrOperationLimit
 		}
-		accepted, err := peer.session.SubmitDocument(ctx, live.DocumentOperation{OperationID: message.OperationID, ClientID: peer.clientID, DocumentID: message.DocumentID, BaseVersion: message.baseVersion(), Changes: changes}, now)
+		unlockPublication := api.publications.lock(peer.slug)
+		defer unlockPublication()
+		accepted, err := peer.session.SubmitDocument(ctx, live.DocumentOperation{OperationID: message.OperationID, ClientID: peer.clientID, DocumentID: message.DocumentID, BaseVersion: message.BaseVersion, Changes: changes}, now)
 		if err != nil {
 			return err
 		}
-		event := liveEvent("changes", map[string]any{"operation_id": accepted.OperationID, "client_id": accepted.ClientID, "document_id": accepted.DocumentID, "base_version": accepted.BaseVersion, "revision": accepted.Revision, "changes": encodeLiveChangeSet(accepted.Changes), "duplicate": accepted.Duplicate})
+		event := encodeLiveWireEvent(documentWireEvent(accepted))
 		if accepted.Duplicate {
 			peer.enqueue(event)
 		} else {
@@ -832,16 +1168,44 @@ func (api *liveAPI) handleWireMessage(ctx context.Context, peer *livePeer, messa
 		}
 		return nil
 	case "document_create", "document_update", "document_delete", "document_reorder":
-		accepted, err := peer.session.ApplyMetadata(ctx, live.MetadataOperation{OperationID: message.OperationID, ClientID: peer.clientID, BaseVersion: message.baseVersion(), Kind: message.Type, DocumentID: message.DocumentID, Name: message.Name, Language: message.Language, Content: message.Content, Order: message.Order}, now)
+		unlockPublication := api.publications.lock(peer.slug)
+		defer unlockPublication()
+		accepted, err := peer.session.ApplyMetadata(ctx, live.MetadataOperation{OperationID: message.OperationID, ClientID: peer.clientID, BaseVersion: message.BaseVersion, Kind: message.Type, DocumentID: message.DocumentID, Name: message.Name, Language: message.Language, Content: message.Content, Order: message.Order}, now)
 		if err != nil {
 			return err
 		}
-		state := responseForLiveState(accepted.State)
-		event := liveEvent(message.Type, map[string]any{"operation_id": accepted.OperationID, "client_id": accepted.ClientID, "document_id": accepted.DocumentID, "revision": accepted.Revision, "duplicate": accepted.Duplicate, "documents": state.Documents, "metadata_revision": state.MetadataRevision})
+		event := encodeLiveWireEvent(metadataWireEvent(accepted))
 		if accepted.Duplicate {
 			peer.enqueue(event)
 		} else {
 			api.broadcast(peer.slug, event, nil)
+		}
+		return nil
+	case "room_watch_only":
+		unlockPublication := api.publications.lock(peer.slug)
+		defer unlockPublication()
+		state, err := peer.session.SetWatchOnly(message.WatchOnly, now)
+		if err != nil {
+			return err
+		}
+		api.broadcast(peer.slug, encodeLiveWireEvent(liveRoomModeEvent{
+			Type: "room_mode_changed", WatchOnly: state.WatchOnly,
+			Participants: responseForLiveState(state).Participants,
+		}), nil)
+		return nil
+	case "participant_remove":
+		unlockPublication := api.publications.lock(peer.slug)
+		defer unlockPublication()
+		err := peer.session.RemoveParticipant(message.ParticipantID, now)
+		if err != nil {
+			return err
+		}
+		event := encodeLiveWireEvent(liveParticipantRemovedEvent{Type: "participant_removed", ParticipantID: message.ParticipantID})
+		api.broadcast(peer.slug, event, nil)
+		for _, target := range api.peers.list(peer.slug) {
+			if target.participantID == message.ParticipantID {
+				target.stop(websocket.StatusPolicyViolation, "removed from room")
+			}
 		}
 		return nil
 	case "presence":
@@ -863,39 +1227,39 @@ func (api *liveAPI) handleWireMessage(ctx context.Context, peer *livePeer, messa
 	}
 }
 
-func (message liveWireMessage) baseVersion() int {
-	if message.BaseRevision != 0 {
-		return message.BaseRevision
-	}
-	return message.BaseVersion
-}
-
-func (api *liveAPI) sendOperationError(peer *livePeer, err error) {
-	code := "invalid_request"
-	status := "invalid_request"
-	switch {
-	case errors.Is(err, live.ErrRoomExpired):
-		code, status = "room_expired", "expired"
-	case errors.Is(err, live.ErrDocumentResync), errors.Is(err, live.ErrMetadataResync):
-		code, status = "resync_required", "HTTP resync required"
-	case errors.Is(err, live.ErrOperationLimit):
-		code = "message_too_large"
-	case errors.Is(err, live.ErrParticipantInactive), errors.Is(err, live.ErrParticipantNotFound):
-		code = "unauthorized"
-	case errors.Is(err, live.ErrParticipantLimit):
-		code = "room_limit_reached"
-	case errors.Is(err, live.ErrNameTaken):
-		code = "name_taken"
-	case errors.Is(err, live.ErrDocumentNotFound), errors.Is(err, live.ErrDocumentDeleted), errors.Is(err, live.ErrLastDocument), errors.Is(err, live.ErrOperationConflict), errors.Is(err, live.ErrInvalidPresence), errors.Is(err, livecollab.ErrInvalidChangeSet), errors.Is(err, livecollab.ErrRevisionConflict), errors.Is(err, livecollab.ErrDuplicateOperation):
-		code = "invalid_request"
-	default:
-		code = "service_unavailable"
-	}
-	fields := map[string]any{"code": code, "message": "Live operation could not be applied"}
-	if status == "expired" {
-		fields["status"] = status
+func (api *liveAPI) sendOperationError(peer *livePeer, operationID string, err error) {
+	code, status := classifyLiveOperationError(err)
+	fields := map[string]any{"code": code, "status": status, "message": "Live operation could not be applied"}
+	if operationID != "" {
+		fields["operation_id"] = operationID
 	}
 	peer.enqueue(liveEvent("error", fields))
+}
+
+// classifyLiveOperationError is a protocol boundary: clients use status to
+// decide whether the stable operation ID can be retried, needs an HTTP
+// reconciliation, or must be retained for manual recovery.
+func classifyLiveOperationError(err error) (code, status string) {
+	switch {
+	case errors.Is(err, live.ErrRoomExpired):
+		return "room_expired", "expired"
+	case errors.Is(err, live.ErrDocumentResync), errors.Is(err, live.ErrMetadataResync):
+		return "resync_required", "resync_required"
+	case errors.Is(err, livecollab.ErrRevisionConflict):
+		return "resync_required", "resync_required"
+	case errors.Is(err, live.ErrOperationLimit):
+		return "message_too_large", "validation"
+	case errors.Is(err, live.ErrParticipantInactive), errors.Is(err, live.ErrParticipantNotFound), errors.Is(err, live.ErrSessionRemoved), errors.Is(err, live.ErrCreatorRequired), errors.Is(err, live.ErrWatchOnly):
+		return "unauthorized", "auth_required"
+	case errors.Is(err, live.ErrParticipantLimit):
+		return "room_limit_reached", "overloaded"
+	case errors.Is(err, live.ErrNameTaken):
+		return "name_taken", "validation"
+	case errors.Is(err, live.ErrDocumentNotFound), errors.Is(err, live.ErrDocumentDeleted), errors.Is(err, live.ErrLastDocument), errors.Is(err, live.ErrOperationConflict), errors.Is(err, live.ErrInvalidPresence), errors.Is(err, livecollab.ErrInvalidChangeSet), errors.Is(err, livecollab.ErrDuplicateOperation):
+		return "invalid_request", "validation"
+	default:
+		return "service_unavailable", "retryable"
+	}
 }
 
 func (api *liveAPI) closeHandshakeError(conn *websocket.Conn, err error) {
@@ -909,13 +1273,96 @@ func (api *liveAPI) closeHandshakeError(conn *websocket.Conn, err error) {
 	_ = conn.Close(code, reason)
 }
 
-func liveEvent(kind string, fields map[string]any) []byte {
-	fields["type"] = kind
-	data, err := json.Marshal(fields)
+func decodeLiveWireMessage(data []byte) (liveWireMessage, error) {
+	var message liveWireMessage
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&message); err != nil {
+		return liveWireMessage{}, err
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return liveWireMessage{}, errors.New("invalid live wire message")
+	}
+	if message.Type == "" {
+		return liveWireMessage{}, errors.New("live wire message type is required")
+	}
+	switch message.Type {
+	case "join", "heartbeat", "ack", "push_changes", "document_create", "document_update", "document_delete", "document_reorder", "room_watch_only", "participant_remove", "presence", "participant_rename":
+	default:
+		return liveWireMessage{}, errors.New("unknown live wire message")
+	}
+	return message, nil
+}
+
+func knownLiveRevisions(message liveWireMessage) (live.KnownRevisions, bool) {
+	if message.MetadataRevision < 0 || len(message.DocumentRevisions) == 0 {
+		return live.KnownRevisions{}, false
+	}
+	known := live.KnownRevisions{Metadata: message.MetadataRevision, Documents: make(map[string]int, len(message.DocumentRevisions))}
+	for _, document := range message.DocumentRevisions {
+		if document.DocumentID == "" || document.Revision < 0 {
+			return live.KnownRevisions{}, false
+		}
+		if _, exists := known.Documents[document.DocumentID]; exists {
+			return live.KnownRevisions{}, false
+		}
+		known.Documents[document.DocumentID] = document.Revision
+	}
+	return known, true
+}
+
+func liveDocumentRevisions(state live.RoomState) []liveWireDocumentRevision {
+	revisions := make([]liveWireDocumentRevision, 0, len(state.Documents))
+	for _, document := range state.Documents {
+		revisions = append(revisions, liveWireDocumentRevision{DocumentID: document.ID, Revision: document.Revision})
+	}
+	return revisions
+}
+
+func documentWireEvent(accepted live.AcceptedDocumentOperation) liveChangesEvent {
+	return liveChangesEvent{
+		Type: "changes", OperationID: accepted.OperationID, ClientID: accepted.ClientID,
+		DocumentID: accepted.DocumentID, BaseVersion: accepted.BaseVersion,
+		Revision: accepted.Revision, Changes: encodeLiveChangeSet(accepted.Changes), Duplicate: accepted.Duplicate,
+	}
+}
+
+func metadataWireEvent(accepted live.AcceptedMetadataOperation) liveMetadataEvent {
+	event := liveMetadataEvent{
+		OperationID: accepted.OperationID, ClientID: accepted.ClientID,
+		DocumentID: accepted.DocumentID, MetadataRevision: accepted.Revision,
+		Duplicate: accepted.Duplicate,
+	}
+	switch accepted.Kind {
+	case "document_create":
+		event.Type = "document_created"
+		for _, document := range accepted.State.Documents {
+			if document.ID == accepted.DocumentID {
+				event.Document = &liveDocumentResponse{ID: document.ID, Name: document.Name, Language: document.Language, Content: document.Content, Position: document.Position, Revision: document.Revision, SnapshotRevision: document.SnapshotRevision}
+				break
+			}
+		}
+	case "document_update":
+		event.Type, event.Name, event.Language = "document_updated", accepted.Name, accepted.Language
+	case "document_delete":
+		event.Type = "document_deleted"
+	case "document_reorder":
+		event.Type, event.Order = "document_reordered", append([]string(nil), accepted.Order...)
+	}
+	return event
+}
+
+func encodeLiveWireEvent(event any) []byte {
+	data, err := json.Marshal(event)
 	if err != nil {
 		return []byte(`{"type":"error","code":"service_unavailable","message":"Service is temporarily unavailable"}`)
 	}
 	return data
+}
+
+func liveEvent(kind string, fields map[string]any) []byte {
+	fields["type"] = kind
+	return encodeLiveWireEvent(fields)
 }
 
 func encodeLiveChangeSet(changes livecollab.ChangeSet) json.RawMessage {
@@ -940,6 +1387,35 @@ func (api *liveAPI) shutdown(ctx context.Context) error {
 		peer.stop(websocket.StatusGoingAway, "server shutting down")
 	}
 	return api.hub.Shutdown(ctx, time.Now().UTC())
+}
+
+func (api *liveAPI) runLifecycle(ctx context.Context) {
+	ticker := time.NewTicker(api.hub.SweepInterval())
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-ticker.C:
+			if err := api.sweep(ctx, now.UTC()); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, live.ErrHubClosed) {
+				slog.Warn("live room sweep failed", "error", err)
+			}
+		}
+	}
+}
+
+func (api *liveAPI) sweep(ctx context.Context, now time.Time) error {
+	if _, err := api.hub.SweepWithParticipantRemovals(ctx, now, func(slug, participantID string) {
+		api.broadcast(slug, liveEvent("participant_removed", map[string]any{"participant_id": participantID}), nil)
+	}); err != nil {
+		return err
+	}
+	for _, peer := range api.allPeers() {
+		if _, err := peer.session.State(); errors.Is(err, live.ErrRoomExpired) {
+			peer.expire()
+		}
+	}
+	return nil
 }
 
 func (api *liveAPI) allPeers() []*livePeer {

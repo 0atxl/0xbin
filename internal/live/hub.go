@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -19,7 +20,9 @@ import (
 const (
 	defaultHubMaxTabs            = 8
 	defaultHubMaxBytes           = int64(1 << 20)
-	defaultHubMaxParticipants    = 32
+	defaultHubMaxWriters         = 10
+	defaultHubMaxViewers         = 100
+	defaultHubMaxParticipants    = defaultHubMaxWriters + defaultHubMaxViewers
 	defaultHubMaxMessageBytes    = 64 << 10
 	defaultHubMaxHistoryRows     = 1000
 	defaultHubMaxHistoryBytes    = int64(4 << 20)
@@ -30,6 +33,7 @@ const (
 	maxClientIDBytes             = 128
 	participantIDGenerationTries = 8
 	documentIDGenerationTries    = 8
+	maxRemovedSessionRecords     = 1024
 )
 
 var (
@@ -39,7 +43,10 @@ var (
 	ErrParticipantLimit    = errors.New("live participant limit reached")
 	ErrParticipantNotFound = errors.New("live participant not found")
 	ErrParticipantInactive = errors.New("live participant is not connected")
+	ErrSessionRemoved      = errors.New("live participant session was removed")
 	ErrSessionActive       = errors.New("live session is already connected")
+	ErrCreatorRequired     = errors.New("live creator capability is required")
+	ErrWatchOnly           = errors.New("live participant is watch-only")
 	ErrDocumentNotFound    = errors.New("live document not found")
 	ErrDocumentDeleted     = errors.New("live document was deleted")
 	ErrLastDocument        = errors.New("the last live document cannot be deleted")
@@ -60,12 +67,23 @@ const (
 	ParticipantOffline        ParticipantStatus = "offline"
 )
 
+// ParticipantRole controls whether a temporary room session may mutate room
+// state. Roles are process-local presence, not durable room metadata.
+type ParticipantRole string
+
+const (
+	ParticipantWriter    ParticipantRole = "writer"
+	ParticipantWatchOnly ParticipantRole = "watch_only"
+)
+
 // HubOptions bounds all process-local room state. The HTTP/configuration layer
 // can map environment settings into this type without exposing config internals
 // to the live domain package.
 type HubOptions struct {
 	MaxTabs            int
 	MaxBytes           int64
+	MaxWriters         int
+	MaxViewers         int
 	MaxParticipants    int
 	MaxMessageBytes    int
 	MaxHistoryRows     int
@@ -81,6 +99,8 @@ func DefaultHubOptions() HubOptions {
 	return HubOptions{
 		MaxTabs:            defaultHubMaxTabs,
 		MaxBytes:           defaultHubMaxBytes,
+		MaxWriters:         defaultHubMaxWriters,
+		MaxViewers:         defaultHubMaxViewers,
 		MaxParticipants:    defaultHubMaxParticipants,
 		MaxMessageBytes:    defaultHubMaxMessageBytes,
 		MaxHistoryRows:     defaultHubMaxHistoryRows,
@@ -92,13 +112,16 @@ func DefaultHubOptions() HubOptions {
 }
 
 func (options HubOptions) validate() error {
-	if options.MaxTabs < 1 || options.MaxBytes < 1 || options.MaxParticipants < 1 || options.MaxMessageBytes < 1 || options.MaxHistoryRows < 1 || options.MaxHistoryBytes < 1 {
+	if options.MaxTabs < 1 || options.MaxBytes < 1 || options.MaxWriters < 1 || options.MaxViewers < 0 || options.MaxParticipants < 1 || options.MaxMessageBytes < 1 || options.MaxHistoryRows < 1 || options.MaxHistoryBytes < 1 {
 		return errors.New("live hub limits must be positive")
+	}
+	if options.MaxWriters+options.MaxViewers != options.MaxParticipants {
+		return errors.New("live writer, viewer, and total limits are incoherent")
 	}
 	if int64(options.MaxMessageBytes) > options.MaxBytes {
 		return errors.New("live message limit must not exceed room content limit")
 	}
-	if options.ReconnectGrace <= 0 || options.HeartbeatInterval <= 0 || options.ParticipantTimeout <= options.ReconnectGrace {
+	if options.ReconnectGrace <= 0 || options.HeartbeatInterval <= 0 || options.ParticipantTimeout <= options.ReconnectGrace || options.ParticipantTimeout < 2*options.HeartbeatInterval {
 		return errors.New("live connection timing limits are incoherent")
 	}
 	return nil
@@ -119,7 +142,22 @@ type ParticipantSnapshot struct {
 	CurrentTab string
 	Cursor     *CursorSelection
 	Status     ParticipantStatus
+	Role       ParticipantRole
 	LastSeenAt time.Time
+}
+
+// CreatorCapability is an opaque, process-local capability minted for a room
+// creator. It is deliberately neither an account identity nor SQLite data.
+type CreatorCapability struct {
+	slug      string
+	token     string
+	expiresAt time.Time
+}
+
+// ExpiresAt exposes only the capability lifetime required by the HTTP cookie
+// boundary; the opaque token and room binding remain package-private.
+func (capability CreatorCapability) ExpiresAt() time.Time {
+	return capability.expiresAt
 }
 
 type DocumentState struct {
@@ -135,6 +173,7 @@ type DocumentState struct {
 type RoomState struct {
 	Slug                     string
 	ExpiresAt                time.Time
+	WatchOnly                bool
 	MetadataRevision         int
 	MetadataSnapshotRevision int
 	Documents                []DocumentState
@@ -146,6 +185,21 @@ type JoinResult struct {
 	Participant ParticipantSnapshot
 	State       RoomState
 	Reconnected bool
+}
+
+// KnownRevisions identifies the HTTP room snapshot a joining client already
+// holds. Room contents remain on HTTP; WebSocket join only bridges deltas.
+type KnownRevisions struct {
+	Metadata  int
+	Documents map[string]int
+}
+
+// BridgeResult contains retained authority operations newer than a client's
+// HTTP snapshot. Resync is true when bounded history cannot bridge safely.
+type BridgeResult struct {
+	DocumentChanges []AcceptedDocumentOperation
+	MetadataChanges []AcceptedMetadataOperation
+	Resync          bool
 }
 
 type DocumentOperation struct {
@@ -185,6 +239,10 @@ type AcceptedMetadataOperation struct {
 	Kind        string
 	DocumentID  string
 	Revision    int
+	Name        string
+	Language    string
+	Content     string
+	Order       []string
 	State       RoomState
 	Duplicate   bool
 }
@@ -213,12 +271,13 @@ func (err *DocumentResyncError) Unwrap() error { return ErrDocumentResync }
 // Hub owns process-local room state. It intentionally does not persist
 // participants, cursors, connection state, or session identities.
 type Hub struct {
-	store   RoomStore
-	names   *NameGenerator
-	options HubOptions
-	mu      sync.Mutex
-	rooms   map[string]*room
-	closed  bool
+	store    RoomStore
+	names    *NameGenerator
+	options  HubOptions
+	mu       sync.Mutex
+	rooms    map[string]*room
+	creators map[string]CreatorCapability
+	closed   bool
 }
 
 // NewHub creates an empty process-local registry. Rooms are loaded lazily when
@@ -233,12 +292,56 @@ func NewHub(store RoomStore, names *NameGenerator, options HubOptions) (*Hub, er
 	if err := options.validate(); err != nil {
 		return nil, err
 	}
-	return &Hub{store: store, names: names, options: options, rooms: make(map[string]*room)}, nil
+	return &Hub{store: store, names: names, options: options, rooms: make(map[string]*room), creators: make(map[string]CreatorCapability)}, nil
+}
+
+// IssueCreatorCapability mints the temporary, room-scoped creator capability.
+// It is deliberately held only in the process-local Hub and its caller.
+func (hub *Hub) IssueCreatorCapability(slug string, expiresAt time.Time) (CreatorCapability, error) {
+	if slug == "" || expiresAt.IsZero() {
+		return CreatorCapability{}, ErrRoomNotFound
+	}
+	token, err := defaultOpaqueID()
+	if err != nil {
+		return CreatorCapability{}, err
+	}
+	hub.mu.Lock()
+	defer hub.mu.Unlock()
+	if hub.closed {
+		return CreatorCapability{}, ErrHubClosed
+	}
+	capability := CreatorCapability{slug: slug, token: token, expiresAt: expiresAt.UTC()}
+	hub.creators[slug] = capability
+	return capability, nil
+}
+
+// RevokeCreatorCapability explicitly removes temporary creator authority.
+// Existing cookies then carry no authority, and the capability is never
+// durable across a process restart.
+func (hub *Hub) RevokeCreatorCapability(slug string) {
+	hub.mu.Lock()
+	delete(hub.creators, slug)
+	hub.mu.Unlock()
+}
+
+// ValidCreatorCapability checks the process-local authority record without
+// exposing the opaque capability contents to another package.
+func (hub *Hub) ValidCreatorCapability(slug string, capability CreatorCapability, now time.Time) bool {
+	now = normalizedNow(now)
+	hub.mu.Lock()
+	defer hub.mu.Unlock()
+	return !hub.closed && capability.slug == slug && capability.token != "" && capability.expiresAt.After(now) && hub.creators[slug] == capability
 }
 
 // Join loads a room once, assigns or reclaims a temporary identity, and
 // returns the complete current state for the joining client.
 func (hub *Hub) Join(ctx context.Context, slug, sessionID string, now time.Time) (JoinResult, error) {
+	return hub.JoinWithCreator(ctx, slug, sessionID, CreatorCapability{}, now)
+}
+
+// JoinWithCreator grants creator authority only when the process-local
+// capability belongs to this room and this Hub instance.
+func (hub *Hub) JoinWithCreator(ctx context.Context, slug, sessionID string, capability CreatorCapability, now time.Time) (JoinResult, error) {
 	if strings.TrimSpace(slug) != slug || slug == "" || sessionID == "" || len(sessionID) > maxClientIDBytes || strings.TrimSpace(sessionID) != sessionID || !utf8.ValidString(sessionID) {
 		return JoinResult{}, ErrParticipantNotFound
 	}
@@ -265,11 +368,12 @@ func (hub *Hub) Join(ctx context.Context, slug, sessionID string, now time.Time)
 		}
 		hub.rooms[slug] = room
 	}
+	creator := !hub.closed && capability.slug == slug && capability.token != "" && capability.expiresAt.After(now) && hub.creators[slug] == capability
 	hub.mu.Unlock()
 
-	result, err := room.join(ctx, hub, sessionID, now)
+	result, err := room.join(ctx, hub, sessionID, creator, now)
 	if errors.Is(err, ErrRoomExpired) {
-		hub.removeRoom(slug, room)
+		hub.removeRoom(slug, room, true)
 	}
 	return result, err
 }
@@ -290,9 +394,31 @@ func (hub *Hub) RoomCount() int {
 	return len(hub.rooms)
 }
 
+// SweepInterval is short enough to observe heartbeat loss and reconnect-grace
+// expiry without retaining inactive rooms for an additional full interval.
+func (hub *Hub) SweepInterval() time.Duration {
+	interval := min(hub.options.HeartbeatInterval, hub.options.ReconnectGrace) / 2
+	if interval <= 0 {
+		return time.Second
+	}
+	return interval
+}
+
 // Sweep disconnects silent participants, removes expired rooms, and evicts
 // rooms whose reconnect grace period has elapsed.
 func (hub *Hub) Sweep(ctx context.Context, now time.Time) (int, error) {
+	return hub.sweep(ctx, now, nil)
+}
+
+// SweepWithParticipantRemovals invokes publish for each participant whose
+// reconnect grace has expired. The callback runs before the participant's
+// process-local session and cursor state are removed, so transports can make
+// the removal visible to remaining clients deterministically.
+func (hub *Hub) SweepWithParticipantRemovals(ctx context.Context, now time.Time, publish func(slug, participantID string)) (int, error) {
+	return hub.sweep(ctx, now, publish)
+}
+
+func (hub *Hub) sweep(ctx context.Context, now time.Time, publish func(slug, participantID string)) (int, error) {
 	now = normalizedNow(now)
 	hub.mu.Lock()
 	if hub.closed {
@@ -300,6 +426,11 @@ func (hub *Hub) Sweep(ctx context.Context, now time.Time) (int, error) {
 		return 0, ErrHubClosed
 	}
 	rooms := make([]*room, 0, len(hub.rooms))
+	for slug, capability := range hub.creators {
+		if !capability.expiresAt.After(now) {
+			delete(hub.creators, slug)
+		}
+	}
 	for _, room := range hub.rooms {
 		rooms = append(rooms, room)
 	}
@@ -307,11 +438,11 @@ func (hub *Hub) Sweep(ctx context.Context, now time.Time) (int, error) {
 
 	removed := 0
 	for _, room := range rooms {
-		if err := room.sweep(ctx, now); err != nil {
+		if err := room.sweep(ctx, now, publish); err != nil {
 			return removed, err
 		}
 		if room.shouldEvict(now) {
-			hub.removeRoom(room.snapshotSlug(), room)
+			hub.removeRoom(room.snapshotSlug(), room, room.expired(now))
 			removed++
 		}
 	}
@@ -334,6 +465,7 @@ func (hub *Hub) Shutdown(ctx context.Context, now time.Time) error {
 		rooms = append(rooms, room)
 	}
 	hub.rooms = make(map[string]*room)
+	hub.creators = make(map[string]CreatorCapability)
 	hub.mu.Unlock()
 
 	var firstErr error
@@ -345,11 +477,14 @@ func (hub *Hub) Shutdown(ctx context.Context, now time.Time) error {
 	return firstErr
 }
 
-func (hub *Hub) removeRoom(slug string, target *room) {
+func (hub *Hub) removeRoom(slug string, target *room, removeCreator bool) {
 	hub.mu.Lock()
 	defer hub.mu.Unlock()
 	if hub.rooms[slug] == target {
 		delete(hub.rooms, slug)
+		if removeCreator {
+			delete(hub.creators, slug)
+		}
 	}
 }
 
@@ -359,6 +494,7 @@ type RoomSession struct {
 	participant string
 	sessionID   string
 	generation  uint64
+	creator     bool
 }
 
 func (session *RoomSession) State() (RoomState, error) {
@@ -366,6 +502,15 @@ func (session *RoomSession) State() (RoomState, error) {
 		return RoomState{}, ErrParticipantNotFound
 	}
 	return session.room.stateFor(session.participant, session.generation)
+}
+
+// Bridge returns only retained operations newer than the supplied HTTP
+// snapshot. The caller must fetch HTTP again when history is unavailable.
+func (session *RoomSession) Bridge(known KnownRevisions, now time.Time) (BridgeResult, error) {
+	if session == nil || session.room == nil {
+		return BridgeResult{}, ErrParticipantNotFound
+	}
+	return session.room.bridge(session.participant, session.generation, known, normalizedNow(now))
 }
 
 func (session *RoomSession) Participant() (ParticipantSnapshot, error) {
@@ -429,25 +574,55 @@ func (session *RoomSession) Leave(now time.Time) error {
 	}
 	err := session.room.leave(session.participant, session.generation, normalizedNow(now))
 	if err == nil && session.hub != nil && session.room.shouldEvict(normalizedNow(now)) {
-		session.hub.removeRoom(session.room.snapshotSlug(), session.room)
+		session.hub.removeRoom(session.room.snapshotSlug(), session.room, false)
 	}
 	return err
 }
 
+// IsCreator reports whether this temporary session holds the room-scoped
+// creator capability.
+func (session *RoomSession) IsCreator() bool {
+	return session != nil && session.creator
+}
+
+// SetWatchOnly changes process-local room mode. Enabling it immediately makes
+// every active writer watch-only.
+func (session *RoomSession) SetWatchOnly(enabled bool, now time.Time) (RoomState, error) {
+	if session == nil || session.room == nil {
+		return RoomState{}, ErrParticipantNotFound
+	}
+	return session.room.setWatchOnly(session.participant, session.generation, session.creator, enabled, normalizedNow(now))
+}
+
+// RemoveParticipant invalidates an active temporary session. A removed person
+// may later join only with a new session identifier.
+func (session *RoomSession) RemoveParticipant(participantID string, now time.Time) error {
+	if session == nil || session.room == nil {
+		return ErrParticipantNotFound
+	}
+	return session.room.removeParticipant(session.participant, session.generation, session.creator, participantID, normalizedNow(now))
+}
+
 type room struct {
-	mu             sync.Mutex
-	store          RoomStore
-	options        HubOptions
-	snapshot       RoomSnapshot
-	documents      map[string]*documentState
-	order          []string
-	participants   map[string]*participantState
-	sessions       map[string]string
-	names          map[string]string
-	operations     map[string]operationRecord
-	operationOrder []string
-	dirty          bool
-	closed         bool
+	mu                        sync.Mutex
+	store                     RoomStore
+	options                   HubOptions
+	snapshot                  RoomSnapshot
+	documents                 map[string]*documentState
+	order                     []string
+	participants              map[string]*participantState
+	sessions                  map[string]string
+	removedSessions           map[string]time.Time
+	names                     map[string]string
+	watchOnly                 bool
+	operations                map[string]operationRecord
+	operationOrder            []string
+	metadataHistory           []AcceptedMetadataOperation
+	metadataHistorySizes      []int64
+	metadataHistoryBytes      int64
+	metadataCompactedRevision int
+	dirty                     bool
+	closed                    bool
 }
 
 type documentState struct {
@@ -458,6 +633,8 @@ type documentState struct {
 }
 
 type documentHistory struct {
+	OperationID string
+	ClientID    string
 	Revision    int
 	BaseVersion int
 	BeforeLen   int
@@ -468,6 +645,7 @@ type documentHistory struct {
 type participantState struct {
 	snapshot       ParticipantSnapshot
 	sessionID      string
+	writerSlot     bool
 	generation     uint64
 	disconnectedAt time.Time
 }
@@ -489,14 +667,16 @@ func newRoom(ctx context.Context, store RoomStore, snapshot RoomSnapshot, option
 		return nil, ErrInvalidSnapshot
 	}
 	room := &room{
-		store:        store,
-		options:      options,
-		snapshot:     snapshot,
-		documents:    make(map[string]*documentState, len(snapshot.Documents)),
-		participants: make(map[string]*participantState),
-		sessions:     make(map[string]string),
-		names:        make(map[string]string),
-		operations:   make(map[string]operationRecord),
+		store:                     store,
+		options:                   options,
+		snapshot:                  snapshot,
+		documents:                 make(map[string]*documentState, len(snapshot.Documents)),
+		participants:              make(map[string]*participantState),
+		sessions:                  make(map[string]string),
+		removedSessions:           make(map[string]time.Time),
+		names:                     make(map[string]string),
+		operations:                make(map[string]operationRecord),
+		metadataCompactedRevision: snapshot.MetadataSnapshotRevision,
 	}
 	for _, document := range snapshot.Documents {
 		if _, exists := room.documents[document.ID]; exists || ValidateDocumentID(document.ID) != nil || ValidateTabName(document.Name) != nil || ValidateLanguageID(document.Language) != nil || ValidateDocumentContent(document.Content, options.MaxBytes) != nil {
@@ -566,13 +746,17 @@ func (room *room) replay(ctx context.Context) error {
 	return nil
 }
 
-func (room *room) join(ctx context.Context, hub *Hub, sessionID string, now time.Time) (JoinResult, error) {
+func (room *room) join(ctx context.Context, hub *Hub, sessionID string, creator bool, now time.Time) (JoinResult, error) {
 	room.mu.Lock()
 	defer room.mu.Unlock()
 	if err := room.ensureActiveLocked(now); err != nil {
 		return JoinResult{}, err
 	}
 	room.pruneDisconnectedLocked(now)
+	room.pruneRemovedSessionsLocked(now)
+	if removedUntil, removed := room.removedSessions[sessionID]; removed && removedUntil.After(now) {
+		return JoinResult{}, ErrSessionRemoved
+	}
 	if existingID, exists := room.sessions[sessionID]; exists {
 		participant := room.participants[existingID]
 		if participant != nil && participant.snapshot.Status == ParticipantConnected {
@@ -583,7 +767,7 @@ func (room *room) join(ctx context.Context, hub *Hub, sessionID string, now time
 			participant.snapshot.LastSeenAt = now
 			participant.disconnectedAt = time.Time{}
 			participant.generation++
-			return room.joinResultLocked(hub, participant, true), nil
+			return room.joinResultLocked(hub, participant, creator, true), nil
 		}
 		delete(room.participants, existingID)
 		delete(room.sessions, sessionID)
@@ -593,6 +777,14 @@ func (room *room) join(ctx context.Context, hub *Hub, sessionID string, now time
 	}
 	if len(room.participants) >= room.options.MaxParticipants {
 		return JoinResult{}, ErrParticipantLimit
+	}
+	writerSlot := room.writerSlotCountLocked() < room.options.MaxWriters
+	if !writerSlot && room.viewerSlotCountLocked() >= room.options.MaxViewers {
+		return JoinResult{}, ErrParticipantLimit
+	}
+	role := ParticipantWatchOnly
+	if writerSlot && !room.watchOnly {
+		role = ParticipantWriter
 	}
 	participantID, err := uniqueGeneratedID(room.options.ParticipantID, func(id string) bool {
 		_, exists := room.participants[id]
@@ -611,25 +803,93 @@ func (room *room) join(ctx context.Context, hub *Hub, sessionID string, now time
 	}
 	participant := &participantState{
 		sessionID:  sessionID,
+		writerSlot: writerSlot,
 		generation: 1,
 		snapshot: ParticipantSnapshot{
 			ID: participantID, Nickname: nickname, JoinedAt: now,
 			Color: participantColor(participantID), CurrentTab: room.order[0],
-			Status: ParticipantConnected, LastSeenAt: now,
+			Status: ParticipantConnected, Role: role, LastSeenAt: now,
 		},
 	}
 	room.participants[participantID] = participant
 	room.sessions[sessionID] = participantID
 	room.names[NameKey(nickname)] = participantID
-	return room.joinResultLocked(hub, participant, false), nil
+	return room.joinResultLocked(hub, participant, creator, false), nil
 }
 
-func (room *room) joinResultLocked(hub *Hub, participant *participantState, reconnected bool) JoinResult {
+func (room *room) joinResultLocked(hub *Hub, participant *participantState, creator, reconnected bool) JoinResult {
 	return JoinResult{
-		Session:     &RoomSession{hub: hub, room: room, participant: participant.snapshot.ID, sessionID: participant.sessionID, generation: participant.generation},
+		Session:     &RoomSession{hub: hub, room: room, participant: participant.snapshot.ID, sessionID: participant.sessionID, generation: participant.generation, creator: creator},
 		Participant: cloneParticipant(participant.snapshot),
 		State:       room.stateLocked(), Reconnected: reconnected,
 	}
+}
+
+func (room *room) writerSlotCountLocked() int {
+	count := 0
+	for _, participant := range room.participants {
+		if participant.writerSlot {
+			count++
+		}
+	}
+	return count
+}
+
+func (room *room) viewerSlotCountLocked() int {
+	count := 0
+	for _, participant := range room.participants {
+		if !participant.writerSlot {
+			count++
+		}
+	}
+	return count
+}
+
+func (room *room) setWatchOnly(participantID string, generation uint64, creator, enabled bool, now time.Time) (RoomState, error) {
+	room.mu.Lock()
+	defer room.mu.Unlock()
+	if err := room.ensureParticipantLocked(participantID, generation, now); err != nil {
+		return RoomState{}, err
+	}
+	if !creator {
+		return RoomState{}, ErrCreatorRequired
+	}
+	room.watchOnly = enabled
+	for _, participant := range room.participants {
+		if enabled || !participant.writerSlot {
+			participant.snapshot.Role = ParticipantWatchOnly
+		} else {
+			participant.snapshot.Role = ParticipantWriter
+		}
+	}
+	return room.stateLocked(), nil
+}
+
+func (room *room) removeParticipant(actorID string, generation uint64, creator bool, targetID string, now time.Time) error {
+	room.mu.Lock()
+	defer room.mu.Unlock()
+	if err := room.ensureParticipantLocked(actorID, generation, now); err != nil {
+		return err
+	}
+	if !creator {
+		return ErrCreatorRequired
+	}
+	if targetID == actorID {
+		return ErrOperationConflict
+	}
+	target := room.participants[targetID]
+	if target == nil || target.snapshot.Status != ParticipantConnected {
+		return ErrParticipantNotFound
+	}
+	delete(room.participants, targetID)
+	delete(room.sessions, target.sessionID)
+	delete(room.names, NameKey(target.snapshot.Nickname))
+	// A kicked session cannot immediately reclaim its presence. Keep the
+	// invalidation only for reconnect grace, with a hard cap, because session
+	// identities are untrusted browser input and rooms can live for 24 hours.
+	room.removedSessions[target.sessionID] = now.Add(room.options.ReconnectGrace)
+	room.pruneRemovedSessionsLocked(now)
+	return nil
 }
 
 func (room *room) submitDocument(ctx context.Context, participantID string, generation uint64, operation DocumentOperation, now time.Time) (AcceptedDocumentOperation, error) {
@@ -637,6 +897,9 @@ func (room *room) submitDocument(ctx context.Context, participantID string, gene
 	defer room.mu.Unlock()
 	if err := room.ensureParticipantLocked(participantID, generation, now); err != nil {
 		return AcceptedDocumentOperation{}, err
+	}
+	if room.participants[participantID].snapshot.Role != ParticipantWriter {
+		return AcceptedDocumentOperation{}, ErrWatchOnly
 	}
 	if err := room.ensureOperationIDs(operation.OperationID, operation.ClientID); err != nil {
 		return AcceptedDocumentOperation{}, err
@@ -730,6 +993,9 @@ func (room *room) applyMetadata(ctx context.Context, participantID string, gener
 	if err := room.ensureParticipantLocked(participantID, generation, now); err != nil {
 		return AcceptedMetadataOperation{}, err
 	}
+	if room.participants[participantID].snapshot.Role != ParticipantWriter {
+		return AcceptedMetadataOperation{}, ErrWatchOnly
+	}
 	if err := room.ensureOperationIDs(operation.OperationID, operation.ClientID); err != nil {
 		return AcceptedMetadataOperation{}, err
 	}
@@ -779,6 +1045,7 @@ func (room *room) applyMetadata(ctx context.Context, participantID string, gener
 		room.documents[documentID] = &documentState{snapshot: document}
 		room.order = append(room.order, documentID)
 		accepted.DocumentID = documentID
+		accepted.Name, accepted.Language, accepted.Content = operation.Name, operation.Language, operation.Content
 		persisted.DocumentID, persisted.Name, persisted.Language, persisted.Content = documentID, operation.Name, operation.Language, operation.Content
 	case "document_update":
 		document := room.documents[operation.DocumentID]
@@ -793,6 +1060,7 @@ func (room *room) applyMetadata(ctx context.Context, participantID string, gener
 		}
 		document.snapshot.Name, document.snapshot.Language, document.snapshot.UpdatedAt = operation.Name, operation.Language, now
 		accepted.DocumentID = operation.DocumentID
+		accepted.Name, accepted.Language = operation.Name, operation.Language
 		persisted.DocumentID, persisted.Name, persisted.Language = operation.DocumentID, operation.Name, operation.Language
 	case "document_delete":
 		if len(room.order) == 1 {
@@ -808,6 +1076,15 @@ func (room *room) applyMetadata(ctx context.Context, participantID string, gener
 				break
 			}
 		}
+		fallbackTab := room.order[0]
+		for _, participant := range room.participants {
+			if participant.snapshot.CurrentTab == operation.DocumentID {
+				participant.snapshot.CurrentTab = fallbackTab
+			}
+			if participant.snapshot.Cursor != nil && participant.snapshot.Cursor.DocumentID == operation.DocumentID {
+				participant.snapshot.Cursor = nil
+			}
+		}
 		accepted.DocumentID = operation.DocumentID
 		persisted.DocumentID = operation.DocumentID
 	case "document_reorder":
@@ -820,6 +1097,7 @@ func (room *room) applyMetadata(ctx context.Context, participantID string, gener
 			}
 		}
 		room.order = append([]string(nil), operation.Order...)
+		accepted.Order = append([]string(nil), operation.Order...)
 		persisted.Order = append([]string(nil), operation.Order...)
 	default:
 		room.restoreLocked(backup)
@@ -971,6 +1249,9 @@ func (room *room) state() (RoomState, error) {
 func (room *room) stateFor(participantID string, generation uint64) (RoomState, error) {
 	room.mu.Lock()
 	defer room.mu.Unlock()
+	if room.closed {
+		return RoomState{}, ErrRoomExpired
+	}
 	if participantID == "" || room.participants[participantID] == nil {
 		return RoomState{}, ErrParticipantNotFound
 	}
@@ -980,7 +1261,66 @@ func (room *room) stateFor(participantID string, generation uint64) (RoomState, 
 	return room.stateLocked(), nil
 }
 
-func (room *room) sweep(ctx context.Context, now time.Time) error {
+func (room *room) bridge(participantID string, generation uint64, known KnownRevisions, now time.Time) (BridgeResult, error) {
+	room.mu.Lock()
+	defer room.mu.Unlock()
+	if err := room.ensureParticipantLocked(participantID, generation, now); err != nil {
+		return BridgeResult{}, err
+	}
+	if known.Metadata < room.metadataCompactedRevision || known.Metadata > room.snapshot.MetadataRevision {
+		return BridgeResult{Resync: true}, nil
+	}
+	result := BridgeResult{}
+	knownDocuments := make(map[string]int, len(known.Documents))
+	for documentID, revision := range known.Documents {
+		knownDocuments[documentID] = revision
+	}
+	created, deleted := make(map[string]bool), make(map[string]bool)
+	for _, accepted := range room.metadataHistory {
+		if accepted.Revision <= known.Metadata {
+			continue
+		}
+		result.MetadataChanges = append(result.MetadataChanges, cloneAcceptedMetadata(accepted))
+		switch accepted.Kind {
+		case "document_create":
+			created[accepted.DocumentID] = true
+			knownDocuments[accepted.DocumentID] = 0
+		case "document_delete":
+			deleted[accepted.DocumentID] = true
+		}
+	}
+	for _, documentID := range room.order {
+		document := room.documents[documentID]
+		version, ok := knownDocuments[documentID]
+		if !ok || version < document.compactedRevision || version > document.snapshot.CurrentRevision {
+			return BridgeResult{Resync: true}, nil
+		}
+	}
+	for documentID := range knownDocuments {
+		if room.documents[documentID] == nil && !deleted[documentID] {
+			return BridgeResult{Resync: true}, nil
+		}
+	}
+	for _, documentID := range room.order {
+		document := room.documents[documentID]
+		for _, accepted := range document.history {
+			if accepted.Revision <= knownDocuments[documentID] {
+				continue
+			}
+			result.DocumentChanges = append(result.DocumentChanges, AcceptedDocumentOperation{
+				OperationID: accepted.OperationID,
+				ClientID:    accepted.ClientID,
+				DocumentID:  documentID,
+				BaseVersion: accepted.BaseVersion,
+				Revision:    accepted.Revision,
+				Changes:     accepted.Changes,
+			})
+		}
+	}
+	return result, nil
+}
+
+func (room *room) sweep(ctx context.Context, now time.Time, publish func(slug, participantID string)) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -1002,7 +1342,8 @@ func (room *room) sweep(ctx context.Context, now time.Time) error {
 			participant.disconnectedAt = now
 		}
 	}
-	room.pruneDisconnectedLocked(now)
+	room.pruneDisconnectedLocked(now, publish)
+	room.pruneRemovedSessionsLocked(now)
 	return nil
 }
 
@@ -1048,14 +1389,51 @@ func (room *room) ensureParticipantLocked(participantID string, generation uint6
 	return nil
 }
 
-func (room *room) pruneDisconnectedLocked(now time.Time) {
+func (room *room) pruneDisconnectedLocked(now time.Time, publish ...func(slug, participantID string)) {
+	participantIDs := make([]string, 0)
 	for participantID, participant := range room.participants {
 		if participant.snapshot.Status == ParticipantConnected || participant.disconnectedAt.IsZero() || now.Sub(participant.disconnectedAt) <= room.options.ReconnectGrace {
 			continue
 		}
+		participantIDs = append(participantIDs, participantID)
+	}
+	sort.Strings(participantIDs)
+	for _, participantID := range participantIDs {
+		participant := room.participants[participantID]
+		if len(publish) > 0 && publish[0] != nil {
+			publish[0](room.snapshot.Slug, participantID)
+		}
 		delete(room.participants, participantID)
 		delete(room.sessions, participant.sessionID)
 		delete(room.names, NameKey(participant.snapshot.Nickname))
+	}
+}
+
+func (room *room) pruneRemovedSessionsLocked(now time.Time) {
+	for sessionID, expiresAt := range room.removedSessions {
+		if !expiresAt.After(now) {
+			delete(room.removedSessions, sessionID)
+		}
+	}
+	if len(room.removedSessions) <= maxRemovedSessionRecords {
+		return
+	}
+	type removedSession struct {
+		id        string
+		expiresAt time.Time
+	}
+	sessions := make([]removedSession, 0, len(room.removedSessions))
+	for sessionID, expiresAt := range room.removedSessions {
+		sessions = append(sessions, removedSession{id: sessionID, expiresAt: expiresAt})
+	}
+	sort.Slice(sessions, func(left, right int) bool {
+		if sessions[left].expiresAt.Equal(sessions[right].expiresAt) {
+			return sessions[left].id < sessions[right].id
+		}
+		return sessions[left].expiresAt.Before(sessions[right].expiresAt)
+	})
+	for _, session := range sessions[:len(sessions)-maxRemovedSessionRecords] {
+		delete(room.removedSessions, session.id)
 	}
 }
 
@@ -1066,7 +1444,14 @@ func (room *room) shouldEvict(now time.Time) bool {
 		return true
 	}
 	room.pruneDisconnectedLocked(now)
+	room.pruneRemovedSessionsLocked(now)
 	return len(room.participants) == 0
+}
+
+func (room *room) expired(now time.Time) bool {
+	room.mu.Lock()
+	defer room.mu.Unlock()
+	return now.Unix() >= room.snapshot.ExpiresAt.Unix()
 }
 
 func (room *room) snapshotSlug() string {
@@ -1078,6 +1463,7 @@ func (room *room) snapshotSlug() string {
 func (room *room) stateLocked() RoomState {
 	state := RoomState{
 		Slug: room.snapshot.Slug, ExpiresAt: room.snapshot.ExpiresAt,
+		WatchOnly:                room.watchOnly,
 		MetadataRevision:         room.snapshot.MetadataRevision,
 		MetadataSnapshotRevision: room.snapshot.MetadataSnapshotRevision,
 		Documents:                make([]DocumentState, 0, len(room.order)),
@@ -1174,31 +1560,41 @@ func (room *room) newDocumentID() (string, error) {
 }
 
 func (room *room) appendAndSave(ctx context.Context, change ChangeRecord, fingerprint string, documentResult *AcceptedDocumentOperation, metadataResult *AcceptedMetadataOperation, backup roomBackup, beforeLength int, now time.Time) error {
-	if err := room.store.AppendChanges(ctx, room.snapshot.Slug, []ChangeRecord{change}, now); err != nil {
-		room.restoreLocked(backup)
-		return fmt.Errorf("%w: append: %w", ErrPersistence, err)
-	}
+	compactThrough := 0
 	if documentResult != nil {
-		room.recordDocumentOperation(fingerprint, *documentResult, beforeLength, int64(len(change.Payload)))
+		document := room.documents[documentResult.DocumentID]
+		if len(document.history)+1 > room.options.MaxHistoryRows || document.historyBytes+int64(len(change.Payload)) > room.options.MaxHistoryBytes {
+			compactThrough = documentResult.Revision
+		}
 	} else if metadataResult != nil {
-		room.recordMetadataOperation(fingerprint, *metadataResult)
+		if len(room.metadataHistory)+1 > room.options.MaxHistoryRows || room.metadataHistoryBytes+int64(len(change.Payload)) > room.options.MaxHistoryBytes {
+			compactThrough = metadataResult.Revision
+		}
 	}
-	room.dirty = true
 	durable := room.durableSnapshotLocked()
-	if err := room.store.SaveSnapshot(ctx, durable, now); err != nil {
-		return fmt.Errorf("%w: snapshot: %w", ErrPersistence, err)
-	}
-	if documentResult != nil {
-		if err := room.store.CompactChanges(ctx, room.snapshot.Slug, StreamDocument, documentResult.DocumentID, documentResult.Revision, now); err != nil {
-			return fmt.Errorf("%w: compact document history: %w", ErrPersistence, err)
-		}
-	} else if metadataResult != nil {
-		if err := room.store.CompactChanges(ctx, room.snapshot.Slug, StreamMetadata, MetadataStreamID, metadataResult.Revision, now); err != nil {
-			return fmt.Errorf("%w: compact metadata history: %w", ErrPersistence, err)
-		}
+	if err := room.store.CommitChange(ctx, ChangeCommit{Snapshot: durable, Change: change, CompactThrough: compactThrough}, now); err != nil {
+		room.restoreLocked(backup)
+		return fmt.Errorf("%w: commit: %w", ErrPersistence, err)
 	}
 	room.snapshot = durable
 	room.markDocumentsDurableLocked()
+	if documentResult != nil {
+		room.recordDocumentOperation(fingerprint, *documentResult, beforeLength, int64(len(change.Payload)))
+		if compactThrough > 0 {
+			document := room.documents[documentResult.DocumentID]
+			document.history = nil
+			document.historyBytes = 0
+			document.compactedRevision = compactThrough
+		}
+	} else if metadataResult != nil {
+		room.recordMetadataOperation(fingerprint, *metadataResult, int64(len(change.Payload)))
+		if compactThrough > 0 {
+			room.metadataHistory = nil
+			room.metadataHistorySizes = nil
+			room.metadataHistoryBytes = 0
+			room.metadataCompactedRevision = compactThrough
+		}
+	}
 	room.dirty = false
 	return nil
 }
@@ -1208,6 +1604,7 @@ func (room *room) recordDocumentOperation(fingerprint string, accepted AcceptedD
 	room.operationOrder = append(room.operationOrder, accepted.OperationID)
 	document := room.documents[accepted.DocumentID]
 	document.addHistory(documentHistory{
+		OperationID: accepted.OperationID, ClientID: accepted.ClientID,
 		Revision: accepted.Revision, BaseVersion: accepted.Revision - 1,
 		BeforeLen: beforeLength, Bytes: payloadBytes, Changes: accepted.Changes,
 	})
@@ -1215,10 +1612,30 @@ func (room *room) recordDocumentOperation(fingerprint string, accepted AcceptedD
 	room.pruneOperationRecords()
 }
 
-func (room *room) recordMetadataOperation(fingerprint string, accepted AcceptedMetadataOperation) {
+func (room *room) recordMetadataOperation(fingerprint string, accepted AcceptedMetadataOperation, payloadBytes int64) {
 	room.operations[accepted.OperationID] = operationRecord{fingerprint: fingerprint, metadata: cloneAcceptedMetadataPtr(accepted)}
 	room.operationOrder = append(room.operationOrder, accepted.OperationID)
+	room.metadataHistory = append(room.metadataHistory, cloneAcceptedMetadata(accepted))
+	room.metadataHistorySizes = append(room.metadataHistorySizes, payloadBytes)
+	room.metadataHistoryBytes += payloadBytes
+	room.pruneMetadataHistory()
 	room.pruneOperationRecords()
+}
+
+func (room *room) pruneMetadataHistory() {
+	for len(room.metadataHistory) > room.options.MaxHistoryRows || room.metadataHistoryBytes > room.options.MaxHistoryBytes {
+		if len(room.metadataHistory) == 0 {
+			break
+		}
+		room.metadataHistoryBytes -= room.metadataHistorySizes[0]
+		room.metadataHistory = room.metadataHistory[1:]
+		room.metadataHistorySizes = room.metadataHistorySizes[1:]
+	}
+	if len(room.metadataHistory) > 0 {
+		room.metadataCompactedRevision = room.metadataHistory[0].Revision - 1
+		return
+	}
+	room.metadataCompactedRevision = room.snapshot.MetadataRevision
 }
 
 func (document *documentState) addHistory(accepted documentHistory) {
@@ -1459,6 +1876,7 @@ func cloneAcceptedDocumentPtr(accepted AcceptedDocumentOperation) *AcceptedDocum
 }
 
 func cloneAcceptedMetadata(accepted AcceptedMetadataOperation) AcceptedMetadataOperation {
+	accepted.Order = append([]string(nil), accepted.Order...)
 	accepted.State = cloneRoomState(accepted.State)
 	return accepted
 }

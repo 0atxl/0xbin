@@ -21,7 +21,7 @@ func TestCategoriesUseIndependentBuckets(t *testing.T) {
 	if ok, _ := registry.Allow(Read, "192.0.2.1", 1); !ok {
 		t.Fatal("read bucket was affected by create bucket")
 	}
-	for _, category := range []Category{LiveCreate, LiveUnlock, LiveConnection, LiveMessage} {
+	for _, category := range []Category{LiveCreate, LiveUnlock, LiveConnection, LiveMessage, LiveMessageRoom, LiveMessageIP} {
 		if ok, _ := registry.Allow(category, "192.0.2.1", 1); !ok {
 			t.Fatalf("%s bucket unexpectedly denied", category)
 		}
@@ -60,14 +60,16 @@ func TestRegistryEvictsInactiveEntries(t *testing.T) {
 func testRegistry(t *testing.T, now *time.Time, count int, staleAfter time.Duration) *Registry {
 	t.Helper()
 	registry, err := NewRegistry(map[Category]config.Rate{
-		Create:         {Count: count, Window: time.Hour},
-		Read:           {Count: count, Window: time.Hour},
-		Miss:           {Count: count, Window: time.Hour},
-		Consume:        {Count: count, Window: time.Hour},
-		LiveCreate:     {Count: count, Window: time.Hour},
-		LiveUnlock:     {Count: count, Window: time.Hour},
-		LiveConnection: {Count: count, Window: time.Hour},
-		LiveMessage:    {Count: count, Window: time.Hour},
+		Create:          {Count: count, Window: time.Hour},
+		Read:            {Count: count, Window: time.Hour},
+		Miss:            {Count: count, Window: time.Hour},
+		Consume:         {Count: count, Window: time.Hour},
+		LiveCreate:      {Count: count, Window: time.Hour},
+		LiveUnlock:      {Count: count, Window: time.Hour},
+		LiveConnection:  {Count: count, Window: time.Hour},
+		LiveMessage:     {Count: count, Window: time.Hour},
+		LiveMessageRoom: {Count: count, Window: time.Hour},
+		LiveMessageIP:   {Count: count, Window: time.Hour},
 	}, 100, staleAfter, func() time.Time { return *now })
 	if err != nil {
 		t.Fatal(err)

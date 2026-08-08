@@ -466,6 +466,73 @@ func TestLiveRoomChangesUseIndependentRevisionStreams(t *testing.T) {
 	}
 }
 
+func TestCommitLiveDocumentChangeUsesOneTransactionAndPreservesOtherRows(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Date(2026, time.August, 8, 12, 0, 0, 0, time.UTC)
+	room := testLiveRoom("steadybrightotter", now)
+	if err := store.CreateRoom(ctx, room); err != nil {
+		t.Fatal(err)
+	}
+	rowIDs := make(map[string]int64)
+	rows, err := store.DB().QueryContext(ctx, `SELECT document_id, rowid FROM live_documents WHERE room_slug = ?`, room.Slug)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var id string
+		var rowID int64
+		if err := rows.Scan(&id, &rowID); err != nil {
+			t.Fatal(err)
+		}
+		rowIDs[id] = rowID
+	}
+	if err := rows.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var changesBefore int64
+	if err := store.DB().QueryRowContext(ctx, `SELECT total_changes()`).Scan(&changesBefore); err != nil {
+		t.Fatal(err)
+	}
+	room.Documents[0].Content += "!"
+	room.Documents[0].CurrentRevision = 1
+	room.Documents[0].SnapshotRevision = 1
+	room.Documents[0].UpdatedAt = now.Add(time.Second)
+	room.ContentSize++
+	commit := live.ChangeCommit{
+		Snapshot: room,
+		Change: live.ChangeRecord{StreamKind: live.StreamDocument, StreamID: "main", Revision: 1,
+			Kind: "push_changes", Payload: `{"changes":[5,[0,"!"]]}`, CreatedAt: now.Add(time.Second)},
+	}
+	if err := store.CommitChange(ctx, commit, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	history, err := store.LoadChangesSince(ctx, room.Slug, live.StreamDocument, "main", 0, now.Add(time.Second))
+	if err != nil || len(history) != 1 || history[0].Revision != 1 {
+		t.Fatalf("retained history = %#v, %v", history, err)
+	}
+	var changesAfter int64
+	if err := store.DB().QueryRowContext(ctx, `SELECT total_changes()`).Scan(&changesAfter); err != nil {
+		t.Fatal(err)
+	}
+	if got := changesAfter - changesBefore; got != 3 {
+		t.Fatalf("SQLite rows changed by one document commit = %d, want 3 (history, room, one document)", got)
+	}
+	for id, wantRowID := range rowIDs {
+		var gotRowID int64
+		if err := store.DB().QueryRowContext(ctx, `SELECT rowid FROM live_documents WHERE room_slug = ? AND document_id = ?`, room.Slug, id).Scan(&gotRowID); err != nil {
+			t.Fatal(err)
+		}
+		if gotRowID != wantRowID {
+			t.Fatalf("document %q rowid changed from %d to %d", id, wantRowID, gotRowID)
+		}
+	}
+}
+
 func TestLiveRoomChangeBatchRollsBackOnRevisionConflict(t *testing.T) {
 	ctx := context.Background()
 	store, err := Open(ctx, t.TempDir())

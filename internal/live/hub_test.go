@@ -59,7 +59,7 @@ func TestHubRebasesConcurrentEditsAndPersistsBeforeReturn(t *testing.T) {
 	if accepted.Revision != 2 || accepted.Document != "hello!?" {
 		t.Fatalf("rebased accepted edit = %#v", accepted)
 	}
-	if !reflect.DeepEqual(recording.events, []string{"append", "save", "compact", "append", "save", "compact"}) {
+	if !reflect.DeepEqual(recording.events, []string{"commit", "commit"}) {
 		t.Fatalf("persistence order = %#v", recording.events)
 	}
 	persisted, err := store.GetRoomSnapshot(ctx, "calmbrightotter", now.Add(2*time.Second))
@@ -167,7 +167,7 @@ func TestHubMetadataConflictsAndIdempotentCreate(t *testing.T) {
 	}
 }
 
-func TestHubReplaysCommittedHistoryWhenSnapshotSaveIsInterrupted(t *testing.T) {
+func TestHubAtomicCommitFailureIsNotAcknowledgedAndSuccessfulRetrySurvivesRestart(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, time.July, 16, 12, 0, 0, 0, time.UTC)
 	store, err := sqlite.Open(ctx, t.TempDir())
@@ -178,7 +178,7 @@ func TestHubReplaysCommittedHistoryWhenSnapshotSaveIsInterrupted(t *testing.T) {
 	if err := store.CreateRoom(ctx, testRoom(now)); err != nil {
 		t.Fatal(err)
 	}
-	recording := &recordingStore{RoomStore: store, failSaves: 1}
+	recording := &recordingStore{RoomStore: store, failCommits: 1}
 	hub, err := live.NewHub(recording, nil, testHubOptions([]string{"participant-a"}, nil))
 	if err != nil {
 		t.Fatal(err)
@@ -191,14 +191,20 @@ func TestHubReplaysCommittedHistoryWhenSnapshotSaveIsInterrupted(t *testing.T) {
 		OperationID: "interrupted-edit", ClientID: "client-a", DocumentID: "main", BaseVersion: 0,
 		Changes: mustChangeSet(t, `[5,[0,"!"]]`),
 	}, now); !errors.Is(err, live.ErrPersistence) {
-		t.Fatalf("interrupted save error = %v", err)
+		t.Fatalf("interrupted commit error = %v", err)
 	}
 	persisted, err := store.GetRoomSnapshot(ctx, "calmbrightotter", now.Add(time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if persisted.Documents[0].Content != "hello" || persisted.Documents[0].CurrentRevision != 1 || persisted.Documents[0].SnapshotRevision != 0 {
+	if persisted.Documents[0].Content != "hello" || persisted.Documents[0].CurrentRevision != 0 || persisted.Documents[0].SnapshotRevision != 0 {
 		t.Fatalf("interrupted durable state = %#v", persisted.Documents[0])
+	}
+	if _, err := joined.Session.SubmitDocument(ctx, live.DocumentOperation{
+		OperationID: "interrupted-edit", ClientID: "client-a", DocumentID: "main", BaseVersion: 0,
+		Changes: mustChangeSet(t, `[5,[0,"!"]]`),
+	}, now.Add(time.Second)); err != nil {
+		t.Fatalf("retry after interrupted commit: %v", err)
 	}
 	restarted, err := live.NewHub(store, nil, testHubOptions([]string{"participant-after"}, nil))
 	if err != nil {
@@ -294,6 +300,304 @@ func TestHubPresenceReconnectsWithinGraceAndEvictsAfterLeave(t *testing.T) {
 	}
 }
 
+func TestHubSweepEvictsSequentialOneVisitRoomsAfterReconnectGrace(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, time.August, 8, 12, 0, 0, 0, time.UTC)
+	store, err := sqlite.Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.CreateRoom(ctx, testRoom(now)); err != nil {
+		t.Fatal(err)
+	}
+	options := testHubOptions([]string{"visit-a", "visit-b", "visit-c"}, nil)
+	options.HeartbeatInterval = 5 * time.Second
+	options.ReconnectGrace = 10 * time.Second
+	options.ParticipantTimeout = 20 * time.Second
+	hub, err := live.NewHub(store, nil, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for visit := 0; visit < 3; visit++ {
+		joinedAt := now.Add(time.Duration(visit) * time.Minute)
+		joined, err := hub.Join(ctx, "calmbrightotter", "session-"+strconv.Itoa(visit), joinedAt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := joined.Session.Disconnect(joinedAt.Add(time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		if removed, err := hub.Sweep(ctx, joinedAt.Add(11*time.Second)); err != nil || removed != 0 {
+			t.Fatalf("sweep within reconnect grace = %d, %v; want 0, nil", removed, err)
+		}
+		if removed, err := hub.Sweep(ctx, joinedAt.Add(11*time.Second+time.Nanosecond)); err != nil || removed != 1 {
+			t.Fatalf("sweep after reconnect grace = %d, %v; want 1, nil", removed, err)
+		}
+		if hub.RoomCount() != 0 {
+			t.Fatalf("room count after visit %d = %d, want 0", visit, hub.RoomCount())
+		}
+	}
+}
+
+func TestHubSweepPublishesGraceExpiredParticipantBeforeRemovingState(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, time.August, 8, 12, 0, 0, 0, time.UTC)
+	store, err := sqlite.Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.CreateRoom(ctx, testRoom(now)); err != nil {
+		t.Fatal(err)
+	}
+	options := testHubOptions([]string{"stale", "active"}, nil)
+	options.HeartbeatInterval = 5 * time.Second
+	options.ReconnectGrace = 10 * time.Second
+	options.ParticipantTimeout = 20 * time.Second
+	hub, err := live.NewHub(store, nil, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer hub.Shutdown(ctx, now)
+
+	stale, err := hub.Join(ctx, "calmbrightotter", "stale-session", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := hub.Join(ctx, "calmbrightotter", "active-session", now); err != nil {
+		t.Fatal(err)
+	}
+	if err := stale.Session.Disconnect(now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	var published []string
+	if _, err := hub.SweepWithParticipantRemovals(ctx, now.Add(11*time.Second+time.Nanosecond), func(slug, participantID string) {
+		if slug != "calmbrightotter" {
+			t.Fatalf("removal slug = %q", slug)
+		}
+		published = append(published, participantID)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(published) != 1 || published[0] != stale.Participant.ID {
+		t.Fatalf("published removals = %v, want [%s]", published, stale.Participant.ID)
+	}
+	state, err := hub.State("calmbrightotter")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, participant := range state.Participants {
+		if participant.ID == stale.Participant.ID {
+			t.Fatal("stale participant remains after grace expiry")
+		}
+	}
+}
+
+func TestHubSweepExpiresLoadedRoomWithoutStorageCleanup(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, time.August, 8, 12, 0, 0, 0, time.UTC)
+	store, err := sqlite.Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	room := testRoom(now)
+	room.ExpiresAt = now.Add(time.Minute)
+	if err := store.CreateRoom(ctx, room); err != nil {
+		t.Fatal(err)
+	}
+	hub, err := live.NewHub(store, nil, testHubOptions([]string{"participant-a"}, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined, err := hub.Join(ctx, room.Slug, "session-a", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed, err := hub.Sweep(ctx, room.ExpiresAt); err != nil || removed != 1 {
+		t.Fatalf("expiry sweep = %d, %v; want 1, nil", removed, err)
+	}
+	if _, err := joined.Session.State(); !errors.Is(err, live.ErrRoomExpired) {
+		t.Fatalf("expired session state error = %v", err)
+	}
+	var rows int
+	if err := store.DB().QueryRowContext(ctx, "SELECT count(*) FROM live_rooms WHERE slug = ?", room.Slug).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 1 {
+		t.Fatalf("expiry sweep reclaimed durable rows = %d, want 1 row retained", rows)
+	}
+	if _, err := store.GetRoomSnapshot(ctx, room.Slug, room.ExpiresAt); !errors.Is(err, live.ErrRoomNotFound) {
+		t.Fatalf("expired durable read error = %v", err)
+	}
+}
+
+func TestHubShutdownDoesNotFlushRejectedAtomicCommit(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, time.August, 8, 12, 0, 0, 0, time.UTC)
+	store, err := sqlite.Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.CreateRoom(ctx, testRoom(now)); err != nil {
+		t.Fatal(err)
+	}
+	recording := &recordingStore{RoomStore: store, failCommits: 1}
+	hub, err := live.NewHub(recording, nil, testHubOptions([]string{"participant-a"}, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined, err := hub.Join(ctx, "calmbrightotter", "session-a", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := joined.Session.SubmitDocument(ctx, live.DocumentOperation{
+		OperationID: "interrupted-edit", ClientID: "client-a", DocumentID: "main", BaseVersion: 0,
+		Changes: mustChangeSet(t, `[5,[0,"!"]]`),
+	}, now); !errors.Is(err, live.ErrPersistence) {
+		t.Fatalf("interrupted save error = %v", err)
+	}
+	if err := hub.Shutdown(ctx, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	persisted, err := store.GetRoomSnapshot(ctx, "calmbrightotter", now.Add(2*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.Documents[0].Content != "hello" || persisted.Documents[0].CurrentRevision != 0 {
+		t.Fatalf("rejected commit reached durable state = %#v", persisted.Documents[0])
+	}
+}
+
+func TestHubCompactsHistoryOnlyAfterConfiguredThreshold(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, time.August, 8, 12, 0, 0, 0, time.UTC)
+	store, err := sqlite.Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.CreateRoom(ctx, testRoom(now)); err != nil {
+		t.Fatal(err)
+	}
+	options := testHubOptions([]string{"participant-a"}, nil)
+	options.MaxHistoryRows = 2
+	hub, err := live.NewHub(store, nil, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined, err := hub.Join(ctx, "calmbrightotter", "session-a", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := "hello"
+	for revision := 1; revision <= 4; revision++ {
+		change := mustChangeSet(t, `[`+strconv.Itoa(len(content))+`,[0,"!"]]`)
+		if _, err := joined.Session.SubmitDocument(ctx, live.DocumentOperation{
+			OperationID: "edit-" + strconv.Itoa(revision), ClientID: "client-a",
+			DocumentID: "main", BaseVersion: revision - 1, Changes: change,
+		}, now.Add(time.Duration(revision)*time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		content += "!"
+		var rows int
+		if err := store.DB().QueryRowContext(ctx, `SELECT count(*) FROM live_changes WHERE room_slug = ? AND stream_kind = ? AND stream_id = ?`, "calmbrightotter", live.StreamDocument, "main").Scan(&rows); err != nil {
+			t.Fatal(err)
+		}
+		want := map[int]int{1: 1, 2: 2, 3: 0, 4: 1}[revision]
+		if rows != want {
+			t.Fatalf("history rows after revision %d = %d, want %d", revision, rows, want)
+		}
+	}
+}
+
+func TestHubCompactsHistoryAtConfiguredByteThreshold(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, time.August, 8, 12, 0, 0, 0, time.UTC)
+	store, err := sqlite.Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.CreateRoom(ctx, testRoom(now)); err != nil {
+		t.Fatal(err)
+	}
+	options := testHubOptions([]string{"participant-a"}, nil)
+	options.MaxHistoryBytes = 1
+	hub, err := live.NewHub(store, nil, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined, err := hub.Join(ctx, "calmbrightotter", "session-a", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := joined.Session.SubmitDocument(ctx, live.DocumentOperation{
+		OperationID: "large-history-edit", ClientID: "client-a", DocumentID: "main",
+		BaseVersion: 0, Changes: mustChangeSet(t, `[5,[0,"!"]]`),
+	}, now); err != nil {
+		t.Fatal(err)
+	}
+	var rows int
+	if err := store.DB().QueryRowContext(ctx, `SELECT count(*) FROM live_changes WHERE room_slug = ?`, "calmbrightotter").Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 0 {
+		t.Fatalf("history rows after byte threshold = %d, want 0", rows)
+	}
+}
+
+func TestHubShutdownRacesWithJoins(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, time.August, 8, 12, 0, 0, 0, time.UTC)
+	store, err := sqlite.Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.CreateRoom(ctx, testRoom(now)); err != nil {
+		t.Fatal(err)
+	}
+	hub, err := live.NewHub(store, nil, live.DefaultHubOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := make(chan struct{})
+	results := make(chan error, 33)
+	var group sync.WaitGroup
+	for index := 0; index < 32; index++ {
+		group.Add(1)
+		go func(index int) {
+			defer group.Done()
+			<-start
+			_, err := hub.Join(ctx, "calmbrightotter", "session-"+strconv.Itoa(index), now)
+			results <- err
+		}(index)
+	}
+	group.Add(1)
+	go func() {
+		defer group.Done()
+		<-start
+		results <- hub.Shutdown(ctx, now)
+	}()
+	close(start)
+	group.Wait()
+	close(results)
+	for err := range results {
+		if err != nil && !errors.Is(err, live.ErrHubClosed) && !errors.Is(err, live.ErrRoomExpired) {
+			t.Fatalf("join/shutdown race error = %v", err)
+		}
+	}
+	if hub.RoomCount() != 0 {
+		t.Fatalf("room count after shutdown race = %d, want 0", hub.RoomCount())
+	}
+	if _, err := hub.Join(ctx, "calmbrightotter", "after-shutdown", now); !errors.Is(err, live.ErrHubClosed) {
+		t.Fatalf("join after shutdown error = %v", err)
+	}
+}
+
 func TestHubBoundsHistoryAndReturnsResync(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, time.July, 16, 12, 0, 0, 0, time.UTC)
@@ -383,11 +687,358 @@ func TestHubSerializesConcurrentEdits(t *testing.T) {
 	}
 }
 
+func TestHubBridgesRetainedDeltasAndRequiresResyncWhenCompacted(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, time.August, 8, 12, 0, 0, 0, time.UTC)
+	store, err := sqlite.Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.CreateRoom(ctx, testRoom(now)); err != nil {
+		t.Fatal(err)
+	}
+	options := testHubOptions([]string{"writer", "reader"}, nil)
+	options.MaxHistoryRows = 1
+	hub, err := live.NewHub(store, nil, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer, err := hub.Join(ctx, "calmbrightotter", "writer-session", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writer.Session.SubmitDocument(ctx, live.DocumentOperation{
+		OperationID: "bridge-edit", ClientID: "writer", DocumentID: "main", BaseVersion: 0,
+		Changes: mustChangeSet(t, `[5,[0,"!"]]`),
+	}, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writer.Session.ApplyMetadata(ctx, live.MetadataOperation{
+		OperationID: "bridge-rename", ClientID: "writer", BaseVersion: 0,
+		Kind: "document_update", DocumentID: "main", Name: "renamed", Language: "plaintext",
+	}, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	reader, err := hub.Join(ctx, "calmbrightotter", "reader-session", now.Add(2*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	bridge, err := reader.Session.Bridge(live.KnownRevisions{Metadata: 0, Documents: map[string]int{"main": 0, "notes": 0}}, now.Add(2*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bridge.Resync || len(bridge.DocumentChanges) != 1 || len(bridge.MetadataChanges) != 1 {
+		t.Fatalf("retained bridge = %#v", bridge)
+	}
+	if bridge.DocumentChanges[0].Revision != 1 || bridge.MetadataChanges[0].Name != "renamed" {
+		t.Fatalf("unexpected bridge changes = %#v", bridge)
+	}
+
+	if _, err := writer.Session.SubmitDocument(ctx, live.DocumentOperation{
+		OperationID: "compacting-edit", ClientID: "writer", DocumentID: "main", BaseVersion: 1,
+		Changes: mustChangeSet(t, `[6,[0,"?"]]`),
+	}, now.Add(3*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	bridge, err = reader.Session.Bridge(live.KnownRevisions{Metadata: 1, Documents: map[string]int{"main": 0, "notes": 0}}, now.Add(4*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bridge.Resync {
+		t.Fatalf("compacted bridge should require HTTP resync: %#v", bridge)
+	}
+}
+
+func TestHubEnforcesWriterViewerCapacityAndWatchOnlyRole(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, time.August, 8, 12, 0, 0, 0, time.UTC)
+	store, err := sqlite.Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.CreateRoom(ctx, testRoom(now)); err != nil {
+		t.Fatal(err)
+	}
+	options := testHubOptions([]string{"creator", "viewer-a", "viewer-b", "after-kick"}, nil)
+	options.MaxWriters = 1
+	options.MaxViewers = 2
+	options.MaxParticipants = 3
+	hub, err := live.NewHub(store, nil, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	creatorCapability, err := hub.IssueCreatorCapability("calmbrightotter", now.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	creator, err := hub.JoinWithCreator(ctx, "calmbrightotter", "creator-session", creatorCapability, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !creator.Session.IsCreator() || creator.Participant.Role != live.ParticipantWriter {
+		t.Fatalf("creator session = %#v", creator)
+	}
+	viewerA, err := hub.Join(ctx, "calmbrightotter", "viewer-a-session", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	viewerB, err := hub.Join(ctx, "calmbrightotter", "viewer-b-session", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if viewerA.Participant.Role != live.ParticipantWatchOnly || viewerB.Participant.Role != live.ParticipantWatchOnly {
+		t.Fatalf("viewer roles = %q, %q", viewerA.Participant.Role, viewerB.Participant.Role)
+	}
+	if _, err := hub.Join(ctx, "calmbrightotter", "overflow-session", now); !errors.Is(err, live.ErrParticipantLimit) {
+		t.Fatalf("overflow join error = %v", err)
+	}
+	if _, err := viewerA.Session.SubmitDocument(ctx, live.DocumentOperation{
+		OperationID: "viewer-edit", ClientID: "viewer-a", DocumentID: "main", BaseVersion: 0,
+		Changes: mustChangeSet(t, `[5,[0,"!"]]`),
+	}, now); !errors.Is(err, live.ErrWatchOnly) {
+		t.Fatalf("watch-only edit error = %v", err)
+	}
+	if _, err := viewerA.Session.SetWatchOnly(true, now); !errors.Is(err, live.ErrCreatorRequired) {
+		t.Fatalf("non-creator mode error = %v", err)
+	}
+	if err := viewerA.Session.RemoveParticipant(creator.Participant.ID, now); !errors.Is(err, live.ErrCreatorRequired) {
+		t.Fatalf("non-creator removal error = %v", err)
+	}
+	if _, err := creator.Session.SetWatchOnly(true, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := creator.Session.SubmitDocument(ctx, live.DocumentOperation{
+		OperationID: "creator-after-watch-only", ClientID: "creator", DocumentID: "main", BaseVersion: 0,
+		Changes: mustChangeSet(t, `[5,[0,"!"]]`),
+	}, now); !errors.Is(err, live.ErrWatchOnly) {
+		t.Fatalf("watch-only creator edit error = %v", err)
+	}
+	writableState, err := creator.Session.SetWatchOnly(false, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	creatorRole := live.ParticipantRole("")
+	for _, participant := range writableState.Participants {
+		if participant.ID == creator.Participant.ID {
+			creatorRole = participant.Role
+		}
+	}
+	if creatorRole != live.ParticipantWriter {
+		t.Fatalf("creator role after restoring writable mode = %q", creatorRole)
+	}
+	if err := creator.Session.RemoveParticipant(viewerA.Participant.ID, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := viewerA.Session.Heartbeat(now); !errors.Is(err, live.ErrParticipantNotFound) {
+		t.Fatalf("removed session heartbeat error = %v", err)
+	}
+	if _, err := hub.Join(ctx, "calmbrightotter", "viewer-a-session", now); !errors.Is(err, live.ErrSessionRemoved) {
+		t.Fatalf("removed session rejoin error = %v", err)
+	}
+	joinedAfterKick, err := hub.Join(ctx, "calmbrightotter", "new-session", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if joinedAfterKick.Participant.Role != live.ParticipantWatchOnly {
+		t.Fatalf("new session role = %q, want watch-only", joinedAfterKick.Participant.Role)
+	}
+}
+
+func TestHubWatchOnlyModePreservesWriterCapacitySlots(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, time.August, 8, 12, 0, 0, 0, time.UTC)
+	store, err := sqlite.Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.CreateRoom(ctx, testRoom(now)); err != nil {
+		t.Fatal(err)
+	}
+	options := testHubOptions([]string{"creator", "writer", "viewer", "replacement"}, nil)
+	options.MaxWriters = 2
+	options.MaxViewers = 1
+	options.MaxParticipants = 3
+	hub, err := live.NewHub(store, nil, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	creatorCapability, err := hub.IssueCreatorCapability("calmbrightotter", now.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	creator, err := hub.JoinWithCreator(ctx, "calmbrightotter", "creator-session", creatorCapability, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer, err := hub.Join(ctx, "calmbrightotter", "writer-session", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	viewer, err := hub.Join(ctx, "calmbrightotter", "viewer-session", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if writer.Participant.Role != live.ParticipantWriter || viewer.Participant.Role != live.ParticipantWatchOnly {
+		t.Fatalf("initial roles = writer %q, viewer %q", writer.Participant.Role, viewer.Participant.Role)
+	}
+	if _, err := creator.Session.SetWatchOnly(true, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := creator.Session.RemoveParticipant(writer.Participant.ID, now); err != nil {
+		t.Fatal(err)
+	}
+	replacement, err := hub.Join(ctx, "calmbrightotter", "replacement-session", now)
+	if err != nil {
+		t.Fatalf("replacement should use the released writer capacity slot: %v", err)
+	}
+	if replacement.Participant.Role != live.ParticipantWatchOnly {
+		t.Fatalf("replacement role = %q, want watch-only", replacement.Participant.Role)
+	}
+	if _, err := hub.Join(ctx, "calmbrightotter", "overflow-session", now); !errors.Is(err, live.ErrParticipantLimit) {
+		t.Fatalf("overflow join error = %v", err)
+	}
+}
+
+func TestHubCreatorCapabilityAndPresenceAreProcessLocal(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, time.August, 8, 12, 0, 0, 0, time.UTC)
+	store, err := sqlite.Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.CreateRoom(ctx, testRoom(now)); err != nil {
+		t.Fatal(err)
+	}
+	hub, err := live.NewHub(store, nil, testHubOptions([]string{"creator", "collaborator", "after-restart"}, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	creatorCapability, err := hub.IssueCreatorCapability("calmbrightotter", now.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	creator, err := hub.JoinWithCreator(ctx, "calmbrightotter", "creator-session", creatorCapability, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	collaborator, err := hub.Join(ctx, "calmbrightotter", "collaborator-session", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := collaborator.Session.UpdatePresence(live.PresenceUpdate{
+		CurrentTab: "notes", DocumentID: "notes", Revision: 0, Anchor: 1, Head: 3,
+	}, now); err != nil {
+		t.Fatal(err)
+	}
+	state, err := creator.Session.State()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index := range state.Participants {
+		if state.Participants[index].ID == collaborator.Participant.ID && state.Participants[index].Cursor != nil {
+			state.Participants[index].Cursor.Anchor = 99
+		}
+	}
+	current, err := creator.Session.State()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, participant := range current.Participants {
+		if participant.ID == collaborator.Participant.ID && (participant.Cursor == nil || participant.Cursor.Anchor != 1) {
+			t.Fatalf("participant clone mutated authority state: %#v", participant)
+		}
+	}
+	if _, err := creator.Session.ApplyMetadata(ctx, live.MetadataOperation{
+		OperationID: "delete-notes", ClientID: "creator", BaseVersion: 0,
+		Kind: "document_delete", DocumentID: "notes",
+	}, now); err != nil {
+		t.Fatal(err)
+	}
+	current, err = creator.Session.State()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, participant := range current.Participants {
+		if participant.CurrentTab == "notes" || (participant.Cursor != nil && participant.Cursor.DocumentID == "notes") {
+			t.Fatalf("deleted document remains in presence: %#v", participant)
+		}
+	}
+	if err := hub.Shutdown(ctx, now); err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := live.NewHub(store, nil, testHubOptions([]string{"after-restart"}, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined, err := restarted.JoinWithCreator(ctx, "calmbrightotter", "after-restart-session", creatorCapability, now.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if joined.Session.IsCreator() || len(joined.State.Participants) != 1 {
+		t.Fatalf("creator capability or presence survived restart: %#v", joined)
+	}
+}
+
+func TestHubCreatorCapabilityOutlivesOrdinarySessionAndCanBeRevoked(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, time.August, 8, 12, 0, 0, 0, time.UTC)
+	store, err := sqlite.Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.CreateRoom(ctx, testRoom(now)); err != nil {
+		t.Fatal(err)
+	}
+	hub, err := live.NewHub(store, nil, testHubOptions([]string{"creator", "after-revoke"}, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	capability, err := hub.IssueCreatorCapability("calmbrightotter", now.Add(24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined, err := hub.JoinWithCreator(ctx, "calmbrightotter", "creator-session", capability, now.Add(16*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !joined.Session.IsCreator() {
+		t.Fatal("creator capability should outlive the ordinary access session")
+	}
+	hub.RevokeCreatorCapability("calmbrightotter")
+	joined, err = hub.JoinWithCreator(ctx, "calmbrightotter", "after-revoke-session", capability, now.Add(17*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if joined.Session.IsCreator() {
+		t.Fatal("revoked creator capability retained authority")
+	}
+	if _, err := hub.JoinWithCreator(ctx, "calmbrightotter", "expired-room-session", capability, now.Add(24*time.Hour)); !errors.Is(err, live.ErrRoomExpired) {
+		t.Fatalf("expired room join error = %v", err)
+	}
+}
+
 type recordingStore struct {
 	live.RoomStore
-	mu        sync.Mutex
-	events    []string
-	failSaves int
+	mu          sync.Mutex
+	events      []string
+	failCommits int
+}
+
+func (store *recordingStore) CommitChange(ctx context.Context, commit live.ChangeCommit, now time.Time) error {
+	store.mu.Lock()
+	store.events = append(store.events, "commit")
+	if store.failCommits > 0 {
+		store.failCommits--
+		store.mu.Unlock()
+		return errors.New("injected atomic commit failure")
+	}
+	store.mu.Unlock()
+	return store.RoomStore.CommitChange(ctx, commit, now)
 }
 
 func (store *recordingStore) AppendChanges(ctx context.Context, slug string, changes []live.ChangeRecord, now time.Time) error {
@@ -400,11 +1051,6 @@ func (store *recordingStore) AppendChanges(ctx context.Context, slug string, cha
 func (store *recordingStore) SaveSnapshot(ctx context.Context, snapshot live.RoomSnapshot, now time.Time) error {
 	store.mu.Lock()
 	store.events = append(store.events, "save")
-	if store.failSaves > 0 {
-		store.failSaves--
-		store.mu.Unlock()
-		return errors.New("injected snapshot failure")
-	}
 	store.mu.Unlock()
 	return store.RoomStore.SaveSnapshot(ctx, snapshot, now)
 }

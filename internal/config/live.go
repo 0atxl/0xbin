@@ -11,9 +11,13 @@ const (
 	defaultLiveRoomLifetime    = 24 * time.Hour
 	defaultLiveMaxTabs         = 8
 	defaultLiveMaxBytes        = int64(1 << 20)
-	defaultLiveMaxParticipants = 32
+	defaultLiveMaxWriters      = 10
+	defaultLiveMaxViewers      = 100
+	defaultLiveMaxParticipants = defaultLiveMaxWriters + defaultLiveMaxViewers
 	defaultLiveMaxMessageBytes = 64 << 10
 	defaultLiveHeartbeat       = 20 * time.Second
+	defaultLiveReconnectGrace  = 30 * time.Second
+	defaultLiveParticipantTTL  = 60 * time.Second
 	defaultLiveMaxConnections  = 1000
 	defaultLiveSnapshotRows    = 1000
 	defaultLiveSnapshotBytes   = int64(4 << 20)
@@ -28,18 +32,22 @@ const (
 )
 
 type liveConfig struct {
-	roomLifetime      time.Duration
-	maxTabs           int
-	maxBytes          int64
-	maxParticipants   int
-	maxMessageBytes   int
-	heartbeatInterval time.Duration
-	createRate        Rate
-	unlockRate        Rate
-	connectionRate    Rate
-	messageRate       Rate
-	maxConnections    int
-	snapshotLimits    LiveSnapshotLimits
+	roomLifetime       time.Duration
+	maxTabs            int
+	maxBytes           int64
+	maxWriters         int
+	maxViewers         int
+	maxParticipants    int
+	maxMessageBytes    int
+	heartbeatInterval  time.Duration
+	reconnectGrace     time.Duration
+	participantTimeout time.Duration
+	createRate         Rate
+	unlockRate         Rate
+	connectionRate     Rate
+	messageRate        Rate
+	maxConnections     int
+	snapshotLimits     LiveSnapshotLimits
 }
 
 func loadLiveConfig(get func(string, string) string) (liveConfig, error) {
@@ -55,6 +63,14 @@ func loadLiveConfig(get func(string, string) string) (liveConfig, error) {
 	if err != nil {
 		return liveConfig{}, err
 	}
+	maxWriters, err := parseBoundedInt("OXBIN_LIVE_MAX_WRITERS", get("OXBIN_LIVE_MAX_WRITERS", strconv.Itoa(defaultLiveMaxWriters)), 1, maxLiveParticipants)
+	if err != nil {
+		return liveConfig{}, err
+	}
+	maxViewers, err := parseBoundedInt("OXBIN_LIVE_MAX_VIEWERS", get("OXBIN_LIVE_MAX_VIEWERS", strconv.Itoa(defaultLiveMaxViewers)), 0, maxLiveParticipants)
+	if err != nil {
+		return liveConfig{}, err
+	}
 	maxParticipants, err := parseBoundedInt("OXBIN_LIVE_MAX_PARTICIPANTS", get("OXBIN_LIVE_MAX_PARTICIPANTS", strconv.Itoa(defaultLiveMaxParticipants)), 1, maxLiveParticipants)
 	if err != nil {
 		return liveConfig{}, err
@@ -64,6 +80,14 @@ func loadLiveConfig(get func(string, string) string) (liveConfig, error) {
 		return liveConfig{}, err
 	}
 	heartbeatInterval, err := parseBoundedDuration("OXBIN_LIVE_HEARTBEAT_INTERVAL", get("OXBIN_LIVE_HEARTBEAT_INTERVAL", defaultLiveHeartbeat.String()), 5*time.Second, 5*time.Minute)
+	if err != nil {
+		return liveConfig{}, err
+	}
+	reconnectGrace, err := parseBoundedDuration("OXBIN_LIVE_RECONNECT_GRACE", get("OXBIN_LIVE_RECONNECT_GRACE", defaultLiveReconnectGrace.String()), 5*time.Second, 5*time.Minute)
+	if err != nil {
+		return liveConfig{}, err
+	}
+	participantTimeout, err := parseBoundedDuration("OXBIN_LIVE_PARTICIPANT_TIMEOUT", get("OXBIN_LIVE_PARTICIPANT_TIMEOUT", defaultLiveParticipantTTL.String()), 10*time.Second, 10*time.Minute)
 	if err != nil {
 		return liveConfig{}, err
 	}
@@ -79,7 +103,7 @@ func loadLiveConfig(get func(string, string) string) (liveConfig, error) {
 	if err != nil {
 		return liveConfig{}, err
 	}
-	messageRate, err := parseRate("OXBIN_LIVE_MESSAGE_RATE", get("OXBIN_LIVE_MESSAGE_RATE", "600/1m"))
+	messageRate, err := parseRate("OXBIN_LIVE_MESSAGE_RATE", get("OXBIN_LIVE_MESSAGE_RATE", "2400/1m"))
 	if err != nil {
 		return liveConfig{}, err
 	}
@@ -97,19 +121,32 @@ func loadLiveConfig(get func(string, string) string) (liveConfig, error) {
 	if snapshotLimits.MaxBytes < maxBytes {
 		return liveConfig{}, fmt.Errorf("OXBIN_LIVE_SNAPSHOT_LIMITS bytes must be at least OXBIN_LIVE_MAX_BYTES")
 	}
+	if maxWriters+maxViewers != maxParticipants {
+		return liveConfig{}, fmt.Errorf("OXBIN_LIVE_MAX_PARTICIPANTS must equal OXBIN_LIVE_MAX_WRITERS plus OXBIN_LIVE_MAX_VIEWERS")
+	}
+	if participantTimeout < 2*heartbeatInterval {
+		return liveConfig{}, fmt.Errorf("OXBIN_LIVE_PARTICIPANT_TIMEOUT must be at least twice OXBIN_LIVE_HEARTBEAT_INTERVAL")
+	}
+	if reconnectGrace >= participantTimeout {
+		return liveConfig{}, fmt.Errorf("OXBIN_LIVE_RECONNECT_GRACE must be shorter than OXBIN_LIVE_PARTICIPANT_TIMEOUT")
+	}
 	return liveConfig{
-		roomLifetime:      roomLifetime,
-		maxTabs:           maxTabs,
-		maxBytes:          maxBytes,
-		maxParticipants:   maxParticipants,
-		maxMessageBytes:   maxMessageBytes,
-		heartbeatInterval: heartbeatInterval,
-		createRate:        createRate,
-		unlockRate:        unlockRate,
-		connectionRate:    connectionRate,
-		messageRate:       messageRate,
-		maxConnections:    maxConnections,
-		snapshotLimits:    snapshotLimits,
+		roomLifetime:       roomLifetime,
+		maxTabs:            maxTabs,
+		maxBytes:           maxBytes,
+		maxWriters:         maxWriters,
+		maxViewers:         maxViewers,
+		maxParticipants:    maxParticipants,
+		maxMessageBytes:    maxMessageBytes,
+		heartbeatInterval:  heartbeatInterval,
+		reconnectGrace:     reconnectGrace,
+		participantTimeout: participantTimeout,
+		createRate:         createRate,
+		unlockRate:         unlockRate,
+		connectionRate:     connectionRate,
+		messageRate:        messageRate,
+		maxConnections:     maxConnections,
+		snapshotLimits:     snapshotLimits,
 	}, nil
 }
 

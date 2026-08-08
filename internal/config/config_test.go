@@ -28,16 +28,16 @@ func TestLoadDefaults(t *testing.T) {
 	if got, want := cfg.AllowedExpiryIDs, []string{"1h", "24h", "72h"}; !slices.Equal(got, want) {
 		t.Errorf("AllowedExpiryIDs = %v, want %v", got, want)
 	}
-	if cfg.LiveRoomLifetime != 24*time.Hour || cfg.LiveMaxTabs != 8 || cfg.LiveMaxBytes != 1<<20 || cfg.LiveMaxParticipants != 32 || cfg.LiveMaxMessageBytes != 64<<10 {
-		t.Fatalf("live defaults = lifetime %s, tabs %d, bytes %d, participants %d, message bytes %d", cfg.LiveRoomLifetime, cfg.LiveMaxTabs, cfg.LiveMaxBytes, cfg.LiveMaxParticipants, cfg.LiveMaxMessageBytes)
+	if !cfg.LiveEnabled || cfg.LiveRoomLifetime != 24*time.Hour || cfg.LiveMaxTabs != 8 || cfg.LiveMaxBytes != 1<<20 || cfg.LiveMaxWriters != 10 || cfg.LiveMaxViewers != 100 || cfg.LiveMaxParticipants != 110 || cfg.LiveMaxMessageBytes != 64<<10 {
+		t.Fatalf("live defaults = enabled %t lifetime %s, tabs %d, bytes %d, writers %d, viewers %d, participants %d, message bytes %d", cfg.LiveEnabled, cfg.LiveRoomLifetime, cfg.LiveMaxTabs, cfg.LiveMaxBytes, cfg.LiveMaxWriters, cfg.LiveMaxViewers, cfg.LiveMaxParticipants, cfg.LiveMaxMessageBytes)
 	}
-	if cfg.LiveHeartbeatInterval != 20*time.Second || cfg.LiveMaxConnections != 1000 {
-		t.Fatalf("live connection defaults = heartbeat %s, connections %d", cfg.LiveHeartbeatInterval, cfg.LiveMaxConnections)
+	if cfg.LiveHeartbeatInterval != 20*time.Second || cfg.LiveReconnectGrace != 30*time.Second || cfg.LiveParticipantTimeout != 60*time.Second || cfg.LiveMaxConnections != 1000 {
+		t.Fatalf("live connection defaults = heartbeat %s, reconnect %s, participant timeout %s, connections %d", cfg.LiveHeartbeatInterval, cfg.LiveReconnectGrace, cfg.LiveParticipantTimeout, cfg.LiveMaxConnections)
 	}
 	if cfg.LiveSnapshotLimits != (LiveSnapshotLimits{MaxRows: 1000, MaxBytes: 4 << 20}) {
 		t.Fatalf("live snapshot defaults = %#v", cfg.LiveSnapshotLimits)
 	}
-	if cfg.LiveCreateRate.Count != 10 || cfg.LiveUnlockRate.Count != 10 || cfg.LiveConnectionRate.Count != 60 || cfg.LiveMessageRate.Count != 600 {
+	if cfg.LiveCreateRate.Count != 10 || cfg.LiveUnlockRate.Count != 10 || cfg.LiveConnectionRate.Count != 60 || cfg.LiveMessageRate.Count != 2400 {
 		t.Fatalf("live rate defaults = create %#v unlock %#v connection %#v message %#v", cfg.LiveCreateRate, cfg.LiveUnlockRate, cfg.LiveConnectionRate, cfg.LiveMessageRate)
 	}
 }
@@ -83,9 +83,14 @@ func TestLoadRejectsInvalidConfiguration(t *testing.T) {
 		{"live lifetime", "OXBIN_LIVE_ROOM_LIFETIME", "25h"},
 		{"live tabs", "OXBIN_LIVE_MAX_TABS", "65"},
 		{"live bytes", "OXBIN_LIVE_MAX_BYTES", "0"},
+		{"live enabled", "OXBIN_LIVE_ENABLED", "sometimes"},
+		{"live writers", "OXBIN_LIVE_MAX_WRITERS", "0"},
+		{"live viewers", "OXBIN_LIVE_MAX_VIEWERS", "257"},
 		{"live participants", "OXBIN_LIVE_MAX_PARTICIPANTS", "257"},
 		{"live message bytes", "OXBIN_LIVE_MAX_MESSAGE_BYTES", "1048577"},
 		{"live heartbeat", "OXBIN_LIVE_HEARTBEAT_INTERVAL", "1s"},
+		{"live reconnect grace", "OXBIN_LIVE_RECONNECT_GRACE", "1s"},
+		{"live participant timeout", "OXBIN_LIVE_PARTICIPANT_TIMEOUT", "1s"},
 		{"live create rate", "OXBIN_LIVE_CREATE_RATE", "bad"},
 		{"live snapshot limits", "OXBIN_LIVE_SNAPSHOT_LIMITS", "1000"},
 		{"live connections", "OXBIN_LIVE_MAX_CONNECTIONS", "10001"},
@@ -114,18 +119,22 @@ func TestLoadLiveLimits(t *testing.T) {
 
 	cfg, err := Load(func(key string) (string, bool) {
 		values := map[string]string{
-			"OXBIN_LIVE_ROOM_LIFETIME":      "12h",
-			"OXBIN_LIVE_MAX_TABS":           "16",
-			"OXBIN_LIVE_MAX_BYTES":          "2097152",
-			"OXBIN_LIVE_MAX_PARTICIPANTS":   "64",
-			"OXBIN_LIVE_MAX_MESSAGE_BYTES":  "131072",
-			"OXBIN_LIVE_HEARTBEAT_INTERVAL": "30s",
-			"OXBIN_LIVE_CREATE_RATE":        "20/1h",
-			"OXBIN_LIVE_UNLOCK_RATE":        "12/10m",
-			"OXBIN_LIVE_CONNECTION_RATE":    "120/1m",
-			"OXBIN_LIVE_MESSAGE_RATE":       "1200/1m",
-			"OXBIN_LIVE_MAX_CONNECTIONS":    "2000",
-			"OXBIN_LIVE_SNAPSHOT_LIMITS":    "2000/8388608",
+			"OXBIN_LIVE_ROOM_LIFETIME":       "12h",
+			"OXBIN_LIVE_MAX_TABS":            "16",
+			"OXBIN_LIVE_MAX_BYTES":           "2097152",
+			"OXBIN_LIVE_MAX_WRITERS":         "12",
+			"OXBIN_LIVE_MAX_VIEWERS":         "52",
+			"OXBIN_LIVE_MAX_PARTICIPANTS":    "64",
+			"OXBIN_LIVE_MAX_MESSAGE_BYTES":   "131072",
+			"OXBIN_LIVE_HEARTBEAT_INTERVAL":  "30s",
+			"OXBIN_LIVE_RECONNECT_GRACE":     "45s",
+			"OXBIN_LIVE_PARTICIPANT_TIMEOUT": "90s",
+			"OXBIN_LIVE_CREATE_RATE":         "20/1h",
+			"OXBIN_LIVE_UNLOCK_RATE":         "12/10m",
+			"OXBIN_LIVE_CONNECTION_RATE":     "120/1m",
+			"OXBIN_LIVE_MESSAGE_RATE":        "1200/1m",
+			"OXBIN_LIVE_MAX_CONNECTIONS":     "2000",
+			"OXBIN_LIVE_SNAPSHOT_LIMITS":     "2000/8388608",
 		}
 		value, ok := values[key]
 		return value, ok
@@ -133,7 +142,7 @@ func TestLoadLiveLimits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.LiveRoomLifetime != 12*time.Hour || cfg.LiveMaxTabs != 16 || cfg.LiveMaxBytes != 2<<20 || cfg.LiveMaxParticipants != 64 || cfg.LiveMaxMessageBytes != 128<<10 || cfg.LiveHeartbeatInterval != 30*time.Second || cfg.LiveMaxConnections != 2000 {
+	if cfg.LiveRoomLifetime != 12*time.Hour || cfg.LiveMaxTabs != 16 || cfg.LiveMaxBytes != 2<<20 || cfg.LiveMaxWriters != 12 || cfg.LiveMaxViewers != 52 || cfg.LiveMaxParticipants != 64 || cfg.LiveMaxMessageBytes != 128<<10 || cfg.LiveHeartbeatInterval != 30*time.Second || cfg.LiveReconnectGrace != 45*time.Second || cfg.LiveParticipantTimeout != 90*time.Second || cfg.LiveMaxConnections != 2000 {
 		t.Fatalf("live limits = %#v", cfg)
 	}
 	if cfg.LiveSnapshotLimits != (LiveSnapshotLimits{MaxRows: 2000, MaxBytes: 8 << 20}) {
@@ -166,6 +175,63 @@ func TestLoadRejectsIncoherentLiveLimits(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "OXBIN_LIVE_SNAPSHOT_LIMITS") {
 		t.Fatalf("Load() error = %v, want snapshot incoherence", err)
+	}
+
+	_, err = Load(func(key string) (string, bool) {
+		values := map[string]string{
+			"OXBIN_LIVE_MAX_WRITERS":      "10",
+			"OXBIN_LIVE_MAX_VIEWERS":      "100",
+			"OXBIN_LIVE_MAX_PARTICIPANTS": "109",
+		}
+		value, ok := values[key]
+		return value, ok
+	})
+	if err == nil || !strings.Contains(err.Error(), "OXBIN_LIVE_MAX_PARTICIPANTS") {
+		t.Fatalf("Load() error = %v, want capacity incoherence", err)
+	}
+
+	_, err = Load(func(key string) (string, bool) {
+		values := map[string]string{
+			"OXBIN_LIVE_HEARTBEAT_INTERVAL":  "40s",
+			"OXBIN_LIVE_PARTICIPANT_TIMEOUT": "60s",
+		}
+		value, ok := values[key]
+		return value, ok
+	})
+	if err == nil || !strings.Contains(err.Error(), "OXBIN_LIVE_PARTICIPANT_TIMEOUT") {
+		t.Fatalf("Load() error = %v, want heartbeat/participant timeout incoherence", err)
+	}
+
+	_, err = Load(func(key string) (string, bool) {
+		values := map[string]string{
+			"OXBIN_LIVE_RECONNECT_GRACE":     "60s",
+			"OXBIN_LIVE_PARTICIPANT_TIMEOUT": "60s",
+		}
+		value, ok := values[key]
+		return value, ok
+	})
+	if err == nil || !strings.Contains(err.Error(), "OXBIN_LIVE_RECONNECT_GRACE") {
+		t.Fatalf("Load() error = %v, want reconnect/participant timeout incoherence", err)
+	}
+}
+
+func TestLoadDisablesLiveWithoutLoadingLiveLimits(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := Load(func(key string) (string, bool) {
+		if key == "OXBIN_LIVE_ENABLED" {
+			return "false", true
+		}
+		if key == "OXBIN_LIVE_MAX_WRITERS" {
+			return "not-used", true
+		}
+		return "", false
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LiveEnabled {
+		t.Fatal("LiveEnabled = true, want false")
 	}
 }
 

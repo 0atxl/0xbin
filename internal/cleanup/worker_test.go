@@ -32,6 +32,43 @@ func TestRunOnceStopsWhenBatchIsNotFull(t *testing.T) {
 	}
 }
 
+func TestRunOnceReclaimsLiveRoomsInIndependentBoundedBatches(t *testing.T) {
+	store := &fakeStore{counts: []int64{0}, roomCounts: []int64{2, 2, 1}}
+	worker := newTestWorker(t, store, time.Hour, time.Second, 2, 2)
+	if err := worker.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if store.calls != 1 || store.roomCalls != 2 {
+		t.Fatalf("cleanup calls = pastes %d, live rooms %d; want 1, 2", store.calls, store.roomCalls)
+	}
+}
+
+func TestRunOnceSkipsLiveRoomCleanupWhenDisabled(t *testing.T) {
+	store := &fakeStore{counts: []int64{1}, roomCounts: []int64{1}}
+	worker, err := NewWorkerWithLiveRooms(store, time.Hour, time.Second, 2, 2, func() time.Time { return time.Unix(0, 0).UTC() }, slog.New(slog.NewTextHandler(io.Discard, nil)), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := worker.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if store.calls != 1 || store.roomCalls != 0 {
+		t.Fatalf("cleanup calls = pastes %d, live rooms %d; want 1, 0", store.calls, store.roomCalls)
+	}
+}
+
+func TestRunOnceStillReclaimsLiveRoomsWhenPasteCleanupFails(t *testing.T) {
+	pasteErr := errors.New("paste cleanup unavailable")
+	store := &fakeStore{err: pasteErr, roomCounts: []int64{1}}
+	worker := newTestWorker(t, store, time.Hour, time.Second, 2, 2)
+	if err := worker.RunOnce(context.Background()); !errors.Is(err, pasteErr) {
+		t.Fatalf("RunOnce() error = %v, want %v", err, pasteErr)
+	}
+	if store.roomCalls != 1 {
+		t.Fatalf("live room cleanup calls = %d, want 1", store.roomCalls)
+	}
+}
+
 func TestRunOncePropagatesCancellationAndStorageFailure(t *testing.T) {
 	t.Run("cancellation", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
@@ -76,10 +113,31 @@ func newTestWorker(t *testing.T, store Store, interval, timeout time.Duration, b
 }
 
 type fakeStore struct {
-	mu     sync.Mutex
-	counts []int64
-	calls  int
-	err    error
+	mu         sync.Mutex
+	counts     []int64
+	calls      int
+	err        error
+	roomCounts []int64
+	roomCalls  int
+	roomErr    error
+}
+
+func (s *fakeStore) DeleteExpiredRooms(ctx context.Context, _ time.Time, _ int) (int64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.roomCalls++
+	if s.roomErr != nil {
+		return 0, s.roomErr
+	}
+	if len(s.roomCounts) == 0 {
+		return 0, nil
+	}
+	count := s.roomCounts[0]
+	s.roomCounts = s.roomCounts[1:]
+	return count, nil
 }
 
 func (s *fakeStore) DeleteExpiredBatch(ctx context.Context, _ time.Time, _ int) (int64, error) {
