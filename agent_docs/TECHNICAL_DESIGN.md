@@ -188,8 +188,11 @@ process:
   expiry transitions.
 - The process-local `live.Hub` lazily loads rooms, exposes session-scoped
   document and metadata operations, and keeps bounded rebase history. Each
-  accepted operation and its current snapshot are one atomic durable commit,
-  so a failed commit is not acknowledged or broadcast. A stale reorder returns
+  accepted operation identity/result, retained change, and current snapshot are
+  one atomic durable commit, so a failed commit is not acknowledged or
+  broadcast. A bounded recent operation ledger reloads with room authority so
+  acknowledgement-loss retries remain idempotent across eviction, restart, and
+  change-history compaction. A stale reorder returns
   the current room state for resynchronization; deletion wins over a later
   rename/language update, and the final document cannot be deleted.
 - The collaboration authority uses independent metadata/document revisions,
@@ -477,6 +480,10 @@ GET  /api/v1/live/{slug}/ws
 The public config response exposes the configured lifetime, aggregate and
 per-document content limits, and room capacity limits without operational or
 secret configuration. The HTTP bootstrap returns the bounded full room snapshot.
+During resynchronization, a browser may send its stable client ID in the
+`X-0xbin-Live-Client-ID` header; the response then includes that client's
+bounded recent accepted-operation IDs so already committed local work is
+acknowledged instead of applied again as a synthetic remote edit.
 The WebSocket then
 carries join, document changes, tab metadata changes, presence, cursors,
 selections, acknowledgements, reconnect/resync status, and expiry events. A

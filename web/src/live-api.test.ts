@@ -62,6 +62,7 @@ describe("live API client", () => {
       max_viewers: 100,
       max_participants: 110,
       room_lifetime_seconds: 86400,
+      accepted_operation_ids: ["committed-without-ack"],
       documents: [
         {
           id: "main",
@@ -74,16 +75,25 @@ describe("live API client", () => {
     });
     const controller = new AbortController();
     await expect(
-      getLiveRoom({ request }, "quietbrightotter", controller.signal),
+      getLiveRoom(
+        { request },
+        "quietbrightotter",
+        controller.signal,
+        "reconcile-client",
+      ),
     ).resolves.toMatchObject({
       slug: "quietbrightotter",
       maxBytes: 1048576,
       maxTabs: 8,
       documents: [{ content: "hello" }],
+      acceptedOperationIDs: ["committed-without-ack"],
     });
     expect(request).toHaveBeenCalledWith(
       "/api/v1/live/quietbrightotter",
-      expect.objectContaining({ signal: controller.signal }),
+      expect.objectContaining({
+        signal: controller.signal,
+        headers: { "X-0xbin-Live-Client-ID": "reconcile-client" },
+      }),
     );
   });
 

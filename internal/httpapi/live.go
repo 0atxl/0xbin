@@ -147,6 +147,7 @@ type liveRoomResponse struct {
 	Creator                  bool                      `json:"creator"`
 	Documents                []liveDocumentResponse    `json:"documents,omitempty"`
 	Participants             []liveParticipantResponse `json:"participants,omitempty"`
+	AcceptedOperationIDs     []string                  `json:"accepted_operation_ids,omitempty"`
 }
 
 type liveDocumentResponse struct {
@@ -298,7 +299,22 @@ func (api *liveAPI) bootstrap(w http.ResponseWriter, r *http.Request) {
 	if !api.allowHTTP(w, r, ratelimit.LiveConnection, clientIPFromContext(r.Context()), 1) {
 		return
 	}
-	snapshot, err := api.store.GetRoomSnapshot(r.Context(), slugValue, time.Now().UTC())
+	now := time.Now().UTC()
+	clientID := r.Header.Get("X-0xbin-Live-Client-ID")
+	var (
+		snapshot   live.RoomSnapshot
+		operations []live.OperationRecord
+		err        error
+	)
+	if clientID == "" {
+		snapshot, err = api.store.GetRoomSnapshot(r.Context(), slugValue, now)
+	} else {
+		snapshot, operations, err = api.store.GetRoomSnapshotWithClientOperations(r.Context(), slugValue, clientID, 64, now)
+	}
+	if errors.Is(err, live.ErrInvalidChange) {
+		writeLiveError(w, r, http.StatusBadRequest, "invalid_request", "Invalid live client ID")
+		return
+	}
 	if errors.Is(err, live.ErrRoomNotFound) {
 		api.writeNotFound(w, r)
 		return
@@ -307,14 +323,20 @@ func (api *liveAPI) bootstrap(w http.ResponseWriter, r *http.Request) {
 		api.writeStoreError(w, r, err)
 		return
 	}
-	if snapshot.PasswordHash != "" && !api.sessionAuthorized(r, slugValue, time.Now().UTC()) {
+	if snapshot.PasswordHash != "" && !api.sessionAuthorized(r, slugValue, now) {
 		writeLiveError(w, r, http.StatusUnauthorized, "password_required", "Password required")
 		return
 	}
 	api.limits.RecordSuccess(clientIPFromContext(r.Context()))
 	setLiveHeaders(w.Header())
 	response := api.responseForLiveSnapshot(snapshot)
-	_, response.Creator = api.creatorCapability(r, slugValue, time.Now().UTC())
+	if clientID != "" {
+		response.AcceptedOperationIDs = make([]string, 0, len(operations))
+		for _, operation := range operations {
+			response.AcceptedOperationIDs = append(response.AcceptedOperationIDs, operation.OperationID)
+		}
+	}
+	_, response.Creator = api.creatorCapability(r, slugValue, now)
 	writeJSON(w, http.StatusOK, response)
 }
 

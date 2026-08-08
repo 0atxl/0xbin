@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"math"
@@ -44,6 +45,40 @@ func (s *Store) GetRoomSnapshot(ctx context.Context, slug string, now time.Time)
 		return live.RoomSnapshot{}, fmt.Errorf("begin live room read: %w", err)
 	}
 	defer tx.Rollback()
+	snapshot, err := getRoomSnapshot(ctx, tx, slug, now)
+	if err != nil {
+		return live.RoomSnapshot{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return live.RoomSnapshot{}, fmt.Errorf("commit live room read: %w", err)
+	}
+	return snapshot, nil
+}
+
+func (s *Store) GetRoomSnapshotWithClientOperations(ctx context.Context, slug, clientID string, limit int, now time.Time) (live.RoomSnapshot, []live.OperationRecord, error) {
+	if clientID == "" || strings.TrimSpace(clientID) != clientID || len(clientID) > 128 || !utf8.ValidString(clientID) || limit < 1 {
+		return live.RoomSnapshot{}, nil, live.ErrInvalidChange
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return live.RoomSnapshot{}, nil, fmt.Errorf("begin live reconciliation read: %w", err)
+	}
+	defer tx.Rollback()
+	snapshot, err := getRoomSnapshot(ctx, tx, slug, now)
+	if err != nil {
+		return live.RoomSnapshot{}, nil, err
+	}
+	operations, err := queryOperations(ctx, tx, slug, clientID, limit, now)
+	if err != nil {
+		return live.RoomSnapshot{}, nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return live.RoomSnapshot{}, nil, fmt.Errorf("commit live reconciliation read: %w", err)
+	}
+	return snapshot, operations, nil
+}
+
+func getRoomSnapshot(ctx context.Context, tx *sql.Tx, slug string, now time.Time) (live.RoomSnapshot, error) {
 	var snapshot live.RoomSnapshot
 	var passwordHash sql.NullString
 	var expiresAt, createdAt int64
@@ -92,9 +127,6 @@ func (s *Store) GetRoomSnapshot(ctx context.Context, slug string, now time.Time)
 	}
 	if err := rows.Close(); err != nil {
 		return live.RoomSnapshot{}, fmt.Errorf("close live room documents: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		return live.RoomSnapshot{}, fmt.Errorf("commit live room read: %w", err)
 	}
 	return snapshot, nil
 }
@@ -180,8 +212,12 @@ func (s *Store) CommitChange(ctx context.Context, commit live.ChangeCommit, now 
 		return err
 	}
 	change, err := prepareChange(commit.Change, now)
-	if err != nil || commit.CompactThrough < 0 || commit.CompactThrough > commit.Change.Revision {
+	if err != nil || commit.CompactThrough < 0 || commit.CompactThrough > commit.Change.Revision || commit.RetainOperations < 1 {
 		return live.ErrInvalidChange
+	}
+	operation, err := prepareOperation(commit.Operation, change, now)
+	if err != nil {
+		return err
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -203,6 +239,9 @@ func (s *Store) CommitChange(ctx context.Context, commit live.ChangeCommit, now 
 	}
 	if expiresAt != snapshot.ExpiresAt.Unix() {
 		return rollback(live.ErrRevisionConflict)
+	}
+	if err := insertOperation(ctx, tx, snapshot.Slug, operation); err != nil {
+		return rollback(err)
 	}
 
 	switch change.StreamKind {
@@ -272,8 +311,34 @@ func (s *Store) CommitChange(ctx context.Context, commit live.ChangeCommit, now 
 			return rollback(fmt.Errorf("compact committed live changes: %w", err))
 		}
 	}
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM live_operations
+		WHERE room_slug = ? AND sequence NOT IN (
+			SELECT sequence FROM live_operations
+			WHERE room_slug = ?
+			ORDER BY sequence DESC
+			LIMIT ?
+		)`, snapshot.Slug, snapshot.Slug, commit.RetainOperations); err != nil {
+		return rollback(fmt.Errorf("prune live operation ledger: %w", err))
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit live change and snapshot: %w", err)
+	}
+	return nil
+}
+
+func insertOperation(ctx context.Context, tx *sql.Tx, slug string, operation live.OperationRecord) error {
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO live_operations(
+			room_slug, operation_id, client_id, fingerprint, stream_kind,
+			stream_id, base_revision, revision, operation_kind,
+			result_payload, created_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, slug,
+		operation.OperationID, operation.ClientID, operation.Fingerprint,
+		operation.StreamKind, operation.StreamID, operation.BaseRevision,
+		operation.Revision, operation.OperationKind, operation.ResultPayload,
+		unixSeconds(operation.CreatedAt)); err != nil {
+		return fmt.Errorf("insert live operation: %w", err)
 	}
 	return nil
 }
@@ -513,6 +578,95 @@ func (s *Store) LoadChangesSince(ctx context.Context, slug, streamKind, streamID
 	return result, nil
 }
 
+func (s *Store) LoadRecentOperations(ctx context.Context, slug string, limit int, now time.Time) ([]live.OperationRecord, error) {
+	return s.loadOperations(ctx, slug, "", limit, now)
+}
+
+func (s *Store) LoadClientOperations(ctx context.Context, slug, clientID string, limit int, now time.Time) ([]live.OperationRecord, error) {
+	if clientID == "" || strings.TrimSpace(clientID) != clientID || len(clientID) > 128 || !utf8.ValidString(clientID) {
+		return nil, live.ErrInvalidChange
+	}
+	return s.loadOperations(ctx, slug, clientID, limit, now)
+}
+
+func (s *Store) loadOperations(ctx context.Context, slug, clientID string, limit int, now time.Time) ([]live.OperationRecord, error) {
+	if slug == "" || strings.TrimSpace(slug) != slug || limit < 1 {
+		return nil, live.ErrInvalidChange
+	}
+	operations, err := queryOperations(ctx, s.db, slug, clientID, limit, now)
+	if err != nil {
+		return nil, err
+	}
+	if len(operations) == 0 {
+		var exists int
+		if err := s.db.QueryRowContext(ctx, `SELECT 1 FROM live_rooms WHERE slug = ? AND expires_at > ?`, slug, unixSeconds(now)).Scan(&exists); errors.Is(err, sql.ErrNoRows) {
+			return nil, live.ErrRoomNotFound
+		} else if err != nil {
+			return nil, fmt.Errorf("check live operation room: %w", err)
+		}
+	}
+	return operations, nil
+}
+
+type operationQueryer interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}
+
+func queryOperations(ctx context.Context, queryer operationQueryer, slug, clientID string, limit int, now time.Time) ([]live.OperationRecord, error) {
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	if clientID == "" {
+		rows, err = queryer.QueryContext(ctx, `
+			SELECT o.operation_id, o.client_id, o.fingerprint, o.stream_kind,
+			       o.stream_id, o.base_revision, o.revision, o.operation_kind,
+			       o.result_payload, o.created_at
+			FROM live_operations AS o
+			JOIN live_rooms AS r ON r.slug = o.room_slug
+			WHERE o.room_slug = ? AND r.expires_at > ?
+			ORDER BY o.sequence DESC
+			LIMIT ?`, slug, unixSeconds(now), limit)
+	} else {
+		rows, err = queryer.QueryContext(ctx, `
+			SELECT o.operation_id, o.client_id, o.fingerprint, o.stream_kind,
+			       o.stream_id, o.base_revision, o.revision, o.operation_kind,
+			       o.result_payload, o.created_at
+			FROM live_operations AS o
+			JOIN live_rooms AS r ON r.slug = o.room_slug
+			WHERE o.room_slug = ? AND o.client_id = ? AND r.expires_at > ?
+			ORDER BY o.sequence DESC
+			LIMIT ?`, slug, clientID, unixSeconds(now), limit)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("load live operations: %w", err)
+	}
+	defer rows.Close()
+	operations := make([]live.OperationRecord, 0)
+	for rows.Next() {
+		var operation live.OperationRecord
+		var createdAt int64
+		if err := rows.Scan(&operation.OperationID, &operation.ClientID,
+			&operation.Fingerprint, &operation.StreamKind, &operation.StreamID,
+			&operation.BaseRevision, &operation.Revision, &operation.OperationKind,
+			&operation.ResultPayload, &createdAt); err != nil {
+			return nil, fmt.Errorf("scan live operation: %w", err)
+		}
+		operation.CreatedAt = unixTime(createdAt)
+		operations = append(operations, operation)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read live operations: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("close live operations: %w", err)
+	}
+	for left, right := 0, len(operations)-1; left < right; left, right = left+1, right-1 {
+		operations[left], operations[right] = operations[right], operations[left]
+	}
+	return operations, nil
+}
+
 func (s *Store) CompactChanges(ctx context.Context, slug, streamKind, streamID string, throughRevision int, now time.Time) error {
 	if err := validateStream(streamKind, streamID); err != nil {
 		return err
@@ -695,6 +849,23 @@ func prepareChange(change live.ChangeRecord, now time.Time) (live.ChangeRecord, 
 		change.CreatedAt = change.CreatedAt.UTC()
 	}
 	return change, nil
+}
+
+func prepareOperation(operation live.OperationRecord, change live.ChangeRecord, now time.Time) (live.OperationRecord, error) {
+	if operation.OperationID == "" || strings.TrimSpace(operation.OperationID) != operation.OperationID || len(operation.OperationID) > 128 || !utf8.ValidString(operation.OperationID) ||
+		operation.ClientID == "" || strings.TrimSpace(operation.ClientID) != operation.ClientID || len(operation.ClientID) > 128 || !utf8.ValidString(operation.ClientID) ||
+		len(operation.Fingerprint) != 64 || operation.BaseRevision < 0 || operation.Revision != change.Revision || operation.StreamKind != change.StreamKind || operation.StreamID != change.StreamID || operation.OperationKind != change.Kind || operation.ResultPayload != change.Payload {
+		return live.OperationRecord{}, live.ErrInvalidChange
+	}
+	if _, err := hex.DecodeString(operation.Fingerprint); err != nil {
+		return live.OperationRecord{}, live.ErrInvalidChange
+	}
+	if operation.CreatedAt.IsZero() {
+		operation.CreatedAt = now.UTC()
+	} else {
+		operation.CreatedAt = operation.CreatedAt.UTC()
+	}
+	return operation, nil
 }
 
 func validateStream(streamKind, streamID string) error {

@@ -6,6 +6,7 @@ import {
 } from "@codemirror/state";
 import {
   getSyncedVersion,
+  rebaseUpdates,
   sendableUpdates,
   type Update,
 } from "@codemirror/collab";
@@ -121,6 +122,28 @@ export function diffLiveDocuments(before: string, after: string): ChangeSet {
     },
     before.length,
   );
+}
+
+// Once HTTP proves the first pending update was durably accepted, only later
+// local updates should be replayed over the authoritative snapshot. Replaying
+// the accepted update itself would duplicate its text.
+export function rebaseAfterAcceptedSnapshot(
+  syncedContent: string,
+  snapshotContent: string,
+  pending: readonly Update[],
+): readonly Update[] | undefined {
+  const accepted = pending[0];
+  if (!accepted) return [];
+  let afterAccepted: string;
+  try {
+    afterAccepted = applyLiveChanges(syncedContent, accepted.changes);
+    const authority = diffLiveDocuments(afterAccepted, snapshotContent);
+    return rebaseUpdates(pending.slice(1), [
+      { changes: authority, clientID: "http-snapshot" },
+    ]);
+  } catch {
+    return undefined;
+  }
 }
 
 export function normalizeLiveDocuments(

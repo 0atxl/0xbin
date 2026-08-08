@@ -106,6 +106,11 @@ paths:
       description: Returns the server-authoritative snapshot. Expired and missing rooms share the public 404 response. Protected rooms require the room-access cookie.
       parameters:
         - $ref: '#/components/parameters/Slug'
+        - name: X-0xbin-Live-Client-ID
+          in: header
+          required: false
+          description: Stable live client ID. When supplied during resynchronization, the response identifies this client's recently accepted operations.
+          schema: { type: string, minLength: 1, maxLength: 128 }
       responses:
         '200':
           description: Active room bootstrap and configured room limits.
@@ -290,6 +295,11 @@ components:
         participants:
           type: array
           items: { $ref: '#/components/schemas/LiveParticipant' }
+        accepted_operation_ids:
+          type: array
+          description: Recently accepted operation IDs for the client named by X-0xbin-Live-Client-ID. Used to acknowledge committed work during HTTP resynchronization.
+          maxItems: 64
+          items: { type: string, minLength: 1, maxLength: 128 }
     LiveUnlockRequest:
       type: object
       additionalProperties: false

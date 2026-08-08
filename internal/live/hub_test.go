@@ -513,6 +513,154 @@ func TestHubCompactsHistoryOnlyAfterConfiguredThreshold(t *testing.T) {
 	}
 }
 
+func TestHubRetriesCommittedOperationAfterCompactionAndRestart(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, time.August, 9, 12, 0, 0, 0, time.UTC)
+	store, err := sqlite.Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.CreateRoom(ctx, testRoom(now)); err != nil {
+		t.Fatal(err)
+	}
+	options := testHubOptions([]string{"before-restart"}, nil)
+	options.MaxHistoryRows = 1
+	hub, err := live.NewHub(store, nil, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined, err := hub.Join(ctx, "calmbrightotter", "session-before", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := live.DocumentOperation{
+		OperationID: "durable-edit", ClientID: "stable-client", DocumentID: "main",
+		BaseVersion: 0, Changes: mustChangeSet(t, `[5,[0,"!"]]`),
+	}
+	accepted, err := joined.Session.SubmitDocument(ctx, first, now.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if accepted.Revision != 1 {
+		t.Fatalf("accepted revision = %d, want 1", accepted.Revision)
+	}
+	if _, err := joined.Session.SubmitDocument(ctx, live.DocumentOperation{
+		OperationID: "later-edit", ClientID: "stable-client", DocumentID: "main",
+		BaseVersion: 1, Changes: mustChangeSet(t, `[6,[0,"?"]]`),
+	}, now.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	firstMetadata := live.MetadataOperation{
+		OperationID: "durable-metadata", ClientID: "stable-client", BaseVersion: 0,
+		Kind: "document_update", DocumentID: "main", Name: "first-name", Language: "plaintext",
+	}
+	acceptedMetadata, err := joined.Session.ApplyMetadata(ctx, firstMetadata, now.Add(2*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := joined.Session.ApplyMetadata(ctx, live.MetadataOperation{
+		OperationID: "later-metadata", ClientID: "stable-client", BaseVersion: 1,
+		Kind: "document_update", DocumentID: "main", Name: "second-name", Language: "plaintext",
+	}, now.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	var historyRows int
+	if err := store.DB().QueryRowContext(ctx, `SELECT count(*) FROM live_changes WHERE room_slug = ?`, "calmbrightotter").Scan(&historyRows); err != nil {
+		t.Fatal(err)
+	}
+	if historyRows != 0 {
+		t.Fatalf("compacted history rows = %d, want 0", historyRows)
+	}
+	if err := hub.Shutdown(ctx, now.Add(3*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	restartedOptions := testHubOptions([]string{"after-restart"}, nil)
+	restartedOptions.MaxHistoryRows = 1
+	restarted, err := live.NewHub(store, nil, restartedOptions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rejoined, err := restarted.Join(ctx, "calmbrightotter", "session-after", now.Add(4*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	duplicate, err := rejoined.Session.SubmitDocument(ctx, first, now.Add(5*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !duplicate.Duplicate || duplicate.Revision != accepted.Revision || !reflect.DeepEqual(duplicate.Changes, accepted.Changes) {
+		t.Fatalf("durable duplicate = %#v, want original %#v", duplicate, accepted)
+	}
+	duplicateMetadata, err := rejoined.Session.ApplyMetadata(ctx, firstMetadata, now.Add(5*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !duplicateMetadata.Duplicate || duplicateMetadata.Revision != acceptedMetadata.Revision || duplicateMetadata.Name != acceptedMetadata.Name {
+		t.Fatalf("durable metadata duplicate = %#v, want original %#v", duplicateMetadata, acceptedMetadata)
+	}
+	conflicting := first
+	conflicting.Changes = mustChangeSet(t, `[5,[0,"x"]]`)
+	if _, err := rejoined.Session.SubmitDocument(ctx, conflicting, now.Add(6*time.Second)); !errors.Is(err, livecollab.ErrDuplicateOperation) {
+		t.Fatalf("conflicting durable operation error = %v", err)
+	}
+	persisted, err := store.GetRoomSnapshot(ctx, "calmbrightotter", now.Add(7*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.Documents[0].Content != "hello!?" || persisted.Documents[0].CurrentRevision != 2 {
+		t.Fatalf("retry changed authoritative document = %#v", persisted.Documents[0])
+	}
+	if persisted.Documents[0].Name != "second-name" || persisted.MetadataRevision != 2 {
+		t.Fatalf("retry changed authoritative metadata = %#v", persisted)
+	}
+}
+
+func TestHubRetriesCommittedOperationAfterRoomEviction(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, time.August, 9, 13, 0, 0, 0, time.UTC)
+	store, err := sqlite.Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.CreateRoom(ctx, testRoom(now)); err != nil {
+		t.Fatal(err)
+	}
+	hub, err := live.NewHub(store, nil, testHubOptions([]string{"first", "second"}, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined, err := hub.Join(ctx, "calmbrightotter", "first-session", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	operation := live.DocumentOperation{
+		OperationID: "evicted-edit", ClientID: "stable-client", DocumentID: "main",
+		BaseVersion: 0, Changes: mustChangeSet(t, `[5,[0,"!"]]`),
+	}
+	if _, err := joined.Session.SubmitDocument(ctx, operation, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := joined.Session.Leave(now.Add(2 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if hub.RoomCount() != 0 {
+		t.Fatalf("room count after leave = %d, want eviction", hub.RoomCount())
+	}
+	rejoined, err := hub.Join(ctx, "calmbrightotter", "second-session", now.Add(3*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	duplicate, err := rejoined.Session.SubmitDocument(ctx, operation, now.Add(4*time.Second))
+	if err != nil || !duplicate.Duplicate || duplicate.Revision != 1 {
+		t.Fatalf("evicted-room retry = %#v, %v", duplicate, err)
+	}
+	if rejoined.State.Documents[0].Content != "hello!" {
+		t.Fatalf("reloaded content = %q", rejoined.State.Documents[0].Content)
+	}
+}
+
 func TestHubCompactsHistoryAtConfiguredByteThreshold(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, time.August, 8, 12, 0, 0, 0, time.UTC)

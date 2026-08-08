@@ -29,6 +29,7 @@ import {
   nextLiveOutboundUpdate,
   normalizeLiveDocuments,
   randomLiveID,
+  rebaseAfterAcceptedSnapshot,
 } from "./live-collab";
 import {
   classifyLiveOperationError,
@@ -468,6 +469,7 @@ export function LiveRoomWorkspace({
     snapshotDocuments: LiveRoomDocument[],
     nextMetadataRevision: number,
     requestedAuthority: LiveRevisionAuthority,
+    acceptedOperationIDs: string[],
   ): boolean {
     const nextDocuments = normalizeLiveDocuments(snapshotDocuments);
     const snapshotAuthority = captureLiveRevisionAuthority(
@@ -486,6 +488,19 @@ export function LiveRoomWorkspace({
     const nextByID = new Map(
       nextDocuments.map((document) => [document.id, document]),
     );
+    const acceptedIDs = new Set(acceptedOperationIDs);
+    for (const operation of operationTrackerRef.current.values()) {
+      if (!acceptedIDs.has(operation.id) || operation.kind !== "metadata")
+        continue;
+      operationTrackerRef.current.settle(
+        operation.id,
+        connectionGenerationRef.current,
+      );
+      if (operation.id === metadataOperationRef.current) {
+        metadataOperationRef.current = "";
+        setMetadataBusy(false);
+      }
+    }
     for (const [documentID, state] of editorStatesRef.current) {
       const nextDocument = nextByID.get(documentID);
       if (!nextDocument) {
@@ -506,6 +521,43 @@ export function LiveRoomWorkspace({
       }
       const synchronizedVersion = getSyncedVersion(state);
       if (nextDocument.revision <= synchronizedVersion) continue;
+      const acceptedOperation = operationTrackerRef.current
+        .values()
+        .find(
+          (operation) =>
+            operation.kind === "document" &&
+            operation.documentID === documentID &&
+            acceptedIDs.has(operation.id),
+        );
+      if (acceptedOperation) {
+        const pending = sendableUpdates(state);
+        if (
+          pending.length === 0 ||
+          JSON.stringify(pending[0].changes.toJSON()) !==
+            JSON.stringify(acceptedOperation.message.changes)
+        )
+          return false;
+        const synced =
+          syncedContentsRef.current.get(documentID) ?? state.doc.toString();
+        const rebased = rebaseAfterAcceptedSnapshot(
+          synced,
+          nextDocument.content,
+          pending,
+        );
+        if (!rebased) return false;
+        let current = makeLiveEditorState(nextDocument, clientID);
+        for (const update of rebased)
+          current = current.update({ changes: update.changes }).state;
+        editorStatesRef.current.set(documentID, current);
+        const view = editorViewsRef.current.get(documentID);
+        if (view && view.state !== current) view.setState(current);
+        syncedContentsRef.current.set(documentID, nextDocument.content);
+        operationTrackerRef.current.settle(
+          acceptedOperation.id,
+          connectionGenerationRef.current,
+        );
+        continue;
+      }
       const synced =
         syncedContentsRef.current.get(documentID) ?? state.doc.toString();
       const changes = diffLiveDocuments(synced, nextDocument.content);
@@ -1012,7 +1064,12 @@ export function LiveRoomWorkspace({
     }
     let completed = false;
     try {
-      const snapshot = await getLiveRoom(api, initialRoom.slug);
+      const snapshot = await getLiveRoom(
+        api,
+        initialRoom.slug,
+        undefined,
+        clientID,
+      );
       if (
         disposedRef.current ||
         !isCurrentLiveSnapshot(generation, activeSnapshotGenerationRef.current)
@@ -1022,6 +1079,7 @@ export function LiveRoomWorkspace({
         snapshot.documents,
         snapshot.metadataRevision,
         requestedAuthority,
+        snapshot.acceptedOperationIDs,
       );
       completed = true;
     } catch {

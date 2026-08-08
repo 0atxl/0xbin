@@ -9,6 +9,7 @@ import (
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -159,6 +160,52 @@ func TestLiveCreateBootstrapAndPasswordGate(t *testing.T) {
 	handler.ServeHTTP(unlocked, unlockRequest)
 	if unlocked.Code != http.StatusOK || !strings.Contains(unlocked.Body.String(), "secret text") || strings.Contains(unlocked.Body.String(), `"password_required":true`) {
 		t.Fatalf("unlock response = %d: %s", unlocked.Code, unlocked.Body.String())
+	}
+}
+
+func TestLiveBootstrapReturnsAcceptedOperationsForHTTPReconciliation(t *testing.T) {
+	handler, store, hub := newLiveTestHandler(t, "http://localhost:8080")
+	defer store.Close()
+	defer hub.Shutdown(context.Background(), time.Now().UTC())
+
+	create := httptest.NewRecorder()
+	handler.ServeHTTP(create, httptest.NewRequest(http.MethodPost, "/api/v1/live", strings.NewReader(`{"documents":[{"name":"main","language":"plaintext","content":"hello"}]}`)))
+	if create.Code != http.StatusCreated {
+		t.Fatalf("create status = %d: %s", create.Code, create.Body.String())
+	}
+	now := time.Now().UTC()
+	joined, err := hub.Join(context.Background(), "calmbrightotter", "reconcile-session", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changes, err := livecollab.ParseChangeSetJSON([]byte(`[5,[0,"!"]]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := joined.Session.SubmitDocument(context.Background(), live.DocumentOperation{
+		OperationID: "committed-without-ack", ClientID: "reconcile-client",
+		DocumentID: "main", BaseVersion: 0,
+		Changes: changes,
+	}, now); err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/live/calmbrightotter", nil)
+	request.Header.Set("X-0xbin-Live-Client-ID", "reconcile-client")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("bootstrap status = %d: %s", response.Code, response.Body.String())
+	}
+	var snapshot liveRoomResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(snapshot.AcceptedOperationIDs, []string{"committed-without-ack"}) {
+		t.Fatalf("accepted operation IDs = %#v", snapshot.AcceptedOperationIDs)
+	}
+	if len(snapshot.Documents) != 1 || snapshot.Documents[0].Content != "hello!" || snapshot.Documents[0].Revision != 1 {
+		t.Fatalf("authoritative bootstrap = %#v", snapshot.Documents)
 	}
 }
 

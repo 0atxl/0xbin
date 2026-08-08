@@ -52,6 +52,8 @@ func BenchmarkCommitLiveDocumentChange_MaxRoom(b *testing.B) {
 			Kind: "push_changes", Payload: `{"changes":[[1,"y"],131071]}`,
 			CreatedAt: room.Documents[0].UpdatedAt,
 		}}
+		commit.Operation = testLiveOperation(commit.Change, fmt.Sprintf("benchmark-%d", i))
+		commit.RetainOperations = 2000
 		if err := store.CommitChange(ctx, commit, now); err != nil {
 			b.Fatal(err)
 		}
@@ -135,7 +137,9 @@ func measureLivePersistenceWAL(tb testing.TB, edits int, optimized bool) livePer
 			CreatedAt: room.Documents[0].UpdatedAt,
 		}
 		if optimized {
-			err = store.CommitChange(ctx, live.ChangeCommit{Snapshot: room, Change: change}, now)
+			commit := live.ChangeCommit{Snapshot: room, Change: change, RetainOperations: 2000}
+			commit.Operation = testLiveOperation(change, fmt.Sprintf("measure-%d", revision))
+			err = store.CommitChange(ctx, commit, now)
 		} else {
 			err = store.AppendChanges(ctx, room.Slug, []live.ChangeRecord{change}, now)
 			if err == nil {

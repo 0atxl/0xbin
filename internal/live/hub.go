@@ -707,7 +707,79 @@ func newRoom(ctx context.Context, store RoomStore, snapshot RoomSnapshot, option
 		room.snapshot = durable
 		room.markDocumentsDurableLocked()
 	}
+	if err := room.loadOperations(ctx); err != nil {
+		return nil, err
+	}
 	return room, nil
+}
+
+func (room *room) loadOperations(ctx context.Context) error {
+	operations, err := room.store.LoadRecentOperations(ctx, room.snapshot.Slug, operationRecordLimit(room.options), beforeExpiry(room.snapshot.ExpiresAt))
+	if err != nil {
+		return fmt.Errorf("load live operation ledger: %w", err)
+	}
+	for _, operation := range operations {
+		record, err := room.operationRecordFromDurable(operation)
+		if err != nil {
+			return fmt.Errorf("decode live operation %q: %w", operation.OperationID, err)
+		}
+		if _, exists := room.operations[operation.OperationID]; exists {
+			return fmt.Errorf("%w: duplicate durable operation %q", ErrPersistence, operation.OperationID)
+		}
+		room.operations[operation.OperationID] = record
+		room.operationOrder = append(room.operationOrder, operation.OperationID)
+	}
+	return nil
+}
+
+func (room *room) operationRecordFromDurable(operation OperationRecord) (operationRecord, error) {
+	if err := room.ensureOperationIDs(operation.OperationID, operation.ClientID); err != nil || len(operation.Fingerprint) != sha256.Size*2 || operation.Revision <= 0 || operation.BaseRevision < 0 {
+		return operationRecord{}, ErrPersistence
+	}
+	switch operation.StreamKind {
+	case StreamDocument:
+		if operation.OperationKind != "push_changes" || ValidateDocumentID(operation.StreamID) != nil {
+			return operationRecord{}, ErrPersistence
+		}
+		var persisted persistedDocumentChange
+		if err := json.Unmarshal([]byte(operation.ResultPayload), &persisted); err != nil {
+			return operationRecord{}, err
+		}
+		changes, err := livecollab.ParseChangeSetJSON(persisted.Changes)
+		if err != nil {
+			return operationRecord{}, err
+		}
+		accepted := AcceptedDocumentOperation{
+			OperationID: operation.OperationID, ClientID: operation.ClientID,
+			DocumentID: operation.StreamID, BaseVersion: operation.BaseRevision,
+			Revision: operation.Revision, Changes: changes,
+		}
+		if document := room.documents[operation.StreamID]; document != nil && document.snapshot.CurrentRevision == operation.Revision {
+			accepted.Document = document.snapshot.Content
+		}
+		return operationRecord{fingerprint: operation.Fingerprint, document: &accepted}, nil
+	case StreamMetadata:
+		if operation.StreamID != MetadataStreamID {
+			return operationRecord{}, ErrPersistence
+		}
+		var persisted persistedMetadataChange
+		if err := json.Unmarshal([]byte(operation.ResultPayload), &persisted); err != nil {
+			return operationRecord{}, err
+		}
+		if persisted.Kind != operation.OperationKind {
+			return operationRecord{}, ErrPersistence
+		}
+		accepted := AcceptedMetadataOperation{
+			OperationID: operation.OperationID, ClientID: operation.ClientID,
+			Kind: persisted.Kind, DocumentID: persisted.DocumentID,
+			Revision: operation.Revision, Name: persisted.Name,
+			Language: persisted.Language, Content: persisted.Content,
+			Order: append([]string(nil), persisted.Order...), State: room.stateLocked(),
+		}
+		return operationRecord{fingerprint: operation.Fingerprint, metadata: &accepted}, nil
+	default:
+		return operationRecord{}, ErrPersistence
+	}
 }
 
 func (room *room) replay(ctx context.Context) error {
@@ -1572,7 +1644,20 @@ func (room *room) appendAndSave(ctx context.Context, change ChangeRecord, finger
 		}
 	}
 	durable := room.durableSnapshotLocked()
-	if err := room.store.CommitChange(ctx, ChangeCommit{Snapshot: durable, Change: change, CompactThrough: compactThrough}, now); err != nil {
+	operation := OperationRecord{
+		Fingerprint: fingerprint, StreamKind: change.StreamKind,
+		StreamID: change.StreamID, Revision: change.Revision,
+		OperationKind: change.Kind, ResultPayload: change.Payload,
+		CreatedAt: change.CreatedAt,
+	}
+	if documentResult != nil {
+		operation.OperationID, operation.ClientID = documentResult.OperationID, documentResult.ClientID
+		operation.BaseRevision = documentResult.BaseVersion
+	} else if metadataResult != nil {
+		operation.OperationID, operation.ClientID = metadataResult.OperationID, metadataResult.ClientID
+		operation.BaseRevision = backup.snapshot.MetadataRevision
+	}
+	if err := room.store.CommitChange(ctx, ChangeCommit{Snapshot: durable, Change: change, Operation: operation, CompactThrough: compactThrough, RetainOperations: operationRecordLimit(room.options)}, now); err != nil {
 		room.restoreLocked(backup)
 		return fmt.Errorf("%w: commit: %w", ErrPersistence, err)
 	}
@@ -1644,15 +1729,20 @@ func (document *documentState) addHistory(accepted documentHistory) {
 }
 
 func (room *room) pruneOperationRecords() {
-	maxRecords := room.options.MaxHistoryRows * 2
-	if maxRecords < 32 {
-		maxRecords = 32
-	}
+	maxRecords := operationRecordLimit(room.options)
 	for len(room.operationOrder) > maxRecords {
 		id := room.operationOrder[0]
 		room.operationOrder = room.operationOrder[1:]
 		delete(room.operations, id)
 	}
+}
+
+func operationRecordLimit(options HubOptions) int {
+	maxRecords := options.MaxHistoryRows * 2
+	if maxRecords < 32 {
+		return 32
+	}
+	return maxRecords
 }
 
 func (document *documentState) pruneHistory(maxRows int, maxBytes int64) {
@@ -1739,9 +1829,10 @@ func beforeExpiry(expiresAt time.Time) time.Time {
 func operationFingerprint(operation any) string {
 	data, err := json.Marshal(operation)
 	if err != nil {
-		return fmt.Sprintf("%T", operation)
+		data = []byte(fmt.Sprintf("%T", operation))
 	}
-	return string(data)
+	digest := sha256.Sum256(data)
+	return hex.EncodeToString(digest[:])
 }
 
 type persistedDocumentChange struct {

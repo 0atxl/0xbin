@@ -27,6 +27,10 @@ export class LiveOperationTracker {
     return id ? this.operations.get(id) : undefined;
   }
 
+  values() {
+    return [...this.operations.values()];
+  }
+
   shouldSend(id: string, generation: number) {
     const operation = this.operations.get(id);
     return (

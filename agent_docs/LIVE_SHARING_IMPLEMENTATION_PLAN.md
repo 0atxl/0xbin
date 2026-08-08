@@ -2,9 +2,9 @@
 
 ## Implementation Plan
 
-**Status:** Implemented through Steps 0A–13. Follow-up remediation phases 1–5
-are complete; remaining work is limited to later remediation phases and normal
-operational review.
+**Status:** Implemented through Steps 0A–13. Follow-up release-hardening Phase
+1 is complete; Phases 2–7 in
+[`LIVE_SHARING_REMEDIATION_PLAN.md`](LIVE_SHARING_REMEDIATION_PLAN.md) remain.
 
 **Related:** [`spec.md`](../spec.md), [`docs/PRD.md`](../docs/PRD.md),
 [`agent_docs/TECHNICAL_DESIGN.md`](TECHNICAL_DESIGN.md),

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -27,7 +28,7 @@ func TestOpenMigratesAndReopens(t *testing.T) {
 	if err := store.DB().QueryRowContext(ctx, "SELECT count(*) FROM schema_migrations").Scan(&count); err != nil {
 		t.Fatal(err)
 	}
-	if count != 2 {
+	if count != 3 {
 		t.Fatalf("migrations = %d", count)
 	}
 	if err := store.Close(); err != nil {
@@ -503,11 +504,14 @@ func TestCommitLiveDocumentChangeUsesOneTransactionAndPreservesOtherRows(t *test
 	room.Documents[0].SnapshotRevision = 1
 	room.Documents[0].UpdatedAt = now.Add(time.Second)
 	room.ContentSize++
+	committedContent := room.Documents[0].Content
 	commit := live.ChangeCommit{
 		Snapshot: room,
 		Change: live.ChangeRecord{StreamKind: live.StreamDocument, StreamID: "main", Revision: 1,
 			Kind: "push_changes", Payload: `{"changes":[5,[0,"!"]]}`, CreatedAt: now.Add(time.Second)},
 	}
+	commit.Operation = testLiveOperation(commit.Change, "operation-1")
+	commit.RetainOperations = 32
 	if err := store.CommitChange(ctx, commit, now.Add(time.Second)); err != nil {
 		t.Fatal(err)
 	}
@@ -519,8 +523,8 @@ func TestCommitLiveDocumentChangeUsesOneTransactionAndPreservesOtherRows(t *test
 	if err := store.DB().QueryRowContext(ctx, `SELECT total_changes()`).Scan(&changesAfter); err != nil {
 		t.Fatal(err)
 	}
-	if got := changesAfter - changesBefore; got != 3 {
-		t.Fatalf("SQLite rows changed by one document commit = %d, want 3 (history, room, one document)", got)
+	if got := changesAfter - changesBefore; got != 4 {
+		t.Fatalf("SQLite rows changed by one document commit = %d, want 4 (operation, history, room, one document)", got)
 	}
 	for id, wantRowID := range rowIDs {
 		var gotRowID int64
@@ -530,6 +534,87 @@ func TestCommitLiveDocumentChangeUsesOneTransactionAndPreservesOtherRows(t *test
 		if gotRowID != wantRowID {
 			t.Fatalf("document %q rowid changed from %d to %d", id, wantRowID, gotRowID)
 		}
+	}
+	operations, err := store.LoadRecentOperations(ctx, room.Slug, 32, now.Add(time.Second))
+	if err != nil || len(operations) != 1 || operations[0].OperationID != "operation-1" {
+		t.Fatalf("durable operations = %#v, %v", operations, err)
+	}
+	clientOperations, err := store.LoadClientOperations(ctx, room.Slug, "test-client", 32, now.Add(time.Second))
+	if err != nil || !reflect.DeepEqual(clientOperations, operations) {
+		t.Fatalf("client operations = %#v, %v", clientOperations, err)
+	}
+
+	conflictingRoom := room
+	conflictingRoom.Documents = append([]live.DocumentSnapshot(nil), room.Documents...)
+	conflictingRoom.Documents[0].Content += "?"
+	conflictingRoom.Documents[0].CurrentRevision = 2
+	conflictingRoom.Documents[0].SnapshotRevision = 2
+	conflictingRoom.Documents[0].UpdatedAt = now.Add(2 * time.Second)
+	conflicting := live.ChangeCommit{
+		Snapshot: conflictingRoom,
+		Change: live.ChangeRecord{StreamKind: live.StreamDocument, StreamID: "main", Revision: 2,
+			Kind: "push_changes", Payload: `{"changes":[6,[0,"?"]]}`, CreatedAt: now.Add(2 * time.Second)},
+		RetainOperations: 32,
+	}
+	conflicting.Operation = testLiveOperation(conflicting.Change, "operation-1")
+	conflicting.Operation.Fingerprint = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+	if err := store.CommitChange(ctx, conflicting, now.Add(2*time.Second)); err == nil {
+		t.Fatal("duplicate operation commit error = nil")
+	}
+	persisted, err := store.GetRoomSnapshot(ctx, room.Slug, now.Add(2*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.Documents[0].Content != committedContent || persisted.Documents[0].CurrentRevision != 1 {
+		t.Fatalf("duplicate operation partially committed = %#v", persisted.Documents[0])
+	}
+}
+
+func TestCommitLiveChangeBoundsOperationLedger(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Date(2026, time.August, 9, 12, 0, 0, 0, time.UTC)
+	room := testLiveRoom("boundedbrightotter", now)
+	if err := store.CreateRoom(ctx, room); err != nil {
+		t.Fatal(err)
+	}
+	for revision := 1; revision <= 5; revision++ {
+		room.Documents[0].Content += "!"
+		room.Documents[0].CurrentRevision = revision
+		room.Documents[0].SnapshotRevision = revision
+		room.Documents[0].UpdatedAt = now.Add(time.Duration(revision) * time.Second)
+		change := live.ChangeRecord{
+			StreamKind: live.StreamDocument, StreamID: "main", Revision: revision,
+			Kind: "push_changes", Payload: `{"changes":[5,[0,"!"]]}`,
+			CreatedAt: room.Documents[0].UpdatedAt,
+		}
+		commit := live.ChangeCommit{Snapshot: room, Change: change, RetainOperations: 3}
+		commit.Operation = testLiveOperation(change, "bounded-"+strconv.Itoa(revision))
+		if err := store.CommitChange(ctx, commit, now.Add(time.Duration(revision)*time.Second)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	operations, err := store.LoadRecentOperations(ctx, room.Slug, 10, now.Add(6*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := []string{operations[0].OperationID, operations[1].OperationID, operations[2].OperationID}; !reflect.DeepEqual(got, []string{"bounded-3", "bounded-4", "bounded-5"}) {
+		t.Fatalf("retained operation IDs = %#v", got)
+	}
+}
+
+func testLiveOperation(change live.ChangeRecord, operationID string) live.OperationRecord {
+	return live.OperationRecord{
+		OperationID: operationID, ClientID: "test-client",
+		Fingerprint: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		StreamKind:  change.StreamKind, StreamID: change.StreamID,
+		BaseRevision: change.Revision - 1, Revision: change.Revision,
+		OperationKind: change.Kind, ResultPayload: change.Payload,
+		CreatedAt: change.CreatedAt,
 	}
 }
 
@@ -598,7 +683,7 @@ func TestDeleteExpiredLiveRoomsCascades(t *testing.T) {
 	if err != nil || deleted != 1 {
 		t.Fatalf("DeleteExpiredRooms() = %d, %v; want 1, nil", deleted, err)
 	}
-	for _, table := range []string{"live_rooms", "live_documents", "live_changes"} {
+	for _, table := range []string{"live_rooms", "live_documents", "live_changes", "live_operations"} {
 		var count int
 		column := "room_slug"
 		if table == "live_rooms" {

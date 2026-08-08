@@ -509,6 +509,98 @@ try {
     "saving the current LiveBin tab should return to the normal paste editor",
   );
 
+  progress("checking committed edit recovery after a lost acknowledgement");
+  const acknowledgementContext = await browser.newContext();
+  const acknowledgementPage = await acknowledgementContext.newPage();
+  let droppedAcknowledgement = false;
+  await acknowledgementPage.routeWebSocket(
+    /\/api\/v1\/live\/[^/]+\/ws$/,
+    (socket) => {
+      const server = socket.connectToServer();
+      server.onMessage((message) => {
+        const text = Buffer.isBuffer(message) ? message.toString() : message;
+        let event;
+        try {
+          event = JSON.parse(text);
+        } catch {
+          socket.send(message);
+          return;
+        }
+        if (!droppedAcknowledgement && event.type === "changes") {
+          droppedAcknowledgement = true;
+          socket.send(
+            JSON.stringify({
+              type: "status",
+              status: "http_resync_required",
+            }),
+          );
+          return;
+        }
+        socket.send(message);
+      });
+    },
+  );
+  await acknowledgementPage.goto(webOrigin);
+  await acknowledgementPage
+    .getByRole("button", { name: "Open LiveBin" })
+    .click();
+  await acknowledgementPage
+    .locator(".live-create-canvas .cm-content")
+    .fill("base");
+  await acknowledgementPage
+    .getByRole("button", { name: "Create LiveBin room" })
+    .click();
+  await acknowledgementPage.waitForURL((url) =>
+    url.pathname.startsWith("/live/"),
+  );
+  const acknowledgementRoomURL = acknowledgementPage.url();
+  await expectVisible(acknowledgementPage, "Connected");
+  const resynchronized = acknowledgementPage.waitForResponse((response) => {
+    const request = response.request();
+    return (
+      request.method() === "GET" &&
+      new URL(response.url()).pathname ===
+        `/api/v1/live/${new URL(acknowledgementRoomURL).pathname.split("/").pop()}` &&
+      request.headers()["x-0xbin-live-client-id"] !== undefined
+    );
+  });
+  const acknowledgementEditor = acknowledgementPage.locator(
+    ".live-code-editor .cm-content",
+  );
+  await acknowledgementEditor.click();
+  await acknowledgementEditor.pressSequentially("x");
+  await resynchronized;
+  await acknowledgementPage.waitForFunction(() => {
+    const content = document.querySelector(".live-code-editor .cm-content");
+    return content?.textContent === "basex";
+  });
+  await assert.equal(
+    await liveEditorText(acknowledgementEditor),
+    "basex",
+    "HTTP reconciliation must not apply a committed local edit twice",
+  );
+  const acknowledgementSnapshot = await acknowledgementPage.evaluate(
+    async () => {
+      const response = await fetch(
+        `/api/v1/live/${location.pathname.split("/").pop()}`,
+      );
+      return response.json();
+    },
+  );
+  await assert.equal(
+    acknowledgementSnapshot.documents[0].content,
+    "basex",
+    "authoritative HTTP state should contain one copy of the recovered edit",
+  );
+  const acknowledgementObserver = await acknowledgementContext.newPage();
+  await acknowledgementObserver.goto(acknowledgementRoomURL);
+  await expectVisible(acknowledgementObserver, "Connected");
+  await acknowledgementObserver.waitForFunction(() => {
+    const content = document.querySelector(".live-code-editor .cm-content");
+    return content?.textContent === "basex";
+  });
+  await acknowledgementContext.close();
+
   progress("checking protected LiveBin access and hostile text rendering");
   await page.goto(webOrigin);
   await page.getByRole("button", { name: "Open LiveBin" }).click();

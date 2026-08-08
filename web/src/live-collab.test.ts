@@ -21,6 +21,7 @@ import {
   nextLiveOutboundUpdate,
   normalizeLiveDocuments,
   liveQueueState,
+  rebaseAfterAcceptedSnapshot,
 } from "./live-collab";
 
 function document(
@@ -110,6 +111,57 @@ describe("live room client helpers", () => {
     expect(sendableUpdates(local)).toHaveLength(0);
     expect(authoritativeText).toBe(localText);
     expect(authoritativeText).toBe("five 🙂");
+  });
+
+  it("does not duplicate an accepted edit during HTTP reconciliation", () => {
+    const clientID = "reconcile-client";
+    let local = EditorState.create({
+      doc: "",
+      extensions: [collab({ clientID })],
+    });
+    local = local.update({ changes: { from: 0, insert: "x" } }).state;
+    const rebased = rebaseAfterAcceptedSnapshot(
+      "",
+      "x",
+      sendableUpdates(local),
+    );
+    expect(rebased).toEqual([]);
+
+    let reconciled = EditorState.create({
+      doc: "x",
+      extensions: [collab({ startVersion: 1, clientID })],
+    });
+    for (const update of rebased ?? [])
+      reconciled = reconciled.update({ changes: update.changes }).state;
+    expect(reconciled.doc.toString()).toBe("x");
+    expect(getSyncedVersion(reconciled)).toBe(1);
+    expect(sendableUpdates(reconciled)).toHaveLength(0);
+  });
+
+  it("rebases only later unsent edits after an accepted snapshot", () => {
+    const clientID = "reconcile-client";
+    let local = EditorState.create({
+      doc: "hello",
+      extensions: [collab({ clientID })],
+    });
+    local = local.update({ changes: { from: 5, insert: "!" } }).state;
+    local = local.update({ changes: { from: 6, insert: "?" } }).state;
+    const rebased = rebaseAfterAcceptedSnapshot(
+      "hello",
+      "Xhello!",
+      sendableUpdates(local),
+    );
+    expect(rebased).toHaveLength(1);
+
+    let reconciled = EditorState.create({
+      doc: "Xhello!",
+      extensions: [collab({ startVersion: 2, clientID })],
+    });
+    for (const update of rebased ?? [])
+      reconciled = reconciled.update({ changes: update.changes }).state;
+    expect(reconciled.doc.toString()).toBe("Xhello!?");
+    expect(getSyncedVersion(reconciled)).toBe(2);
+    expect(sendableUpdates(reconciled)).toHaveLength(1);
   });
 
   it("uses the authoritative snapshot revision for the next local edit", () => {

@@ -68,6 +68,7 @@ export type LiveRoomSnapshot = {
   maxParticipants: number;
   roomLifetimeSeconds: number;
   documents: LiveRoomDocument[];
+  acceptedOperationIDs: string[];
 };
 
 export type LiveServiceConfig = {
@@ -142,12 +143,14 @@ export async function getLiveRoom(
   api: LiveAPI,
   slug: string,
   signal?: AbortSignal,
+  clientID?: string,
 ): Promise<LiveRoomSnapshot> {
   const response = await api.request<unknown>(
     `/api/v1/live/${encodeURIComponent(slug)}`,
     {
       credentials: "same-origin",
       cache: "no-store",
+      ...(clientID ? { headers: { "X-0xbin-Live-Client-ID": clientID } } : {}),
       ...(signal ? { signal } : {}),
     },
   );
@@ -310,6 +313,7 @@ function isLiveRoomSnapshot(value: unknown): value is {
     revision: number;
     position?: number;
   }>;
+  accepted_operation_ids?: string[];
 } {
   if (
     typeof value !== "object" ||
@@ -339,21 +343,28 @@ function isLiveRoomSnapshot(value: unknown): value is {
   ) {
     return false;
   }
-  return value.documents.every(
-    (document) =>
-      typeof document === "object" &&
-      document !== null &&
-      "id" in document &&
-      typeof document.id === "string" &&
-      "name" in document &&
-      typeof document.name === "string" &&
-      "language" in document &&
-      typeof document.language === "string" &&
-      "content" in document &&
-      typeof document.content === "string" &&
-      "revision" in document &&
-      typeof document.revision === "number" &&
-      (!("position" in document) || typeof document.position === "number"),
+  return (
+    value.documents.every(
+      (document) =>
+        typeof document === "object" &&
+        document !== null &&
+        "id" in document &&
+        typeof document.id === "string" &&
+        "name" in document &&
+        typeof document.name === "string" &&
+        "language" in document &&
+        typeof document.language === "string" &&
+        "content" in document &&
+        typeof document.content === "string" &&
+        "revision" in document &&
+        typeof document.revision === "number" &&
+        (!("position" in document) || typeof document.position === "number"),
+    ) &&
+    (!("accepted_operation_ids" in value) ||
+      (Array.isArray(value.accepted_operation_ids) &&
+        value.accepted_operation_ids.every(
+          (operationID) => typeof operationID === "string",
+        )))
   );
 }
 
@@ -424,6 +435,7 @@ function normalizeLiveRoomSnapshot(value: {
     revision: number;
     position?: number;
   }>;
+  accepted_operation_ids?: string[];
 }): LiveRoomSnapshot {
   return {
     slug: value.slug,
@@ -439,6 +451,7 @@ function normalizeLiveRoomSnapshot(value: {
     documents: value.documents
       .map((document) => ({ ...document }))
       .sort((left, right) => (left.position ?? 0) - (right.position ?? 0)),
+    acceptedOperationIDs: [...(value.accepted_operation_ids ?? [])],
   };
 }
 
