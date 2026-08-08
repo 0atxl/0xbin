@@ -5,8 +5,8 @@ delivery plans, and tooling notes intended for AI coding agents and
 maintainers working on the project.
 
 The live-sharing extension is implemented through Steps 0A–13 of its
-implementation plan. Release-hardening Phases 1–2 are complete, and Phases
-3–7, including the Phase 5A maintainability gate, remain. Its settled scope
+implementation plan. Release-hardening Phases 1–3 are complete, and Phases
+4–7, including the Phase 5A maintainability gate, remain. Its settled scope
 includes creator-operated room-wide watch-only mode, but excludes accounts and
 per-participant permission roles.
 

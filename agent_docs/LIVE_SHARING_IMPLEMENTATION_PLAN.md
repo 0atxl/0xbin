@@ -3,7 +3,7 @@
 ## Implementation Plan
 
 **Status:** Implemented through Steps 0A–13. Follow-up release-hardening Phases
-1–2 are complete; Phases 3–7, including the Phase 5A maintainability gate, in
+1–3 are complete; Phases 4–7, including the Phase 5A maintainability gate, in
 [`LIVE_SHARING_REMEDIATION_PLAN.md`](LIVE_SHARING_REMEDIATION_PLAN.md) remain.
 
 **Related:** [`spec.md`](../spec.md), [`docs/PRD.md`](../docs/PRD.md),

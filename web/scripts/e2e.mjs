@@ -27,6 +27,16 @@ function progress(message) {
   console.log(`[e2e] ${message}`);
 }
 
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((nextResolve, nextReject) => {
+    resolve = nextResolve;
+    reject = nextReject;
+  });
+  return { promise, resolve, reject };
+}
+
 function start(command, args, options = {}) {
   const child = spawn(command, args, {
     cwd: options.cwd ?? root,
@@ -127,6 +137,10 @@ async function installLiveSocketControl(page) {
         code: 4001,
         reason: "simulate access-session reconnect",
       });
+    },
+    sendToPage(message) {
+      assert.ok(currentSocket, "expected an active live WebSocket");
+      currentSocket.send(JSON.stringify(message));
     },
   };
 }
@@ -617,6 +631,198 @@ try {
     return content?.textContent === "basex";
   });
   await acknowledgementContext.close();
+
+  progress("checking stale HTTP snapshot reconciliation");
+  const staleContext = await browser.newContext();
+  const staleObserverContext = await browser.newContext();
+  const stalePage = await staleContext.newPage();
+  const staleSocket = await installLiveSocketControl(stalePage);
+  await stalePage.goto(webOrigin);
+  await stalePage.getByRole("button", { name: "Open LiveBin" }).click();
+  await stalePage.locator(".live-create-canvas .cm-content").fill("base");
+  await stalePage.getByRole("button", { name: "Create LiveBin room" }).click();
+  await stalePage.waitForURL((url) => url.pathname.startsWith("/live/"));
+  const staleRoomURL = stalePage.url();
+  const staleSlug = new URL(staleRoomURL).pathname.split("/").pop();
+  await expectVisible(stalePage, "Connected");
+  await stalePage.getByRole("button", { name: "Add tab" }).click();
+  await expectVisible(stalePage, "tab-2");
+
+  const staleObserver = await staleObserverContext.newPage();
+  await staleObserver.goto(staleRoomURL);
+  await expectVisible(staleObserver, "Connected");
+  const snapshotCaptured = deferred();
+  const releaseSnapshot = deferred();
+  let delayedSnapshotRequests = 0;
+  await stalePage.route(
+    new RegExp(`/api/v1/live/${staleSlug}$`),
+    async (route) => {
+      if (!route.request().headers()["x-0xbin-live-client-id"]) {
+        await route.continue();
+        return;
+      }
+      delayedSnapshotRequests += 1;
+      const response = await route.fetch();
+      snapshotCaptured.resolve();
+      await releaseSnapshot.promise;
+      await route.fulfill({ response });
+    },
+    { times: 1 },
+  );
+  staleSocket.sendToPage({
+    type: "status",
+    status: "http_resync_required",
+  });
+  await snapshotCaptured.promise;
+
+  const staleObserverEditor = staleObserver.locator(
+    ".live-code-editor .cm-content",
+  );
+  await staleObserverEditor.click();
+  await staleObserverEditor.pressSequentially("x");
+  await staleObserver.getByRole("button", { name: "tab-2" }).click();
+  await staleObserver
+    .locator(".live-room-bottom-toolbar")
+    .getByRole("button", { name: "Delete", exact: true })
+    .click();
+  await staleObserver.waitForFunction(async (slug) => {
+    const response = await fetch(`/api/v1/live/${slug}`);
+    const snapshot = await response.json();
+    return (
+      snapshot.documents.length === 1 &&
+      snapshot.documents[0].content === "basex" &&
+      snapshot.metadata_revision >= 2
+    );
+  }, staleSlug);
+  releaseSnapshot.resolve();
+
+  await expectVisible(stalePage, "Connected");
+  try {
+    await stalePage.waitForFunction(
+      () => {
+        const editor = document.querySelector(".live-code-editor .cm-content");
+        return (
+          editor?.textContent === "basex" &&
+          ![...document.querySelectorAll(".live-tab-strip button")].some(
+            (button) => button.textContent?.includes("tab-2"),
+          )
+        );
+      },
+      undefined,
+      { timeout: 10_000 },
+    );
+  } catch (error) {
+    const diagnostics = await stalePage.evaluate(() => ({
+      editor: document.querySelector(".live-code-editor .cm-content")
+        ?.textContent,
+      tabs: [...document.querySelectorAll(".live-tab-strip button")].map(
+        (button) => button.textContent,
+      ),
+      connection: document.querySelector(".live-connection-status")
+        ?.textContent,
+      warning: document.querySelector(".live-queue-warning")?.textContent,
+    }));
+    throw new Error(
+      `stale snapshot diagnostics: ${JSON.stringify(diagnostics)}`,
+      {
+        cause: error,
+      },
+    );
+  }
+  const staleEditor = stalePage.locator(".live-code-editor .cm-content");
+  await staleEditor.click();
+  await staleEditor.pressSequentially("y");
+  await staleObserver.getByRole("button", { name: "main" }).click();
+  await staleObserver.waitForFunction(() => {
+    const editor = document.querySelector(".live-code-editor .cm-content");
+    return editor?.textContent === "basexy";
+  });
+  const convergedSnapshot = await staleObserver.evaluate(async (slug) => {
+    const response = await fetch(`/api/v1/live/${slug}`);
+    return response.json();
+  }, staleSlug);
+  assert.equal(delayedSnapshotRequests, 1);
+  assert.equal(await liveEditorText(staleEditor), "basexy");
+  assert.equal(await liveEditorText(staleObserverEditor), "basexy");
+  assert.equal(convergedSnapshot.documents[0].content, "basexy");
+  await staleContext.close();
+  await staleObserverContext.close();
+
+  progress("checking terminal HTTP resynchronization recovery");
+  const failedContext = await browser.newContext();
+  const failedPage = await failedContext.newPage();
+  let failedSocket;
+  let dropFailedUpdate = false;
+  const updateDropped = deferred();
+  await failedPage.routeWebSocket(/\/api\/v1\/live\/[^/]+\/ws$/, (socket) => {
+    failedSocket = socket;
+    const server = socket.connectToServer();
+    socket.onMessage((message) => {
+      const text = Buffer.isBuffer(message) ? message.toString() : message;
+      let event;
+      try {
+        event = JSON.parse(text);
+      } catch {
+        server.send(message);
+        return;
+      }
+      if (dropFailedUpdate && event.type === "push_changes") {
+        updateDropped.resolve();
+        return;
+      }
+      server.send(message);
+    });
+  });
+  await failedPage.goto(webOrigin);
+  await failedPage.getByRole("button", { name: "Open LiveBin" }).click();
+  await failedPage.locator(".live-create-canvas .cm-content").fill("recover");
+  await failedPage.getByRole("button", { name: "Create LiveBin room" }).click();
+  await failedPage.waitForURL((url) => url.pathname.startsWith("/live/"));
+  const failedSlug = new URL(failedPage.url()).pathname.split("/").pop();
+  await expectVisible(failedPage, "Connected");
+  let failedSnapshotRequests = 0;
+  await failedPage.route(
+    new RegExp(`/api/v1/live/${failedSlug}$`),
+    async (route) => {
+      if (!route.request().headers()["x-0xbin-live-client-id"]) {
+        await route.continue();
+        return;
+      }
+      failedSnapshotRequests += 1;
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({
+          error: {
+            code: "service_unavailable",
+            message: "Temporarily unavailable",
+          },
+        }),
+      });
+    },
+  );
+  dropFailedUpdate = true;
+  const failedEditor = failedPage.locator(".live-code-editor .cm-content");
+  await failedEditor.click();
+  await failedEditor.pressSequentially(" local");
+  await updateDropped.promise;
+  assert.ok(failedSocket, "expected a failed-resync WebSocket");
+  failedSocket.send(
+    JSON.stringify({ type: "status", status: "http_resync_required" }),
+  );
+  await expectVisible(failedPage, "Copy recovery text");
+  await expectVisible(failedPage, "Recovery");
+  assert.equal(
+    await liveEditorText(failedEditor),
+    "recover local",
+    "terminal resynchronization must preserve unsent local text",
+  );
+  assert.equal(
+    failedSnapshotRequests,
+    4,
+    "terminal resynchronization should stop at its HTTP attempt bound",
+  );
+  await failedContext.close();
 
   progress("checking protected LiveBin access and hostile text rendering");
   const protectedCreatorSocket = await installLiveSocketControl(page);

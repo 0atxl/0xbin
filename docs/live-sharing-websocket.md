@@ -45,6 +45,14 @@ sends retained metadata and document deltas newer than the join revision set.
 If bounded retained history cannot bridge that set, it sends
 `{"type":"status","status":"http_resync_required"}` instead; the client
 must fetch the HTTP bootstrap again before resuming structural operations.
+Only the newest HTTP request generation may change authority. Durable events
+received while that request is in flight are retained in a fixed-size buffer
+and replayed once, in wire order, after a non-regressing snapshot. Events
+published before a replacement request are covered by the replacement
+snapshot. A false reconciliation, event gap, or transient request failure uses
+bounded backoff; a full buffer starts a replacement snapshot. Exhausting the
+attempt or time budget stops collaboration in recovery without discarding
+local editor text.
 
 Document changes use a document `revision`; tab create/update/delete/reorder
 use the room `metadata_revision`. A client acknowledges received revisions with

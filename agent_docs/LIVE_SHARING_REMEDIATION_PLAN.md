@@ -7,7 +7,7 @@ release audit. The live-sharing branch is not ready to merge until every phase
 below passes its gate and the final independent audit reports no unresolved
 release blocker.
 
-**Progress:** Phases 0–2 are complete. Phase 3 is next; Phases 3–7, including
+**Progress:** Phases 0–3 are complete. Phase 4 is next; Phases 4–7, including
 the Phase 5A maintainability gate, remain.
 
 This document does not change a settled product decision. `spec.md` remains

@@ -51,10 +51,3 @@ export function isAuthorityEvent(type: string): boolean {
     type === "document_reordered"
   );
 }
-
-export function isCurrentLiveSnapshot(
-  requestGeneration: number,
-  activeGeneration: number,
-): boolean {
-  return requestGeneration === activeGeneration;
-}

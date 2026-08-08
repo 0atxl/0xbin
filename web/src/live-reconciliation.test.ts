@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   captureLiveRevisionAuthority,
   isAuthorityEvent,
-  isCurrentLiveSnapshot,
   snapshotCanReconcile,
 } from "./live-reconciliation";
 
@@ -56,10 +55,5 @@ describe("live HTTP reconciliation authority", () => {
     expect(isAuthorityEvent("document_deleted")).toBe(true);
     expect(isAuthorityEvent("presence_updated")).toBe(false);
     expect(isAuthorityEvent("joined")).toBe(false);
-  });
-
-  it("ignores an overlapping response once a newer request owns authority", () => {
-    expect(isCurrentLiveSnapshot(1, 2)).toBe(false);
-    expect(isCurrentLiveSnapshot(2, 2)).toBe(true);
   });
 });

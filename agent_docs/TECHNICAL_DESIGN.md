@@ -232,6 +232,17 @@ process:
 - The frontend uses a small native WebSocket client and React hooks with
   Phoenix-style join/rejoin/heartbeat behavior, but does not add Phoenix or
   LiveView runtime dependencies or protocols.
+- HTTP authority resynchronization is owned by one bounded controller per room.
+  It cancels or ignores superseded generations, retries false reconciliation
+  and transient request failures with capped exponential backoff, limits the
+  entire cycle to four attempts and ten seconds, and retains at most 128
+  authority events. Each attempt starts after clearing its event buffer: the
+  snapshot covers every earlier durable publication, while later WebSocket
+  events replay once in wire order. Buffer overflow starts a newer snapshot
+  instead of growing memory. Outbound document and metadata operations remain
+  paused until snapshot reconciliation and retained-event replay both succeed;
+  exhaustion stops the socket in visible recovery with local tab text
+  available to copy.
 - The complete version-1 WebSocket envelope, revision ordering, close behavior,
   transient presence lifecycle, and creator-capability boundary are specified
   in [`docs/live-sharing-websocket.md`](../docs/live-sharing-websocket.md).

@@ -40,7 +40,6 @@ import {
 import {
   captureLiveRevisionAuthority,
   isAuthorityEvent,
-  isCurrentLiveSnapshot,
   snapshotCanReconcile,
   type LiveRevisionAuthority,
 } from "./live-reconciliation";
@@ -54,6 +53,7 @@ import {
   LiveConnectionController,
   type LiveConnectionState,
 } from "./live-connection";
+import { LiveResyncController } from "./live-resync";
 import { beginLoading } from "./loading";
 import {
   LiveCollaborativeEditor as WorkspaceEditor,
@@ -129,6 +129,7 @@ export function LiveRoomWorkspace({
     undefined,
   );
   const connectionWorkStopRef = useRef<(() => void) | undefined>(undefined);
+  const resyncWorkStopRef = useRef<(() => void) | undefined>(undefined);
   const flushTimerRef = useRef<number | undefined>(undefined);
   const usageTimerRef = useRef<number | undefined>(undefined);
   const disposedRef = useRef(false);
@@ -140,9 +141,14 @@ export function LiveRoomWorkspace({
   const operationIDsRef = useRef(new WeakMap<object, string>());
   const operationTrackerRef = useRef(new LiveOperationTracker());
   const resyncingRef = useRef(false);
-  const snapshotGenerationRef = useRef(0);
-  const activeSnapshotGenerationRef = useRef(0);
-  const bufferedAuthorityEventsRef = useRef<LiveWireEvent[]>([]);
+  const resyncControllerRef = useRef<
+    | LiveResyncController<
+        LiveRoomSnapshot,
+        LiveWireEvent,
+        LiveRevisionAuthority
+      >
+    | undefined
+  >(undefined);
   const recoveryRef = useRef(false);
   const metadataOperationRef = useRef("");
   const localParticipantIDRef = useRef("");
@@ -267,31 +273,29 @@ export function LiveRoomWorkspace({
     );
   }
 
-  function applyDocumentEvent(event: LiveWireEvent) {
-    if (event.type !== "changes") return;
+  function applyDocumentEvent(event: LiveWireEvent): boolean {
+    if (event.type !== "changes") return true;
     let changes: ChangeSet;
     try {
       changes = ChangeSet.fromJSON(event.changes);
     } catch {
-      void refreshSnapshot(true);
-      return;
+      return false;
     }
     const document = documentsRef.current.find(
       (candidate) => candidate.id === event.documentID,
     );
-    if (!document) return;
+    if (!document) return true;
     const state = getEditorState(document);
     if (event.revision <= getSyncedVersion(state)) {
       operationTrackerRef.current.settle(
         event.operationID,
         connectionGenerationRef.current,
       );
-      return;
+      return true;
     }
     const expected = getSyncedVersion(state) + 1;
     if (event.revision !== expected) {
-      void refreshSnapshot(true);
-      return;
+      return false;
     }
     applyToEditor(event.documentID, {
       changes,
@@ -322,6 +326,7 @@ export function LiveRoomWorkspace({
     );
     scheduleRoomUsage();
     scheduleFlush();
+    return true;
   }
 
   function applyMetadataEvent(
@@ -335,17 +340,16 @@ export function LiveRoomWorkspace({
           | "document_reordered";
       }
     >,
-  ) {
+  ): boolean {
     if (event.metadataRevision < metadataRevisionRef.current) {
       operationTrackerRef.current.settle(
         event.operationID,
         connectionGenerationRef.current,
       );
-      return;
+      return true;
     }
     if (event.metadataRevision > metadataRevisionRef.current + 1) {
-      void refreshSnapshot(true);
-      return;
+      return false;
     }
     let nextDocuments = documentsRef.current;
     switch (event.type) {
@@ -381,8 +385,7 @@ export function LiveRoomWorkspace({
           position.size !== nextDocuments.length ||
           nextDocuments.some((document) => !position.has(document.id))
         ) {
-          void refreshSnapshot(true);
-          return;
+          return false;
         }
         nextDocuments = nextDocuments
           .map((document) => ({
@@ -414,6 +417,7 @@ export function LiveRoomWorkspace({
       event.operationID,
       connectionGenerationRef.current,
     );
+    return true;
   }
 
   function enterRecovery(operation: LiveOperation, message: string) {
@@ -435,7 +439,7 @@ export function LiveRoomWorkspace({
   ) {
     const category = classifyLiveOperationError(event.code, event.status);
     if (category === "retryable" || category === "resync") {
-      if (!resyncingRef.current) void refreshSnapshot(true);
+      if (!resyncingRef.current) void refreshSnapshot();
       return;
     }
     const operation = operationTrackerRef.current.reject(
@@ -604,8 +608,10 @@ export function LiveRoomWorkspace({
   function handleEvent(event: LiveWireEvent) {
     // A snapshot is an authority boundary: durable WebSocket events received
     // while it is in flight are replayed after the snapshot, in wire order.
-    if (resyncingRef.current && isAuthorityEvent(event.type)) {
-      bufferedAuthorityEventsRef.current.push(event);
+    if (
+      isAuthorityEvent(event.type) &&
+      resyncControllerRef.current?.bufferEvent(event)
+    ) {
       return;
     }
     switch (event.type) {
@@ -630,13 +636,13 @@ export function LiveRoomWorkspace({
         scheduleFlush();
         return;
       case "changes":
-        applyDocumentEvent(event);
+        if (!applyDocumentEvent(event)) void refreshSnapshot();
         return;
       case "document_created":
       case "document_updated":
       case "document_deleted":
       case "document_reordered":
-        applyMetadataEvent(event);
+        if (!applyMetadataEvent(event)) void refreshSnapshot();
         return;
       case "presence_joined":
       case "presence_updated":
@@ -685,7 +691,11 @@ export function LiveRoomWorkspace({
         } else recoverOperationError(event);
         return;
       case "status":
-        if (event.status === "http_resync_required") void refreshSnapshot(true);
+        if (
+          event.status === "http_resync_required" &&
+          !resyncControllerRef.current?.isActive()
+        )
+          void refreshSnapshot();
         return;
     }
   }
@@ -1054,62 +1064,45 @@ export function LiveRoomWorkspace({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [tabRenameOpen]);
 
-  async function refreshSnapshot(reconnect = false) {
-    const generation = snapshotGenerationRef.current + 1;
-    snapshotGenerationRef.current = generation;
-    activeSnapshotGenerationRef.current = generation;
-    const requestedAuthority = currentRevisionAuthority();
-    const stopLoading = beginLoading();
-    if (reconnect) {
-      resyncingRef.current = true;
-      setResyncing(true);
-      setConnectionState("reconnecting");
-    }
-    let completed = false;
-    try {
-      const snapshot = await getLiveRoom(
-        api,
-        initialRoom.slug,
-        undefined,
-        clientID,
-      );
-      if (
-        disposedRef.current ||
-        !isCurrentLiveSnapshot(generation, activeSnapshotGenerationRef.current)
-      )
-        return;
-      reconcileSnapshot(
-        snapshot.documents,
-        snapshot.metadataRevision,
-        requestedAuthority,
-        snapshot.acceptedOperationIDs,
-      );
-      completed = true;
-    } catch {
-      if (
-        disposedRef.current ||
-        !isCurrentLiveSnapshot(generation, activeSnapshotGenerationRef.current)
-      )
-        return;
-      onStatus("Could not resynchronize the live room");
-    } finally {
-      if (
-        reconnect &&
-        completed &&
-        isCurrentLiveSnapshot(generation, activeSnapshotGenerationRef.current)
-      ) {
-        resyncingRef.current = false;
-        setResyncing(false);
-        const buffered = bufferedAuthorityEventsRef.current;
-        bufferedAuthorityEventsRef.current = [];
-        for (const event of buffered) handleEvent(event);
-        if (
-          isCurrentLiveSnapshot(generation, activeSnapshotGenerationRef.current)
-        )
-          connectionControllerRef.current?.reconnectAfterResync();
-      }
-      stopLoading();
-    }
+  function recoveryText() {
+    const currentDocuments = documentsRef.current.map((document) => ({
+      ...document,
+      content:
+        editorStatesRef.current.get(document.id)?.doc.toString() ??
+        document.content,
+    }));
+    return livePasteExport(
+      currentDocuments,
+      activeDocumentRef.current,
+      currentDocuments.length > 1 ? "every" : "current",
+    ).content;
+  }
+
+  function stopResyncWork() {
+    if (!resyncWorkStopRef.current) return;
+    resyncWorkStopRef.current();
+    resyncWorkStopRef.current = undefined;
+  }
+
+  function enterResyncRecovery() {
+    const message =
+      "Live room resynchronization could not reach a safe state. Your local text is preserved for recovery.";
+    recoveryRef.current = true;
+    setRecovery({
+      operationID: randomLiveID("resync-recovery-"),
+      text: recoveryText(),
+      message,
+    });
+    resyncingRef.current = false;
+    setResyncing(false);
+    stopResyncWork();
+    connectionControllerRef.current?.stop();
+    setConnectionState("recovery");
+    statusRef.current(message);
+  }
+
+  function refreshSnapshot() {
+    resyncControllerRef.current?.start();
   }
 
   useEffect(() => {
@@ -1117,8 +1110,55 @@ export function LiveRoomWorkspace({
     fatalRef.current = false;
     kickedRef.current = false;
     recoveryRef.current = false;
-    bufferedAuthorityEventsRef.current = [];
     setRecovery(undefined);
+    const resyncController = new LiveResyncController<
+      LiveRoomSnapshot,
+      LiveWireEvent,
+      LiveRevisionAuthority
+    >({
+      request: (signal) => getLiveRoom(api, initialRoom.slug, signal, clientID),
+      captureAuthority: currentRevisionAuthority,
+      reconcile: (snapshot, requestedAuthority) =>
+        reconcileSnapshot(
+          snapshot.documents,
+          snapshot.metadataRevision,
+          requestedAuthority,
+          snapshot.acceptedOperationIDs,
+        ),
+      applyBuffered: (event) => {
+        switch (event.type) {
+          case "changes":
+            return applyDocumentEvent(event);
+          case "document_created":
+          case "document_updated":
+          case "document_deleted":
+          case "document_reordered":
+            return applyMetadataEvent(event);
+          default:
+            return true;
+        }
+      },
+      onStarted: () => {
+        resyncingRef.current = true;
+        setResyncing(true);
+        setConnectionState("reconnecting");
+        if (!resyncWorkStopRef.current)
+          resyncWorkStopRef.current = beginLoading();
+      },
+      onSucceeded: () => {
+        resyncingRef.current = false;
+        setResyncing(false);
+        stopResyncWork();
+        if (recoveryRef.current) {
+          connectionControllerRef.current?.stop();
+          setConnectionState("recovery");
+          return;
+        }
+        connectionControllerRef.current?.reconnectAfterResync();
+      },
+      onFailed: enterResyncRecovery,
+    });
+    resyncControllerRef.current = resyncController;
     const controller = new LiveConnectionController({
       createSocket: (url) => new WebSocket(url),
       url: () => liveWebSocketURL(window.location.origin, initialRoom.slug),
@@ -1195,15 +1235,18 @@ export function LiveRoomWorkspace({
         window.clearTimeout(usageTimerRef.current);
       window.removeEventListener("online", onOnline);
       window.removeEventListener("offline", onOffline);
+      resyncController.stop();
       controller.stop();
       operationTrackerRef.current.clear();
-      bufferedAuthorityEventsRef.current = [];
+      if (resyncControllerRef.current === resyncController)
+        resyncControllerRef.current = undefined;
       if (connectionControllerRef.current === controller)
         connectionControllerRef.current = undefined;
       if (connectionWorkStopRef.current) {
         connectionWorkStopRef.current();
         connectionWorkStopRef.current = undefined;
       }
+      stopResyncWork();
     };
     // The room slug is the connection identity for this component.
     // eslint-disable-next-line react-hooks/exhaustive-deps
