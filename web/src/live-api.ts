@@ -81,6 +81,9 @@ export type LiveServiceConfig = {
   roomLifetimeSeconds: number;
 };
 
+export type LiveReconnectProbeResult =
+  "authorized" | "authentication_required" | "room_unavailable" | "retry";
+
 export type LiveRoomCreateRequest = {
   password?: string;
   documents: Array<{
@@ -158,6 +161,28 @@ export async function getLiveRoom(
     throw new LiveAPIError(0, "network_error");
   }
   return normalizeLiveRoomSnapshot(response);
+}
+
+export async function probeLiveRoomReconnect(
+  api: LiveAPI,
+  slug: string,
+  clientID?: string,
+): Promise<LiveReconnectProbeResult> {
+  try {
+    await getLiveRoom(api, slug, undefined, clientID);
+    return "authorized";
+  } catch (error: unknown) {
+    if (!(error instanceof LiveAPIError)) return "retry";
+    switch (error.code) {
+      case "password_required":
+        return "authentication_required";
+      case "not_found":
+      case "room_expired":
+        return "room_unavailable";
+      default:
+        return "retry";
+    }
+  }
 }
 
 export async function getLiveServiceConfig(

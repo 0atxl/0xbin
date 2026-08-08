@@ -12,6 +12,10 @@ header. Invalid origins receive HTTP `403`. Missing, expired, or otherwise
 unavailable rooms use the generic HTTP `404` response. A protected room
 requires its valid, short-lived, HttpOnly room-access cookie before upgrade;
 an unauthorized request receives HTTP `401` and does not establish a WebSocket.
+Browsers can surface that pre-upgrade rejection only as an abnormal close. The
+client probes the authenticated HTTP bootstrap before retrying such a close,
+opens the password gate only for `password_required`, and uses bounded backoff
+for transient failures. The probe and reconnect budgets prevent request loops.
 
 After a successful `101` upgrade, the client must promptly send one text
 `join` message:
@@ -28,9 +32,10 @@ After a successful `101` upgrade, the client must promptly send one text
 
 `session_id` preserves a participant identity across reconnect grace;
 `client_id` identifies submitted operations. Both are client-generated opaque
-identifiers. The revision set must describe the HTTP bootstrap from which the
-client is joining. A malformed or missing join closes the socket with close
-code `1002`; a missing session ID closes it with `1008`.
+identifiers and remain stable while the same page renews an expired access
+session. The revision set must describe the HTTP bootstrap from which the client
+is joining. A malformed or missing join closes the socket with close code
+`1002`; a missing session ID closes it with `1008`.
 
 ## Ordering and resynchronization
 

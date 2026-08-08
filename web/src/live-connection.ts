@@ -1,6 +1,13 @@
 export type LiveConnectionState =
   "connecting" | "connected" | "reconnecting" | "offline" | "recovery";
 
+export type LiveReconnectProbeResult =
+  | "authorized"
+  | "authentication_required"
+  | "room_unavailable"
+  | "removed"
+  | "retry";
+
 export type LiveSocketEvent = {
   data?: unknown;
   code?: number;
@@ -27,8 +34,11 @@ export type LiveConnectionOptions = {
   onAuthenticationRequired: () => void;
   onRemoved?: () => void;
   onRoomFull?: () => void;
+  onRoomUnavailable?: () => void;
+  onReconnectExhausted?: () => void;
   onWork: (active: boolean) => void;
   isOnline: () => boolean;
+  probeReconnect?: () => Promise<LiveReconnectProbeResult>;
   random?: () => number;
   setTimer?: (callback: () => void, delay: number) => number;
   clearTimer?: (timer: number) => void;
@@ -36,6 +46,7 @@ export type LiveConnectionOptions = {
   joinTimeoutMs?: number;
   retryBaseMs?: number;
   retryMaxMs?: number;
+  maxReconnectAttempts?: number;
 };
 
 const socketOpen = 1;
@@ -55,11 +66,14 @@ export class LiveConnectionController {
   private readonly joinTimeoutMs: number;
   private readonly retryBaseMs: number;
   private readonly retryMaxMs: number;
+  private readonly maxReconnectAttempts: number;
   private socket: LiveSocket | undefined;
   private reconnectTimer: number | undefined;
   private connectTimer: number | undefined;
   private joinTimer: number | undefined;
   private stopped = false;
+  private probing = false;
+  private probeGeneration = 0;
   private joined = false;
   private attempt = 0;
   private state: LiveConnectionState = "offline";
@@ -72,6 +86,7 @@ export class LiveConnectionController {
     this.joinTimeoutMs = options.joinTimeoutMs ?? 10_000;
     this.retryBaseMs = options.retryBaseMs ?? 250;
     this.retryMaxMs = options.retryMaxMs ?? 5_000;
+    this.maxReconnectAttempts = options.maxReconnectAttempts ?? 8;
   }
 
   start() {
@@ -81,6 +96,7 @@ export class LiveConnectionController {
 
   stop() {
     this.stopped = true;
+    this.cancelProbe();
     this.clearTimers();
     const socket = this.socket;
     this.socket = undefined;
@@ -90,7 +106,12 @@ export class LiveConnectionController {
   }
 
   online() {
-    if (this.stopped || this.socket || this.reconnectTimer !== undefined)
+    if (
+      this.stopped ||
+      this.socket ||
+      this.probing ||
+      this.reconnectTimer !== undefined
+    )
       return;
     this.attempt = 0;
     this.connect();
@@ -98,6 +119,7 @@ export class LiveConnectionController {
 
   offline() {
     if (this.stopped) return;
+    this.cancelProbe();
     this.clearReconnectTimer();
     const socket = this.socket;
     this.socket = undefined;
@@ -204,6 +226,56 @@ export class LiveConnectionController {
       return;
     }
     this.attempt += 1;
+    if (this.options.probeReconnect) {
+      this.probeBeforeReconnect();
+      return;
+    }
+    this.retryOrExhaust();
+  }
+
+  private probeBeforeReconnect() {
+    if (this.stopped || this.probing || !this.options.isOnline()) {
+      if (!this.stopped && !this.options.isOnline()) this.setState("offline");
+      return;
+    }
+    this.probing = true;
+    const generation = ++this.probeGeneration;
+    this.setState("reconnecting");
+    void this.options.probeReconnect!()
+      .then((result) => {
+        if (!this.isCurrentProbe(generation)) return;
+        this.probing = false;
+        switch (result) {
+          case "authentication_required":
+            this.setState("offline");
+            this.options.onAuthenticationRequired();
+            return;
+          case "room_unavailable":
+            this.setState("offline");
+            this.options.onRoomUnavailable?.();
+            return;
+          case "removed":
+            this.setState("offline");
+            this.options.onRemoved?.();
+            return;
+          case "authorized":
+          case "retry":
+            this.retryOrExhaust();
+        }
+      })
+      .catch(() => {
+        if (!this.isCurrentProbe(generation)) return;
+        this.probing = false;
+        this.retryOrExhaust();
+      });
+  }
+
+  private retryOrExhaust() {
+    if (this.attempt >= this.maxReconnectAttempts) {
+      this.setState("offline");
+      this.options.onReconnectExhausted?.();
+      return;
+    }
     this.scheduleReconnect(this.backoffDelay());
   }
 
@@ -231,6 +303,20 @@ export class LiveConnectionController {
 
   private isCurrent(socket: LiveSocket) {
     return !this.stopped && this.socket === socket;
+  }
+
+  private isCurrentProbe(generation: number) {
+    return (
+      !this.stopped &&
+      this.probing &&
+      this.probeGeneration === generation &&
+      this.options.isOnline()
+    );
+  }
+
+  private cancelProbe() {
+    this.probing = false;
+    this.probeGeneration += 1;
   }
 
   private setState(state: LiveConnectionState) {

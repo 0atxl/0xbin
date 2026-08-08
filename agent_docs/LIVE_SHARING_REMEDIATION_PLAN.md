@@ -7,6 +7,9 @@ release audit. The live-sharing branch is not ready to merge until every phase
 below passes its gate and the final independent audit reports no unresolved
 release blocker.
 
+**Progress:** Phases 0–2 are complete. Phase 3 is next; Phases 3–7, including
+the Phase 5A maintainability gate, remain.
+
 This document does not change a settled product decision. `spec.md` remains
 authoritative, followed by `AGENTS.md`, the PRD, technical design, frontend
 baseline, implementation plan, and delivery phases. Stop and report any
@@ -245,6 +248,46 @@ behavior.
   WebSocket contract.
 - `make lint`, `make test`, and `make build` pass.
 
+## Phase 5A — Remove stale code and reduce maintenance concentration
+
+**Severity:** Maintainability release gate
+
+**Objective:** Leave the completed live-sharing implementation understandable,
+reachable, and cohesive without changing settled behavior or performing
+line-count-driven refactors.
+
+### Work
+
+- Inventory live-sharing production code, tests, configuration, schemas, and
+  documentation for abandoned prototypes, obsolete compatibility paths,
+  unreachable branches, unused state, redundant helpers, and duplicated logic.
+- Use compiler, lint, test, and targeted reachability evidence before removing
+  code. Do not treat code as stale solely because a test does not execute it.
+- Review files with concentrated responsibilities, especially the frontend
+  workspace, connection/reconciliation controllers, hub and transport, HTTP
+  test suites, and browser journey runner.
+- Split a large file only when a cohesive responsibility can move behind a
+  small, explicit interface. Record why any remaining large file is better kept
+  together; file length alone is not a defect.
+- Consolidate duplicated validation, error classification, state transitions,
+  and test setup where doing so makes the authoritative behavior clearer.
+- Preserve ordered migrations, public API and WebSocket contracts, encrypted
+  envelopes, URLs, burn semantics, runtime limits, and all release-regression
+  coverage.
+- Add or adjust focused tests for every behavior-bearing cleanup. Do not add a
+  new framework, product feature, or speculative abstraction in this phase.
+
+### Gate
+
+- Every removal and file split has reachability or responsibility evidence in
+  the phase report.
+- No known dead branch, abandoned prototype, duplicated authority path, or
+  misleading compatibility fallback remains in live-sharing scope.
+- Large live-sharing files have either been decomposed along tested boundaries
+  or explicitly justified as cohesive.
+- `make format`, `make lint`, `make test`, `make test-race`, `make test-e2e`,
+  `make build`, and `git diff --check` pass.
+
 ## Phase 6 — Prepare the complete release candidate
 
 **Severity:** Release-process gate
@@ -291,8 +334,8 @@ same audit.
 
 ### Audit scope
 
-- Recheck every acceptance criterion in Phases 1–6 against implementation and
-  tests.
+- Recheck every acceptance criterion in Phases 1–6, including Phase 5A,
+  against implementation and tests.
 - Reproduce the durable retry, stale/failed snapshot, and protected post-expiry
   reconnect races.
 - Review collaboration convergence, durable acknowledgement, idempotency,
@@ -304,6 +347,8 @@ same audit.
 - Review in-memory bounds, goroutine/ticker cancellation, locks, SQLite
   transactions, logs, cookies, URLs, browser storage, and durable data for
   sensitive material.
+- Review stale and unreachable code findings, remaining large-file
+  justifications, responsibility boundaries, and duplicated authority paths.
 - Confirm the pull request's required `verify` check directly.
 
 ### Required report

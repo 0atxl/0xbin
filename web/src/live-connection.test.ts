@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   LiveConnectionController,
+  type LiveReconnectProbeResult,
   type LiveSocket,
   type LiveSocketEvent,
 } from "./live-connection";
@@ -50,7 +51,10 @@ class FakeSocket implements LiveSocket {
   }
 }
 
-function controllerHarness() {
+function controllerHarness(options?: {
+  probeReconnect?: () => Promise<LiveReconnectProbeResult>;
+  maxReconnectAttempts?: number;
+}) {
   const sockets: FakeSocket[] = [];
   const timers = new Map<number, () => void>();
   const states: string[] = [];
@@ -61,6 +65,8 @@ function controllerHarness() {
   let authenticationRequired = 0;
   let removed = 0;
   let roomFull = 0;
+  let roomUnavailable = 0;
+  let reconnectExhausted = 0;
   const controller = new LiveConnectionController({
     createSocket: () => {
       const socket = new FakeSocket();
@@ -75,6 +81,8 @@ function controllerHarness() {
     onAuthenticationRequired: () => authenticationRequired++,
     onRemoved: () => removed++,
     onRoomFull: () => roomFull++,
+    onRoomUnavailable: () => roomUnavailable++,
+    onReconnectExhausted: () => reconnectExhausted++,
     onWork: (active) => work.push(active),
     isOnline: () => online,
     random: () => 0.5,
@@ -87,6 +95,8 @@ function controllerHarness() {
     connectTimeoutMs: 10,
     joinTimeoutMs: 10,
     retryBaseMs: 10,
+    probeReconnect: options?.probeReconnect,
+    maxReconnectAttempts: options?.maxReconnectAttempts,
   });
   return {
     controller,
@@ -101,6 +111,8 @@ function controllerHarness() {
     authenticationRequired: () => authenticationRequired,
     removed: () => removed,
     roomFull: () => roomFull,
+    roomUnavailable: () => roomUnavailable,
+    reconnectExhausted: () => reconnectExhausted,
     runOnlyTimer() {
       const [id, callback] = [...timers.entries()][0] ?? [];
       if (id === undefined || !callback) throw new Error("no timer queued");
@@ -178,5 +190,86 @@ describe("LiveConnectionController", () => {
     expect(full.roomFull()).toBe(1);
     expect(full.timers.size).toBe(0);
     expect(full.states.at(-1)).toBe("offline");
+  });
+
+  it("probes an abnormal protected reconnect before requesting a password", async () => {
+    let probes = 0;
+    const harness = controllerHarness({
+      probeReconnect: async () => {
+        probes += 1;
+        return "authentication_required";
+      },
+    });
+    harness.controller.start();
+    harness.sockets[0].closed(1006);
+    await Promise.resolve();
+
+    expect(probes).toBe(1);
+    expect(harness.authenticationRequired()).toBe(1);
+    expect(harness.timers.size).toBe(0);
+    expect(harness.states.at(-1)).toBe("offline");
+  });
+
+  it("distinguishes unavailable and removed protected sessions", async () => {
+    const unavailable = controllerHarness({
+      probeReconnect: async () => "room_unavailable",
+    });
+    unavailable.controller.start();
+    unavailable.sockets[0].closed(1006);
+    await Promise.resolve();
+    expect(unavailable.roomUnavailable()).toBe(1);
+    expect(unavailable.timers.size).toBe(0);
+
+    const removed = controllerHarness({
+      probeReconnect: async () => "removed",
+    });
+    removed.controller.start();
+    removed.sockets[0].closed(1006);
+    await Promise.resolve();
+    expect(removed.removed()).toBe(1);
+    expect(removed.timers.size).toBe(0);
+  });
+
+  it("bounds failed protected probes and reconnect attempts", async () => {
+    let probes = 0;
+    const harness = controllerHarness({
+      probeReconnect: async () => {
+        probes += 1;
+        return "retry";
+      },
+      maxReconnectAttempts: 2,
+    });
+    harness.controller.start();
+    harness.sockets[0].closed(1006);
+    await Promise.resolve();
+    expect(harness.timers.size).toBe(1);
+    harness.runOnlyTimer();
+    harness.sockets[1].closed(1006);
+    await Promise.resolve();
+
+    expect(probes).toBe(2);
+    expect(harness.reconnectExhausted()).toBe(1);
+    expect(harness.timers.size).toBe(0);
+    expect(harness.states.at(-1)).toBe("offline");
+  });
+
+  it("ignores an authentication probe completed after going offline", async () => {
+    let resolveProbe: ((result: LiveReconnectProbeResult) => void) | undefined;
+    const harness = controllerHarness({
+      probeReconnect: () =>
+        new Promise((resolve) => {
+          resolveProbe = resolve;
+        }),
+    });
+    harness.controller.start();
+    harness.sockets[0].closed(1006);
+    harness.setOnline(false);
+    harness.controller.offline();
+    resolveProbe?.("authentication_required");
+    await Promise.resolve();
+
+    expect(harness.authenticationRequired()).toBe(0);
+    expect(harness.timers.size).toBe(0);
+    expect(harness.states.at(-1)).toBe("offline");
   });
 });

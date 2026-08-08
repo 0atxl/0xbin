@@ -114,6 +114,23 @@ async function liveEditorText(locator) {
   });
 }
 
+async function installLiveSocketControl(page) {
+  let currentSocket;
+  await page.routeWebSocket(/\/api\/v1\/live\/[^/]+\/ws$/, (socket) => {
+    currentSocket = socket;
+    socket.connectToServer();
+  });
+  return {
+    async disconnect() {
+      assert.ok(currentSocket, "expected an active live WebSocket");
+      await currentSocket.close({
+        code: 4001,
+        reason: "simulate access-session reconnect",
+      });
+    },
+  };
+}
+
 const dataDir = await mkdtemp(join(tmpdir(), "0xbin-e2e-"));
 const binaryPath = join(dataDir, "0xbin");
 let browser;
@@ -602,6 +619,7 @@ try {
   await acknowledgementContext.close();
 
   progress("checking protected LiveBin access and hostile text rendering");
+  const protectedCreatorSocket = await installLiveSocketControl(page);
   await page.goto(webOrigin);
   await page.getByRole("button", { name: "Open LiveBin" }).click();
   await page.getByText("Require password", { exact: true }).click();
@@ -617,9 +635,44 @@ try {
   await page.locator(".live-connection-status").click();
   await expectVisible(page, "Room controls");
   await page.locator(".live-connection-status").click();
+  progress("checking protected creator reauthentication after access expiry");
+  const protectedSlug = new URL(protectedLiveURL).pathname.split("/").pop();
+  const protectedCreatorCookies = await page
+    .context()
+    .cookies(`${apiOrigin}/api/v1/live/${protectedSlug}`);
+  const protectedCreatorToken = protectedCreatorCookies.find(
+    (cookie) => cookie.name === "oxbin_live_creator",
+  );
+  assert.ok(
+    protectedCreatorToken?.httpOnly,
+    "protected creator capability should be an HttpOnly cookie",
+  );
+  await page.context().clearCookies({ name: "oxbin_live_session" });
+  await protectedCreatorSocket.disconnect();
+  await expectVisible(page, "Room password");
+  await page.getByLabel("Room password").fill("correct horse");
+  await page.getByRole("button", { name: "Unlock" }).click();
+  await expectVisible(page, "Connected");
+  await page.locator(".live-connection-status").click();
+  await expectVisible(page, "Room controls");
+  const renewedCreatorCookies = await page
+    .context()
+    .cookies(`${apiOrigin}/api/v1/live/${protectedSlug}`);
+  assert.equal(
+    renewedCreatorCookies.some(
+      (cookie) =>
+        cookie.name === "oxbin_live_creator" &&
+        cookie.value === protectedCreatorToken.value,
+    ),
+    true,
+    "password renewal must preserve the creator capability cookie",
+  );
+  await page.locator(".live-connection-status").click();
   progress("checking protected LiveBin password gate");
   const protectedContext = await browser.newContext();
   const protectedVisitor = await protectedContext.newPage();
+  const protectedVisitorSocket =
+    await installLiveSocketControl(protectedVisitor);
   await protectedVisitor.goto(protectedLiveURL);
   await expectVisible(protectedVisitor, "Room password");
   await assertNoSeriousAccessibilityIssues(
@@ -638,10 +691,21 @@ try {
     false,
     "live room text must not execute as HTML",
   );
+  progress(
+    "checking protected participant reauthentication after access expiry",
+  );
+  await protectedContext.clearCookies({ name: "oxbin_live_session" });
+  await protectedVisitorSocket.disconnect();
+  await expectVisible(protectedVisitor, "Room password");
+  await protectedVisitor.getByLabel("Room password").fill("correct horse");
+  await protectedVisitor.getByRole("button", { name: "Unlock" }).click();
+  await expectVisible(protectedVisitor, "Connected");
   await protectedContext.close();
 
   const reconnectContext = await browser.newContext();
   const reconnectCreator = await reconnectContext.newPage();
+  const reconnectCreatorSocket =
+    await installLiveSocketControl(reconnectCreator);
   await reconnectCreator.goto(webOrigin);
   await reconnectCreator.getByRole("button", { name: "Open LiveBin" }).click();
   await reconnectCreator
@@ -650,6 +714,17 @@ try {
   await reconnectCreator.waitForURL((url) => url.pathname.startsWith("/live/"));
   await reconnectCreator.reload();
   await expectVisible(reconnectCreator, "Connected");
+  await reconnectCreator.locator(".live-connection-status").click();
+  await expectVisible(reconnectCreator, "Room controls");
+  await reconnectCreator.locator(".live-connection-status").click();
+  await reconnectContext.clearCookies({ name: "oxbin_live_session" });
+  await reconnectCreatorSocket.disconnect();
+  await expectVisible(reconnectCreator, "Connected");
+  await assert.equal(
+    await reconnectCreator.getByText("Room password", { exact: true }).count(),
+    0,
+    "unprotected reconnect must not show the password gate",
+  );
   await reconnectCreator.locator(".live-connection-status").click();
   await expectVisible(reconnectCreator, "Room controls");
   await reconnectContext.close();

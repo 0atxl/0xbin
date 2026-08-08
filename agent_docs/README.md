@@ -5,9 +5,10 @@ delivery plans, and tooling notes intended for AI coding agents and
 maintainers working on the project.
 
 The live-sharing extension is implemented through Steps 0A–13 of its
-implementation plan. Release-hardening Phase 1 is complete, and Phases 2–7
-remain. Its settled scope includes creator-operated room-wide watch-only mode,
-but excludes accounts and per-participant permission roles.
+implementation plan. Release-hardening Phases 1–2 are complete, and Phases
+3–7, including the Phase 5A maintainability gate, remain. Its settled scope
+includes creator-operated room-wide watch-only mode, but excludes accounts and
+per-participant permission roles.
 
 The repository-level instructions remain in [`AGENTS.md`](../AGENTS.md) at
 the repository root because agent tools discover that filename there.

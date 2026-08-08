@@ -17,6 +17,7 @@ import {
   createLiveAPI,
   getLiveRoom,
   liveWebSocketURL,
+  probeLiveRoomReconnect,
   type LiveRoomDocument,
   type LiveRoomSnapshot,
 } from "./live-api";
@@ -70,11 +71,15 @@ type LiveConnection = LiveConnectionState;
 
 export function LiveRoomWorkspace({
   initialRoom,
+  clientID,
+  sessionID,
   onStatus,
   onSaveAsPaste,
   onReauthenticate,
 }: {
   initialRoom: LiveRoomSnapshot;
+  clientID: string;
+  sessionID: string;
   onStatus: (message: string) => void;
   onSaveAsPaste: (draft: {
     title: string;
@@ -83,8 +88,6 @@ export function LiveRoomWorkspace({
   }) => void;
   onReauthenticate: () => void;
 }) {
-  const clientID = useRef(randomLiveID("client-")).current;
-  const sessionID = useRef(randomLiveID("session-")).current;
   const api = useMemo(() => createLiveAPI(), []);
   const [documents, setDocuments] = useState(() =>
     normalizeLiveDocuments(initialRoom.documents),
@@ -1154,6 +1157,18 @@ export function LiveRoomWorkspace({
           "Room is full. Ask someone to leave and reopen the link.",
         );
       },
+      onRoomUnavailable: () => {
+        fatalRef.current = true;
+        operationTrackerRef.current.clear();
+        setConnectionState("offline");
+        statusRef.current("Live room is no longer available");
+      },
+      onReconnectExhausted: () => {
+        setConnectionState("offline");
+        statusRef.current(
+          "Could not reconnect to the live room. Reopen the room to try again.",
+        );
+      },
       onWork: (active) => {
         if (active && !connectionWorkStopRef.current) {
           connectionWorkStopRef.current = beginLoading();
@@ -1163,6 +1178,8 @@ export function LiveRoomWorkspace({
         }
       },
       isOnline: () => navigator.onLine !== false,
+      probeReconnect: () =>
+        probeLiveRoomReconnect(api, initialRoom.slug, clientID),
     });
     connectionControllerRef.current = controller;
     controller.start();

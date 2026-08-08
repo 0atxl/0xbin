@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   createLiveAPI,
   createLiveRoom,
@@ -22,6 +22,7 @@ import { beginLoading } from "./loading";
 import { utf8Bytes } from "./create";
 import { LiveRoomWorkspace } from "./live-room";
 import { formatLiveRoomLifetime } from "./live-room-ui";
+import { randomLiveID } from "./live-collab";
 
 const fallbackLiveServiceConfig: LiveServiceConfig = {
   maxBytes: fallbackLiveRoomBytes,
@@ -279,6 +280,8 @@ function LiveRoomPage({
   const [password, setPassword] = useState("");
   const [passwordError, setPasswordError] = useState(false);
   const [unlocking, setUnlocking] = useState(false);
+  const clientID = useRef(randomLiveID("client-")).current;
+  const sessionID = useRef(randomLiveID("session-")).current;
 
   useEffect(() => {
     onSecurityGateChange(state === "password");
@@ -417,6 +420,8 @@ function LiveRoomPage({
     <>
       <LiveRoomWorkspace
         initialRoom={room}
+        clientID={clientID}
+        sessionID={sessionID}
         onStatus={onStatus}
         onSaveAsPaste={onSaveAsPaste}
         onReauthenticate={() => {

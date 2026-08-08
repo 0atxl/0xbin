@@ -217,6 +217,13 @@ process:
   in SQLite. After a process restart, an existing creator-capability cookie has
   no authority; a password unlock restores ordinary room access only, and the
   room has no creator recovery flow.
+- A browser can hide the HTTP status from a rejected pre-upgrade WebSocket
+  request. After an abnormal reconnect close, the frontend therefore probes the
+  authenticated HTTP bootstrap once before each bounded retry. A
+  `password_required` response opens the password gate; room unavailability or
+  removal stops reconnecting; transient network and overload failures use the
+  capped backoff. The client and session IDs survive the password gate so the
+  renewed connection reclaims its participant and preserves creator authority.
 - Presence and ordinary room password sessions remain process memory only.
   A reconnect-grace expiry publishes a deterministic participant-removal event
   before process-local presence and cursor state are discarded.

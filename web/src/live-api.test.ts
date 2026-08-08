@@ -7,6 +7,7 @@ import {
   LiveAPIError,
   liveAPIURL,
   liveWebSocketURL,
+  probeLiveRoomReconnect,
 } from "./live-api";
 
 describe("live API client", () => {
@@ -141,6 +142,33 @@ describe("live API client", () => {
         status: 401,
         code: "password_required",
       }),
+    );
+  });
+
+  it("classifies protected reconnect bootstrap outcomes", async () => {
+    const request = vi.fn();
+    const api = { request };
+
+    request.mockRejectedValueOnce(
+      new LiveAPIError(401, {
+        code: "password_required",
+        message: "Password required",
+      }),
+    );
+    await expect(
+      probeLiveRoomReconnect(api, "quietbrightotter", "client-one"),
+    ).resolves.toBe("authentication_required");
+
+    request.mockRejectedValueOnce(
+      new LiveAPIError(404, { code: "not_found", message: "Not found" }),
+    );
+    await expect(probeLiveRoomReconnect(api, "quietbrightotter")).resolves.toBe(
+      "room_unavailable",
+    );
+
+    request.mockRejectedValueOnce(new LiveAPIError(0, "network_error"));
+    await expect(probeLiveRoomReconnect(api, "quietbrightotter")).resolves.toBe(
+      "retry",
     );
   });
 });
