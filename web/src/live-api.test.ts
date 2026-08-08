@@ -2,9 +2,11 @@ import { describe, expect, it, vi } from "vitest";
 import {
   createLiveAPI,
   createLiveRoom,
+  getLiveServiceConfig,
   getLiveRoom,
   LiveAPIError,
   liveAPIURL,
+  liveWebSocketURL,
 } from "./live-api";
 
 describe("live API client", () => {
@@ -15,6 +17,12 @@ describe("live API client", () => {
     expect(() => liveAPIURL("https://0xbin.app", "/api/v1/pastes")).toThrow(
       "live API paths",
     );
+  });
+
+  it("builds same-origin WebSocket URLs without query or fragment data", () => {
+    expect(
+      liveWebSocketURL("https://0xbin.app/#secret", "quiet bright otter"),
+    ).toBe("wss://0xbin.app/api/v1/live/quiet%20bright%20otter/ws");
   });
 
   it("sends the password only in the room-create request body", async () => {
@@ -48,6 +56,12 @@ describe("live API client", () => {
       expires_at: "2026-08-06T12:00:00Z",
       password_required: false,
       metadata_revision: 0,
+      max_bytes: 1048576,
+      max_tabs: 8,
+      max_writers: 10,
+      max_viewers: 100,
+      max_participants: 110,
+      room_lifetime_seconds: 86400,
       documents: [
         {
           id: "main",
@@ -63,11 +77,38 @@ describe("live API client", () => {
       getLiveRoom({ request }, "quietbrightotter", controller.signal),
     ).resolves.toMatchObject({
       slug: "quietbrightotter",
+      maxBytes: 1048576,
+      maxTabs: 8,
       documents: [{ content: "hello" }],
     });
     expect(request).toHaveBeenCalledWith(
       "/api/v1/live/quietbrightotter",
       expect.objectContaining({ signal: controller.signal }),
+    );
+  });
+
+  it("loads the operator's public create limits", async () => {
+    const request = vi.fn().mockResolvedValue({
+      max_bytes: 2 << 20,
+      max_document_bytes: 2 << 20,
+      max_tabs: 4,
+      max_writers: 3,
+      max_viewers: 7,
+      max_participants: 10,
+      room_lifetime_seconds: 7200,
+    });
+    await expect(getLiveServiceConfig({ request })).resolves.toEqual({
+      maxBytes: 2 << 20,
+      maxDocumentBytes: 2 << 20,
+      maxTabs: 4,
+      maxWriters: 3,
+      maxViewers: 7,
+      maxParticipants: 10,
+      roomLifetimeSeconds: 7200,
+    });
+    expect(request).toHaveBeenCalledWith(
+      "/api/v1/live/config",
+      expect.objectContaining({ cache: "no-store" }),
     );
   });
 

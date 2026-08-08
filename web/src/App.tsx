@@ -85,8 +85,8 @@ const editorHighlightStyle = HighlightStyle.define([
   { tag: tags.comment, color: "var(--syntax-comment)", fontStyle: "italic" },
 ]);
 
-function currentRoute(hostedService: boolean): Route {
-  return resolveRoute(window.location.pathname, hostedService);
+function currentRoute(hostedService: boolean, liveEnabled: boolean): Route {
+  return resolveRoute(window.location.pathname, hostedService, liveEnabled);
 }
 
 export function App() {
@@ -94,7 +94,10 @@ export function App() {
     window.location.hostname,
     document.documentElement.dataset.hostedService,
   );
-  const [route, setRoute] = useState<Route>(() => currentRoute(hostedService));
+  const liveEnabled = document.documentElement.dataset.liveEnabled !== "false";
+  const [route, setRoute] = useState<Route>(() =>
+    currentRoute(hostedService, liveEnabled),
+  );
   const [theme, setTheme] = useState<Theme>(() =>
     loadTheme(
       localStorage,
@@ -110,13 +113,16 @@ export function App() {
   const [copyFailed, setCopyFailed] = useState(false);
   const [liveDraft, setLiveDraft] = useState<LiveDraft>(() => blankLiveDraft());
   const [liveGateOpen, setLiveGateOpen] = useState(false);
+  const [createDraftSeed, setCreateDraftSeed] = useState<CreateDraft>(() =>
+    defaultCreateDraft(),
+  );
   const createDraftRef = useRef(defaultCreateDraft());
 
   useEffect(() => {
-    const onPopState = () => setRoute(currentRoute(hostedService));
+    const onPopState = () => setRoute(currentRoute(hostedService, liveEnabled));
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
-  }, [hostedService]);
+  }, [hostedService, liveEnabled]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -140,11 +146,12 @@ export function App() {
   function navigate(path: string) {
     setKeyGateOpen(false);
     window.history.pushState({}, "", path);
-    setRoute(currentRoute(hostedService));
+    setRoute(currentRoute(hostedService, liveEnabled));
   }
 
   function navigateToNewPaste() {
     createDraftRef.current = defaultCreateDraft();
+    setCreateDraftSeed(defaultCreateDraft());
     setLiveDraft(blankLiveDraft());
     navigate("/");
   }
@@ -235,6 +242,23 @@ export function App() {
     }
   }
 
+  function handleLiveSaveAsPaste(draft: {
+    title: string;
+    language: string;
+    content: string;
+  }) {
+    const nextDraft: CreateDraft = {
+      ...defaultCreateDraft(),
+      title: draft.title,
+      language: draft.language,
+      content: draft.content,
+    };
+    createDraftRef.current = nextDraft;
+    setCreateDraftSeed(nextDraft);
+    navigate("/");
+    showStatus("Live room content ready to save");
+  }
+
   return (
     <div
       className={
@@ -253,7 +277,8 @@ export function App() {
             <LogoIcon />
           </button>
           <div className="header-actions">
-            {route.kind === "create" || route.kind === "paste" ? (
+            {liveEnabled &&
+            (route.kind === "create" || route.kind === "paste") ? (
               <button
                 className="header-live-bin"
                 type="button"
@@ -279,6 +304,7 @@ export function App() {
 
       {route.kind === "create" ? (
         <CreationCanvas
+          initialDraft={createDraftSeed}
           onStatus={showStatus}
           onCreated={handleCreated}
           onDraftChange={(draft) => {
@@ -313,6 +339,8 @@ export function App() {
             copyFailed={copyFailed}
             shareURL={shareURL}
             onRetryCopy={retryCopy}
+            onStatus={showStatus}
+            onSaveAsPaste={handleLiveSaveAsPaste}
           />
         </Suspense>
       ) : (
@@ -359,15 +387,17 @@ export function App() {
 }
 
 function CreationCanvas({
+  initialDraft,
   onStatus,
   onCreated,
   onDraftChange,
 }: {
+  initialDraft: CreateDraft;
   onStatus: (message: string) => void;
   onCreated: (created: CreatedPaste) => Promise<void>;
   onDraftChange: (draft: CreateDraft) => void;
 }) {
-  const [draft, setDraft] = useState<CreateDraft>(() => defaultCreateDraft());
+  const [draft, setDraft] = useState<CreateDraft>(() => initialDraft);
   const [errors, setErrors] = useState<ReturnType<typeof validateDraft>>({});
   const [submitting, setSubmitting] = useState(false);
   const contentBytes = utf8Bytes(draft.content);

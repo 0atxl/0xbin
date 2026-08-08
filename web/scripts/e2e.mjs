@@ -104,6 +104,16 @@ async function createPaste(page, content, options = {}) {
   return page.url();
 }
 
+async function liveEditorText(locator) {
+  return locator.evaluate((content) => {
+    const copy = content.cloneNode(true);
+    copy.querySelectorAll(".live-remote-caret").forEach((cursor) => {
+      cursor.remove();
+    });
+    return copy.textContent;
+  });
+}
+
 const dataDir = await mkdtemp(join(tmpdir(), "0xbin-e2e-"));
 const binaryPath = join(dataDir, "0xbin");
 let browser;
@@ -117,6 +127,12 @@ try {
       OXBIN_LISTEN_ADDR: `127.0.0.1:${apiPort}`,
       OXBIN_BASE_URL: webOrigin,
       OXBIN_DATA_DIR: dataDir,
+      OXBIN_LIVE_MAX_WRITERS: "2",
+      OXBIN_LIVE_MAX_VIEWERS: "1",
+      OXBIN_LIVE_MAX_PARTICIPANTS: "3",
+      OXBIN_LIVE_HEARTBEAT_INTERVAL: "5s",
+      OXBIN_LIVE_RECONNECT_GRACE: "5s",
+      OXBIN_LIVE_PARTICIPANT_TIMEOUT: "10s",
     },
   });
   await waitFor(`${apiOrigin}/health/ready`);
@@ -253,6 +269,429 @@ try {
     0,
     "validation should use the notification stack instead of bottom text",
   );
+
+  progress("checking LiveBin room, tabs, collaboration, and paste export");
+  await page.goto(webOrigin);
+  await page.getByRole("button", { name: "Open LiveBin" }).click();
+  await page.getByLabel("Tab name").fill("main");
+  await page
+    .locator(".live-create-canvas .cm-content")
+    .fill("shared main content");
+  await page.getByRole("button", { name: "Create LiveBin room" }).click();
+  await page.waitForURL((url) => url.pathname.startsWith("/live/"));
+  const liveRoomURL = page.url();
+  await expectVisible(page, "Connected");
+  await assertNoSeriousAccessibilityIssues(page, "live room");
+  for (const width of [700, 420, 390]) {
+    await page.setViewportSize({ width, height: 844 });
+    await assert.equal(
+      await page.evaluate(() => {
+        const canvas = document.querySelector(".live-room-canvas");
+        return (
+          canvas instanceof HTMLElement &&
+          canvas.scrollWidth <= document.documentElement.clientWidth
+        );
+      }),
+      true,
+      `live room should not overflow horizontally at ${width}px`,
+    );
+  }
+  await page.setViewportSize({ width: 1280, height: 900 });
+  progress("checking LiveBin participant popover interactions");
+  const participantTrigger = page.locator(".live-connection-status");
+  const participantPopover = page.locator(".live-participant-popover");
+  await participantTrigger.hover();
+  await participantPopover.waitFor({ state: "visible" });
+  await page.locator(".live-room-identity").hover();
+  await participantPopover.waitFor({ state: "hidden" });
+  await participantTrigger.click();
+  await participantPopover.waitFor({ state: "visible" });
+  await page.keyboard.press("Escape");
+  await participantPopover.waitFor({ state: "hidden" });
+  await assertFocused(participantTrigger);
+  await page.locator(".live-code-editor .cm-content").click();
+  await participantTrigger.focus();
+  await participantPopover.waitFor({ state: "visible" });
+  await page.locator(".live-code-editor .cm-content").click();
+  await participantPopover.waitFor({ state: "hidden" });
+  const collaborator = await context.newPage();
+  await collaborator.goto(liveRoomURL);
+  await expectVisible(collaborator, "Connected");
+  const rapidText = "shared rapid α🙂 edits";
+  const collaboratorEditor = collaborator.locator(
+    ".live-code-editor .cm-content",
+  );
+  await collaboratorEditor.click();
+  await collaborator.keyboard.press("ControlOrMeta+A");
+  await collaboratorEditor.pressSequentially(rapidText);
+  await assert.equal(
+    await liveEditorText(collaboratorEditor),
+    rapidText,
+    "rapid keyboard input should remain in the local collaborative editor",
+  );
+  await page.waitForFunction((expected) => {
+    const content = document.querySelector(".live-code-editor .cm-content");
+    if (!content) return false;
+    const copy = content.cloneNode(true);
+    copy.querySelectorAll(".live-remote-caret").forEach((cursor) => {
+      cursor.remove();
+    });
+    return copy.textContent === expected;
+  }, rapidText);
+  await page
+    .locator(".live-code-editor .cm-content")
+    .waitFor({ state: "visible" });
+  await page.waitForFunction(
+    () => document.querySelectorAll(".live-remote-caret").length > 0,
+  );
+  await page.locator(".live-connection-status").click();
+  await expectVisible(page, "joined");
+  await expectVisible(page, "main");
+  await page.locator(".live-connection-status").click();
+  const rapidSnapshot = await page.evaluate(async () => {
+    const response = await fetch(
+      `/api/v1/live/${location.pathname.split("/").pop()}`,
+    );
+    return response.json();
+  });
+  await assert.equal(
+    rapidSnapshot.documents.some((document) => document.content === rapidText),
+    true,
+    "rapid local and remote edits should match the authoritative HTTP snapshot",
+  );
+  await context.setOffline(true);
+  const offlineText = `${rapidText} offline replay`;
+  await collaboratorEditor.pressSequentially(" offline replay");
+  await assert.equal(
+    await liveEditorText(collaboratorEditor),
+    offlineText,
+    "offline text should remain available in the local editor",
+  );
+  await page.waitForFunction(
+    () =>
+      document.querySelector(".live-add-tab") instanceof HTMLButtonElement &&
+      document.querySelector(".live-add-tab").disabled,
+  );
+  await context.setOffline(false);
+  await page.waitForFunction((expected) => {
+    const content = document.querySelector(".live-code-editor .cm-content");
+    if (!content) return false;
+    const copy = content.cloneNode(true);
+    copy.querySelectorAll(".live-remote-caret").forEach((cursor) => {
+      cursor.remove();
+    });
+    return copy.textContent === expected;
+  }, offlineText);
+  const replaySnapshot = await page.evaluate(async () => {
+    const response = await fetch(
+      `/api/v1/live/${location.pathname.split("/").pop()}`,
+    );
+    return response.json();
+  });
+  await assert.equal(
+    replaySnapshot.documents.some(
+      (document) => document.content === offlineText,
+    ),
+    true,
+    "offline edits should converge after reconnect without structural changes",
+  );
+  await collaborator.close();
+  await page.waitForFunction(
+    () =>
+      document.querySelector(".live-participant-count")?.textContent?.trim() ===
+      "1",
+    undefined,
+    { timeout: 15_000 },
+  );
+  await page.waitForFunction(
+    () => document.querySelectorAll(".live-remote-caret").length === 0,
+    undefined,
+    { timeout: 15_000 },
+  );
+  await page.getByRole("button", { name: /Add tab/ }).click();
+  await expectVisible(page, "tab-2");
+  await page.getByRole("button", { name: "tab-2", exact: true }).click();
+  await page
+    .locator(".live-tab-strip button.is-active")
+    .filter({ hasText: "tab-2" })
+    .waitFor({ state: "visible" });
+  await page.waitForTimeout(100);
+  await page
+    .locator(".live-code-editor .cm-content")
+    .fill("second tab content");
+  await assert.equal(
+    await page.locator(".live-code-editor .cm-content").textContent(),
+    "second tab content",
+    "the active LiveBin editor should retain local text immediately",
+  );
+  await page.waitForTimeout(150);
+  await page
+    .locator(".live-room-bottom-toolbar")
+    .getByRole("button", { name: "Rename", exact: true })
+    .click();
+  await assertFocused(page.locator(".live-tab-rename-popover input"));
+  await page.keyboard.press("Escape");
+  await page.locator(".live-tab-rename-popover").waitFor({ state: "hidden" });
+  await assertFocused(
+    page
+      .locator(".live-room-bottom-toolbar")
+      .getByRole("button", { name: "Rename", exact: true }),
+  );
+  await page
+    .locator(".live-room-bottom-toolbar")
+    .getByRole("button", { name: "Rename", exact: true })
+    .click();
+  await page.locator(".live-tab-rename-popover input").fill("notes");
+  await page
+    .locator(".live-tab-rename-popover")
+    .getByRole("button", { name: "Save", exact: true })
+    .click();
+  await expectVisible(page, "notes");
+  await assert.equal(
+    await page.locator(".live-code-editor .cm-content").textContent(),
+    "second tab content",
+    "renaming a LiveBin tab should not replace its document state",
+  );
+  await page.waitForTimeout(500);
+  const liveRoomSnapshot = await page.evaluate(async () => {
+    const response = await fetch(
+      `/api/v1/live/${location.pathname.split("/").pop()}`,
+    );
+    return response.json();
+  });
+  await assert.equal(
+    liveRoomSnapshot.documents.some(
+      (document) => document.content === "second tab content",
+    ),
+    true,
+    "LiveBin edits should reach the server-authoritative document",
+  );
+  await page
+    .locator(".live-room-bottom-toolbar .custom-select > button")
+    .click();
+  await page
+    .getByRole("listbox", { name: "Language" })
+    .getByRole("button", { name: "Go", exact: true })
+    .click();
+  await expectVisible(page, "Go");
+  await page
+    .getByRole("button", { name: "Save as paste", exact: true })
+    .click();
+  await assertFocused(
+    page.getByRole("menuitem", { name: "Current tab", exact: true }),
+  );
+  await page.keyboard.press("End");
+  await assertFocused(
+    page.getByRole("menuitem", { name: "Every tab", exact: true }),
+  );
+  await page.keyboard.press("Escape");
+  await assertFocused(
+    page.getByRole("button", { name: "Save as paste", exact: true }),
+  );
+  await page
+    .getByRole("button", { name: "Save as paste", exact: true })
+    .click();
+  await page
+    .getByRole("menuitem", { name: "Current tab", exact: true })
+    .click();
+  await page.waitForURL((url) => url.pathname === "/");
+  await assert.equal(
+    await page.locator(".title-field input").inputValue(),
+    "notes",
+    "saving a LiveBin tab should carry its tab name into the paste title",
+  );
+  await page
+    .locator(".create-canvas .cm-content")
+    .waitFor({ state: "visible" });
+  await assert.equal(
+    await page.locator(".create-canvas .cm-content").textContent(),
+    "second tab content",
+    "saving the current LiveBin tab should return to the normal paste editor",
+  );
+
+  progress("checking protected LiveBin access and hostile text rendering");
+  await page.goto(webOrigin);
+  await page.getByRole("button", { name: "Open LiveBin" }).click();
+  await page.getByText("Require password", { exact: true }).click();
+  await page.locator(".live-password-field input").fill("correct horse");
+  await page
+    .locator(".live-create-canvas .cm-content")
+    .fill('<img src=x onerror="window.__liveXSS=true">');
+  await page.getByRole("button", { name: "Create LiveBin room" }).click();
+  await page.waitForURL((url) => url.pathname.startsWith("/live/"));
+  const protectedLiveURL = page.url();
+  await page.reload();
+  await expectVisible(page, "Connected");
+  await page.locator(".live-connection-status").click();
+  await expectVisible(page, "Room controls");
+  await page.locator(".live-connection-status").click();
+  progress("checking protected LiveBin password gate");
+  const protectedContext = await browser.newContext();
+  const protectedVisitor = await protectedContext.newPage();
+  await protectedVisitor.goto(protectedLiveURL);
+  await expectVisible(protectedVisitor, "Room password");
+  await assertNoSeriousAccessibilityIssues(
+    protectedVisitor,
+    "live room password gate",
+  );
+  await protectedVisitor.getByLabel("Room password").fill("wrong password");
+  await protectedVisitor.getByRole("button", { name: "Unlock" }).click();
+  await expectVisible(protectedVisitor, "Password not accepted.");
+  progress("checking protected LiveBin successful unlock");
+  await protectedVisitor.getByLabel("Room password").fill("correct horse");
+  await protectedVisitor.getByRole("button", { name: "Unlock" }).click();
+  await expectVisible(protectedVisitor, "Connected");
+  await assert.equal(
+    await protectedVisitor.evaluate(() => "__liveXSS" in window),
+    false,
+    "live room text must not execute as HTML",
+  );
+  await protectedContext.close();
+
+  const reconnectContext = await browser.newContext();
+  const reconnectCreator = await reconnectContext.newPage();
+  await reconnectCreator.goto(webOrigin);
+  await reconnectCreator.getByRole("button", { name: "Open LiveBin" }).click();
+  await reconnectCreator
+    .getByRole("button", { name: "Create LiveBin room" })
+    .click();
+  await reconnectCreator.waitForURL((url) => url.pathname.startsWith("/live/"));
+  await reconnectCreator.reload();
+  await expectVisible(reconnectCreator, "Connected");
+  await reconnectCreator.locator(".live-connection-status").click();
+  await expectVisible(reconnectCreator, "Room controls");
+  await reconnectContext.close();
+
+  progress(
+    "checking LiveBin creator authority, watch-only access, and capacity",
+  );
+  const ownerContext = await browser.newContext();
+  const writerContext = await browser.newContext();
+  const viewerContext = await browser.newContext();
+  const overflowContext = await browser.newContext();
+  const owner = await ownerContext.newPage();
+  await owner.goto(webOrigin);
+  await owner.getByRole("button", { name: "Open LiveBin" }).click();
+  await owner
+    .locator(".live-create-canvas .cm-content")
+    .fill("creator controls coverage");
+  await owner.getByRole("button", { name: "Create LiveBin room" }).click();
+  await owner.waitForURL((url) => url.pathname.startsWith("/live/"));
+  const accessRoomURL = owner.url();
+  const accessURL = new URL(accessRoomURL);
+  assert.equal(accessURL.search, "", "live room URL must not carry authority");
+  assert.equal(accessURL.hash, "", "live room URL must not carry authority");
+  await expectVisible(owner, "Connected");
+  await owner
+    .locator(".live-room-bottom-toolbar")
+    .getByRole("button", { name: "Rename", exact: true })
+    .click();
+  await owner.locator(".live-tab-rename-popover input").fill("tab draft");
+  await owner.locator(".live-connection-status").click();
+  await owner
+    .locator(".live-rename-form")
+    .getByRole("button", { name: "Rename", exact: true })
+    .click();
+  await owner
+    .getByLabel("Temporary participant name")
+    .fill("participant draft");
+  await assert.equal(
+    await owner.locator(".live-tab-rename-popover input").inputValue(),
+    "tab draft",
+    "participant rename state must not overwrite tab rename state",
+  );
+  await owner.keyboard.press("Escape");
+  const ownerCookies = await ownerContext.cookies(
+    `${apiOrigin}/api/v1/live/${accessURL.pathname.split("/").pop()}`,
+  );
+  assert.equal(
+    ownerCookies.some(
+      (cookie) => cookie.name === "oxbin_live_session" && cookie.httpOnly,
+    ),
+    true,
+    "creator authority should remain in an HttpOnly session cookie",
+  );
+  assert.equal(
+    ownerCookies.some(
+      (cookie) => cookie.name === "oxbin_live_creator" && cookie.httpOnly,
+    ),
+    true,
+    "creator capability should remain in a room-scoped HttpOnly cookie",
+  );
+  assert.equal(
+    await owner.evaluate(
+      (tokens) => {
+        const storage = [localStorage, sessionStorage]
+          .flatMap((area) =>
+            Array.from({ length: area.length }, (_, index) => {
+              const key = area.key(index) ?? "";
+              return `${key}:${area.getItem(key) ?? ""}`;
+            }),
+          )
+          .join("\n");
+        return (
+          !storage.includes("oxbin_live_session") &&
+          !storage.includes("oxbin_live_creator") &&
+          tokens.every((token) => !storage.includes(token))
+        );
+      },
+      ownerCookies
+        .filter(
+          (cookie) =>
+            cookie.name === "oxbin_live_session" ||
+            cookie.name === "oxbin_live_creator",
+        )
+        .map((cookie) => cookie.value),
+    ),
+    true,
+    "creator authority must not be placed in browser storage",
+  );
+  const writer = await writerContext.newPage();
+  await writer.goto(accessRoomURL);
+  await expectVisible(writer, "Connected");
+  await writer.locator(".live-connection-status").click();
+  const writerName = await writer
+    .locator(".live-participant-row")
+    .filter({ hasText: "You · writer" })
+    .locator("strong")
+    .textContent();
+  assert.ok(writerName, "writer should have a participant identity");
+  await writer.locator(".live-connection-status").click();
+
+  const viewer = await viewerContext.newPage();
+  await viewer.goto(accessRoomURL);
+  await expectVisible(viewer, "You’re watching this room");
+  await viewer.waitForFunction(
+    () =>
+      document.querySelector(".live-add-tab") instanceof HTMLButtonElement &&
+      document.querySelector(".live-add-tab").disabled,
+  );
+
+  const overflow = await overflowContext.newPage();
+  await overflow.goto(accessRoomURL);
+  await expectVisible(overflow, "Room is full. Ask someone to leave");
+
+  await owner.locator(".live-connection-status").click();
+  await owner
+    .getByRole("button", { name: "Make room watch-only", exact: true })
+    .click();
+  await expectVisible(writer, "You’re watching this room");
+  await writer.waitForFunction(
+    () =>
+      document.querySelector(".live-add-tab") instanceof HTMLButtonElement &&
+      document.querySelector(".live-add-tab").disabled,
+  );
+  await owner
+    .getByRole("button", { name: `Remove ${writerName}`, exact: true })
+    .click();
+  await expectVisible(writer, "You were removed from this room");
+  await writer.reload();
+  await expectVisible(writer, "You’re watching this room");
+
+  await ownerContext.close();
+  await writerContext.close();
+  await viewerContext.close();
+  await overflowContext.close();
 
   progress("checking plaintext paste and search");
   const plaintextURL = await createPaste(page, "package main\npackage docs\n", {

@@ -9,7 +9,11 @@ export type Route =
 
 const slugPattern = /^[a-z]{1,128}$/;
 
-export function resolveRoute(pathname: string, hosted = false): Route {
+export function resolveRoute(
+  pathname: string,
+  hosted = false,
+  liveEnabled = true,
+): Route {
   const segments = pathname.split("/").filter(Boolean);
   if (segments.length === 0) {
     return { kind: "create" };
@@ -18,10 +22,10 @@ export function resolveRoute(pathname: string, hosted = false): Route {
     const page = hostedPageFromPath(pathname);
     if (page) return { kind: "hosted", page };
   }
-  if (segments.length === 1 && segments[0] === "live") {
+  if (liveEnabled && segments.length === 1 && segments[0] === "live") {
     return { kind: "live-create" };
   }
-  if (segments.length === 2 && segments[0] === "live") {
+  if (liveEnabled && segments.length === 2 && segments[0] === "live") {
     return {
       kind: "live-room",
       slug: slugPattern.test(segments[1]) ? segments[1] : "",

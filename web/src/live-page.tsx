@@ -2,22 +2,36 @@ import { useEffect, useState, type ReactNode } from "react";
 import {
   createLiveAPI,
   createLiveRoom,
+  getLiveServiceConfig,
   getLiveRoom,
   LiveAPIError,
   unlockLiveRoom,
   type CreatedLiveRoom,
+  type LiveServiceConfig,
   type LiveRoomSnapshot,
 } from "./live-api";
 import { CodeEditor, LanguageMenu } from "./editor";
 import {
   blankLiveDraft,
-  maxLiveRoomBytes,
+  fallbackLiveRoomBytes,
   type LiveCreateValidation,
   type LiveDraft,
   validateLiveDraft,
 } from "./live";
 import { beginLoading } from "./loading";
 import { utf8Bytes } from "./create";
+import { LiveRoomWorkspace } from "./live-room";
+import { formatLiveRoomLifetime } from "./live-room-ui";
+
+const fallbackLiveServiceConfig: LiveServiceConfig = {
+  maxBytes: fallbackLiveRoomBytes,
+  maxDocumentBytes: fallbackLiveRoomBytes,
+  maxTabs: 8,
+  maxWriters: 10,
+  maxViewers: 100,
+  maxParticipants: 110,
+  roomLifetimeSeconds: 24 * 60 * 60,
+};
 
 export type LiveRouteProps =
   | {
@@ -33,6 +47,12 @@ export type LiveRouteProps =
       copyFailed: boolean;
       shareURL?: string;
       onRetryCopy: () => void;
+      onStatus: (message: string) => void;
+      onSaveAsPaste: (draft: {
+        title: string;
+        language: string;
+        content: string;
+      }) => void;
     };
 
 export default function LiveRoute(props: LiveRouteProps) {
@@ -52,7 +72,22 @@ function LiveCreateState({
   const [password, setPassword] = useState("");
   const [errors, setErrors] = useState<LiveCreateValidation>({});
   const [submitting, setSubmitting] = useState(false);
+  const [limits, setLimits] = useState<LiveServiceConfig>();
+  const [limitsUnavailable, setLimitsUnavailable] = useState(false);
   const contentBytes = utf8Bytes(draft.document.content);
+  const effectiveLimits = limits ?? fallbackLiveServiceConfig;
+
+  useEffect(() => {
+    const controller = new AbortController();
+    getLiveServiceConfig(createLiveAPI(), controller.signal)
+      .then((config) => {
+        if (!controller.signal.aborted) setLimits(config);
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setLimitsUnavailable(true);
+      });
+    return () => controller.abort();
+  }, []);
 
   function updateDocument(update: Partial<LiveDraft["document"]>) {
     setDraft((current) => ({
@@ -68,7 +103,13 @@ function LiveCreateState({
   }
 
   async function submit() {
-    const nextErrors = validateLiveDraft(draft, requirePassword, password);
+    if (!limits && !limitsUnavailable) return;
+    const nextErrors = validateLiveDraft(
+      draft,
+      requirePassword,
+      password,
+      effectiveLimits.maxDocumentBytes,
+    );
     setErrors(nextErrors);
     if (Object.keys(nextErrors).length > 0) return;
     setSubmitting(true);
@@ -141,17 +182,28 @@ function LiveCreateState({
       </div>
 
       <footer className="creation-toolbar live-creation-toolbar">
-        <span className="live-expiry" title="Room expires in 24 hours">
-          24h
+        <span
+          className="live-expiry"
+          title={
+            limits || limitsUnavailable
+              ? `Room expires in ${formatLiveRoomLifetime(effectiveLimits.roomLifetimeSeconds)}`
+              : "Loading room lifetime"
+          }
+        >
+          {limits || limitsUnavailable
+            ? formatLiveRoomLifetime(effectiveLimits.roomLifetimeSeconds)
+            : "…"}
         </span>
         <span
           className={
-            contentBytes > maxLiveRoomBytes
+            contentBytes > effectiveLimits.maxDocumentBytes
               ? "byte-count over-limit"
               : "byte-count"
           }
         >
-          {formatBytes(contentBytes)} / 1 MiB
+          {limits || limitsUnavailable
+            ? `${formatBytes(contentBytes)} / ${formatBytes(effectiveLimits.maxDocumentBytes)}`
+            : "Loading room limits…"}
         </span>
         <div className="toolbar-spacer" />
         <label className="encrypt-toggle">
@@ -197,7 +249,11 @@ function LiveCreateState({
             ) : null}
           </label>
         ) : null}
-        <button className="primary-action" type="submit" disabled={submitting}>
+        <button
+          className="primary-action"
+          type="submit"
+          disabled={submitting || (!limits && !limitsUnavailable)}
+        >
           {submitting ? "Creating…" : "Create LiveBin room"}
           <ArrowIcon />
         </button>
@@ -215,6 +271,8 @@ function LiveRoomPage({
   copyFailed,
   shareURL,
   onRetryCopy,
+  onStatus,
+  onSaveAsPaste,
 }: Extract<LiveRouteProps, { mode: "room" }>) {
   const [room, setRoom] = useState<LiveRoomSnapshot>();
   const [state, setState] = useState<LiveRoomState>("loading");
@@ -357,15 +415,22 @@ function LiveRoomPage({
 
   return (
     <>
+      <LiveRoomWorkspace
+        initialRoom={room}
+        onStatus={onStatus}
+        onSaveAsPaste={onSaveAsPaste}
+        onReauthenticate={() => {
+          setRoom(undefined);
+          setPassword("");
+          setPasswordError(false);
+          setState("password");
+        }}
+      />
       {copyFailed && shareURL ? (
         <button className="copy-link-retry" type="button" onClick={onRetryCopy}>
           LiveBin room created — copy link
         </button>
       ) : null}
-      <CenteredState
-        label="Live room"
-        detail={`Expires ${new Date(room.expiresAt).toLocaleString()}.`}
-      />
     </>
   );
 }
@@ -408,6 +473,8 @@ function liveCreateFailureMessage(error: unknown): string {
       return "LiveBin room content is too large";
     case "rate_limited":
       return "Too many requests — try again later";
+    case "service_unavailable":
+      return "LiveBin is unavailable on this service";
     case "invalid_request":
       return "Check the LiveBin room details and try again";
     default:

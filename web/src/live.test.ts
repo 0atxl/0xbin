@@ -71,12 +71,22 @@ describe("live draft handoff", () => {
           document: {
             name: "main",
             language: "plaintext",
-            content: "x".repeat((1 << 20) + 1),
+            content: "x".repeat((2 << 20) + 1),
           },
         },
         false,
         "",
+        2 << 20,
       ),
-    ).toEqual({ content: "Live room content exceeds the 1 MiB limit." });
+    ).toEqual({ content: "Live room content exceeds the 2 MiB limit." });
+  });
+
+  it("uses server-provided limits below and above the former 1 MiB default", () => {
+    const draft = blankLiveDraft();
+    draft.document.content = "x".repeat((512 << 10) + 1);
+    expect(validateLiveDraft(draft, false, "", 512 << 10)).toEqual({
+      content: "Live room content exceeds the 512 KiB limit.",
+    });
+    expect(validateLiveDraft(draft, false, "", 2 << 20)).toEqual({});
   });
 });

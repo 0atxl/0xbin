@@ -50,9 +50,11 @@ const editorHighlightStyle = HighlightStyle.define([
 export function LanguageMenu({
   value,
   onChange,
+  disabled = false,
 }: {
   value: string;
   onChange: (value: string) => void;
+  disabled?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [closing, setClosing] = useState(false);
@@ -123,6 +125,7 @@ export function LanguageMenu({
     <div className="custom-select" ref={selectRef}>
       <button
         type="button"
+        disabled={disabled}
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-controls={menuID}
@@ -143,6 +146,7 @@ export function LanguageMenu({
             <li key={language} role="option" aria-selected={language === value}>
               <button
                 type="button"
+                disabled={disabled}
                 onClick={() => {
                   onChange(language);
                 }}
@@ -288,7 +292,7 @@ function CheckIcon() {
   );
 }
 
-function CodeIcon() {
+export function CodeIcon() {
   return (
     <svg viewBox="0 0 20 20" aria-hidden="true">
       <path d="m7 5-5 5 5 5M13 5l5 5-5 5" />

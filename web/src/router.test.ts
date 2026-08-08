@@ -24,6 +24,17 @@ describe("route resolution", () => {
     expect(() => liveRoomPath("not-a-slug")).toThrow("invalid live room slug");
   });
 
+  it("keeps live paths out of the live route namespace when disabled", () => {
+    expect(resolveRoute("/live", false, false)).toEqual({
+      kind: "paste",
+      slug: "live",
+    });
+    expect(resolveRoute("/live/quietbrightotter", false, false)).toEqual({
+      kind: "paste",
+      slug: "",
+    });
+  });
+
   it("reserves permanent policy routes only for the hosted service", () => {
     expect(resolveRoute("/about", true)).toEqual({
       kind: "hosted",

@@ -39,12 +39,21 @@ export type LiveAPI = {
   request<Response>(path: string, init?: RequestInit): Promise<Response>;
 };
 
+export function liveWebSocketURL(origin: string, slug: string): string {
+  const url = new URL(`/api/v1/live/${encodeURIComponent(slug)}/ws`, origin);
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  url.search = "";
+  url.hash = "";
+  return url.toString();
+}
+
 export type LiveRoomDocument = {
   id: string;
   name: string;
   language: string;
   content: string;
   revision: number;
+  position?: number;
 };
 
 export type LiveRoomSnapshot = {
@@ -52,7 +61,23 @@ export type LiveRoomSnapshot = {
   expiresAt: string;
   passwordRequired: boolean;
   metadataRevision: number;
+  maxBytes: number;
+  maxTabs: number;
+  maxWriters: number;
+  maxViewers: number;
+  maxParticipants: number;
+  roomLifetimeSeconds: number;
   documents: LiveRoomDocument[];
+};
+
+export type LiveServiceConfig = {
+  maxBytes: number;
+  maxDocumentBytes: number;
+  maxTabs: number;
+  maxWriters: number;
+  maxViewers: number;
+  maxParticipants: number;
+  roomLifetimeSeconds: number;
 };
 
 export type LiveRoomCreateRequest = {
@@ -130,6 +155,21 @@ export async function getLiveRoom(
     throw new LiveAPIError(0, "network_error");
   }
   return normalizeLiveRoomSnapshot(response);
+}
+
+export async function getLiveServiceConfig(
+  api: LiveAPI,
+  signal?: AbortSignal,
+): Promise<LiveServiceConfig> {
+  const response = await api.request<unknown>("/api/v1/live/config", {
+    credentials: "same-origin",
+    cache: "no-store",
+    ...(signal ? { signal } : {}),
+  });
+  if (!isLiveServiceConfig(response)) {
+    throw new LiveAPIError(0, "network_error");
+  }
+  return normalizeLiveServiceConfig(response);
 }
 
 export async function unlockLiveRoom(
@@ -256,12 +296,19 @@ function isLiveRoomSnapshot(value: unknown): value is {
   expires_at: string;
   password_required: boolean;
   metadata_revision: number;
+  max_bytes: number;
+  max_tabs: number;
+  max_writers: number;
+  max_viewers: number;
+  max_participants: number;
+  room_lifetime_seconds: number;
   documents: Array<{
     id: string;
     name: string;
     language: string;
     content: string;
     revision: number;
+    position?: number;
   }>;
 } {
   if (
@@ -275,6 +322,18 @@ function isLiveRoomSnapshot(value: unknown): value is {
     typeof value.password_required !== "boolean" ||
     !("metadata_revision" in value) ||
     typeof value.metadata_revision !== "number" ||
+    !("max_bytes" in value) ||
+    !positiveInteger(value.max_bytes) ||
+    !("max_tabs" in value) ||
+    !positiveInteger(value.max_tabs) ||
+    !("max_writers" in value) ||
+    !positiveInteger(value.max_writers) ||
+    !("max_viewers" in value) ||
+    !nonnegativeInteger(value.max_viewers) ||
+    !("max_participants" in value) ||
+    !positiveInteger(value.max_participants) ||
+    !("room_lifetime_seconds" in value) ||
+    !positiveInteger(value.room_lifetime_seconds) ||
     !("documents" in value) ||
     !Array.isArray(value.documents)
   ) {
@@ -293,8 +352,57 @@ function isLiveRoomSnapshot(value: unknown): value is {
       "content" in document &&
       typeof document.content === "string" &&
       "revision" in document &&
-      typeof document.revision === "number",
+      typeof document.revision === "number" &&
+      (!("position" in document) || typeof document.position === "number"),
   );
+}
+
+function isLiveServiceConfig(value: unknown): value is {
+  max_bytes: number;
+  max_document_bytes: number;
+  max_tabs: number;
+  max_writers: number;
+  max_viewers: number;
+  max_participants: number;
+  room_lifetime_seconds: number;
+} {
+  if (typeof value !== "object" || value === null) return false;
+  return (
+    "max_bytes" in value &&
+    positiveInteger(value.max_bytes) &&
+    "max_document_bytes" in value &&
+    positiveInteger(value.max_document_bytes) &&
+    "max_tabs" in value &&
+    positiveInteger(value.max_tabs) &&
+    "max_writers" in value &&
+    positiveInteger(value.max_writers) &&
+    "max_viewers" in value &&
+    nonnegativeInteger(value.max_viewers) &&
+    "max_participants" in value &&
+    positiveInteger(value.max_participants) &&
+    "room_lifetime_seconds" in value &&
+    positiveInteger(value.room_lifetime_seconds)
+  );
+}
+
+function normalizeLiveServiceConfig(value: {
+  max_bytes: number;
+  max_document_bytes: number;
+  max_tabs: number;
+  max_writers: number;
+  max_viewers: number;
+  max_participants: number;
+  room_lifetime_seconds: number;
+}): LiveServiceConfig {
+  return {
+    maxBytes: value.max_bytes,
+    maxDocumentBytes: value.max_document_bytes,
+    maxTabs: value.max_tabs,
+    maxWriters: value.max_writers,
+    maxViewers: value.max_viewers,
+    maxParticipants: value.max_participants,
+    roomLifetimeSeconds: value.room_lifetime_seconds,
+  };
 }
 
 function normalizeLiveRoomSnapshot(value: {
@@ -302,12 +410,19 @@ function normalizeLiveRoomSnapshot(value: {
   expires_at: string;
   password_required: boolean;
   metadata_revision: number;
+  max_bytes: number;
+  max_tabs: number;
+  max_writers: number;
+  max_viewers: number;
+  max_participants: number;
+  room_lifetime_seconds: number;
   documents: Array<{
     id: string;
     name: string;
     language: string;
     content: string;
     revision: number;
+    position?: number;
   }>;
 }): LiveRoomSnapshot {
   return {
@@ -315,6 +430,22 @@ function normalizeLiveRoomSnapshot(value: {
     expiresAt: value.expires_at,
     passwordRequired: value.password_required,
     metadataRevision: value.metadata_revision,
-    documents: value.documents.map((document) => ({ ...document })),
+    maxBytes: value.max_bytes,
+    maxTabs: value.max_tabs,
+    maxWriters: value.max_writers,
+    maxViewers: value.max_viewers,
+    maxParticipants: value.max_participants,
+    roomLifetimeSeconds: value.room_lifetime_seconds,
+    documents: value.documents
+      .map((document) => ({ ...document }))
+      .sort((left, right) => (left.position ?? 0) - (right.position ?? 0)),
   };
+}
+
+function nonnegativeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+function positiveInteger(value: unknown): value is number {
+  return nonnegativeInteger(value) && value > 0;
 }
