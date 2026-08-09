@@ -753,21 +753,24 @@ marketing page.
 - From an existing paste viewer, always open a blank live creator. Never copy
   viewed or decrypted content automatically.
 - The live creator mirrors the paste creator's minimal editor-first layout. Its
-  initial background tab name is `tab1`; show that value in the same borderless,
-  directly editable title treatment as paste creation. Keep the language menu
-  on the right without an added `Language` heading, show the configured default
-  limit as `1 MiB` beside the byte count, and do not add a separate content
-  header or visible fixed-lifetime label. Both Create actions are text-only.
+  initial background tab name is `tab1`, but keep that generated name internal
+  during creation. Show an empty borderless title field with the `Untitled tab`
+  placeholder, matching paste creation; custom names remain directly editable.
+  Keep the language menu on the right without an added `Language` heading, show
+  the configured default limit as `1 MiB` beside the byte count, and do not add
+  a separate content header or visible fixed-lifetime label. Both Create actions
+  are text-only.
 - Represent optional password protection with an accessible icon-only lock
   toggle. Reveal a compact input with the `Password` placeholder using the
   shared motion treatment and an icon-only `Set password` action. Enter in the
   password field performs that action, validates through toasts, and focuses
   Create; it must never create the room directly. Respect reduced-motion
-  preferences.
+  preferences. Include an accessible icon-only control to show or hide the
+  entered password; keep it hidden by default.
 - Route every live-creation validation and request failure through the shared
   toast system rather than adding inline error copy. If the initial tab name is
-  cleared, restore `tab1`, show `Tab name cannot be empty`, and do not submit
-  until the user retries.
+  cleared, restore the internal `tab1` default and `Untitled tab` placeholder,
+  show `Tab name cannot be empty`, and do not submit until the user retries.
 - Participants receive unique adjective+noun names automatically, can rename
   themselves from the participant popover, and retain a stable colour.
 - The participant popover shows only real participants, their joined time,

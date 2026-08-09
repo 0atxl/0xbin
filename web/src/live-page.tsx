@@ -67,8 +67,12 @@ function LiveCreateState({
   onCreated,
 }: Extract<LiveRouteProps, { mode: "create" }>) {
   const [draft, setDraft] = useState(initialDraft);
+  const [usesDefaultDocumentName, setUsesDefaultDocumentName] = useState(
+    initialDraft.document.name === defaultLiveDocumentName,
+  );
   const [requirePassword, setRequirePassword] = useState(false);
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [errors, setErrors] = useState<LiveCreateValidation>({});
   const [submitting, setSubmitting] = useState(false);
   const [limits, setLimits] = useState<LiveServiceConfig>();
@@ -126,6 +130,7 @@ function LiveCreateState({
     if (!limits && !limitsUnavailable) return;
     if (draft.document.name.length === 0) {
       updateDocument({ name: defaultLiveDocumentName });
+      setUsesDefaultDocumentName(true);
       setErrors({});
       onStatus("Tab name cannot be empty");
       return;
@@ -173,14 +178,12 @@ function LiveCreateState({
         <label className="title-field live-tab-name-field">
           <span className="sr-only">Tab name</span>
           <input
-            value={draft.document.name}
-            placeholder={defaultLiveDocumentName}
+            value={usesDefaultDocumentName ? "" : draft.document.name}
+            placeholder="Untitled tab"
             aria-invalid={Boolean(errors.name)}
-            onChange={(event) => updateDocument({ name: event.target.value })}
-            onFocus={(event) => {
-              if (draft.document.name === defaultLiveDocumentName) {
-                event.currentTarget.select();
-              }
+            onChange={(event) => {
+              setUsesDefaultDocumentName(false);
+              updateDocument({ name: event.target.value });
             }}
           />
         </label>
@@ -222,7 +225,7 @@ function LiveCreateState({
             </label>
             <input
               id="live-create-password"
-              type="password"
+              type={showPassword ? "text" : "password"}
               placeholder="Password"
               value={password}
               disabled={!requirePassword}
@@ -242,6 +245,16 @@ function LiveCreateState({
                 confirmPassword();
               }}
             />
+            <button
+              type="button"
+              disabled={!requirePassword}
+              aria-label={showPassword ? "Hide password" : "Show password"}
+              aria-pressed={showPassword}
+              title={showPassword ? "Hide password" : "Show password"}
+              onClick={() => setShowPassword((visible) => !visible)}
+            >
+              <EyeIcon revealed={showPassword} />
+            </button>
             <button
               type="button"
               disabled={!requirePassword}
@@ -265,6 +278,7 @@ function LiveCreateState({
               setRequirePassword(required);
               if (!required) {
                 setPassword("");
+                setShowPassword(false);
                 setErrors((current) => {
                   const next = { ...current };
                   delete next.password;
@@ -551,6 +565,16 @@ function CheckIcon() {
   return (
     <svg viewBox="0 0 20 20" aria-hidden="true">
       <path d="m4 10 4 4 8-9" />
+    </svg>
+  );
+}
+
+function EyeIcon({ revealed }: { revealed: boolean }) {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden="true">
+      <path d="M2.5 10s2.8-4.5 7.5-4.5 7.5 4.5 7.5 4.5-2.8 4.5-7.5 4.5S2.5 10 2.5 10Z" />
+      <circle cx="10" cy="10" r="2" />
+      {!revealed ? <path d="m4 4 12 12" /> : null}
     </svg>
   );
 }

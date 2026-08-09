@@ -279,7 +279,7 @@ svg {
 
 .live-password-control {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 32px;
+  grid-template-columns: minmax(0, 1fr) 32px 32px;
   width: 192px;
   height: 32px;
   border: 1px solid var(--border-subtle);

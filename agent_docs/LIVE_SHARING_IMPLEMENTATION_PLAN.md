@@ -819,10 +819,12 @@ viewer content never transfers.
 ### Step 7 — Live creation flow
 
 1. Build `/live` with a borderless, directly editable title-style first-tab name
-   (defaulting to `tab1`), the existing right-aligned language selector, an
+   whose internal `tab1` default is represented by an `Untitled tab` placeholder,
+   the existing right-aligned language selector, an
    icon-only optional-password toggle with an animated placeholder field and
-   compact confirmation action, and a text-only `Create` action. Enter in the
-   password field confirms and focuses Create without submitting the room.
+   compact confirmation action plus a show/hide-password control, and a text-only
+   `Create` action. Enter in the password field confirms and focuses Create
+   without submitting the room.
 2. Reuse the existing reviewed language choices and CodeMirror editor setup.
 3. Keep the configured fixed room lifetime out of the creation toolbar; the
    public configuration and documentation remain authoritative. Do not add
@@ -831,8 +833,10 @@ viewer content never transfers.
 4. Give the icon-only optional control the accessible name `Require password`;
    do not surround it with a security explainer or promotional copy.
 5. Keep programmatic labels for the borderless title-style tab-name and compact
-   password inputs while using `tab1` and `Password` as their visible in-field
-   cues. Do not populate the editor with fake example content.
+   password inputs while using `Untitled tab` and `Password` as their visible
+   in-field cues. Keep the generated `tab1` name internal until the room opens,
+   and keep password text hidden unless the user activates its visibility
+   control. Do not populate the editor with fake example content.
 6. Validate tab/password/content limits before submitting. Do not add a
    nickname field or nickname gate; identity is generated on room join.
 7. On success, copy the room URL and navigate to `/live/{slug}`. Protected-room

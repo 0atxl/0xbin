@@ -257,15 +257,18 @@ the paste requirements above.
 - **FR-LIVE-13:** The live frontend uses the existing visual, notification,
   warning, accessibility, and reduced-motion treatment without technical
   marketing copy. The creation screen mirrors the paste creator's compact
-  editor-first layout: its first background tab name defaults to `tab1`, the
-  tab name uses the borderless title treatment, language stays right-aligned,
-  and the byte count uses the paste creator's MiB presentation. Optional
+  editor-first layout: its first background tab name defaults internally to
+  `tab1`, while the borderless title treatment shows an `Untitled tab`
+  placeholder during creation; language stays right-aligned, and the byte count
+  uses the paste creator's MiB presentation. Optional
   password entry is disclosed by an icon-only control, as is paste encryption;
   both creation actions are text-only. Password entry has a separate compact
   confirmation action; Enter confirms it and focuses Create without submitting
-  the room.
+  the room. A separate accessible toggle reveals or hides password text, which
+  is hidden by default.
   Creation errors use the shared toast system; an empty initial tab name is
-  restored to `tab1` and reported as `Tab name cannot be empty`.
+  restored to the internal `tab1` default and `Untitled tab` placeholder, and
+  reported as `Tab name cannot be empty`.
 - **FR-LIVE-14:** The shared top progress bar covers static paste loading and
   live bootstrap/connect/reconnect/resync work without becoming keystroke or
   cursor feedback.

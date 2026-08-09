@@ -319,6 +319,16 @@ try {
   await page.getByRole("button", { name: "Open LiveBin" }).click();
   const liveCreateTabName = page.getByLabel("Tab name");
   assert.equal(
+    await liveCreateTabName.inputValue(),
+    "",
+    "the internal default tab name should not appear in the live creator",
+  );
+  assert.equal(
+    await liveCreateTabName.getAttribute("placeholder"),
+    "Untitled tab",
+    "the live creator should mirror the paste creator's untitled placeholder",
+  );
+  assert.equal(
     await page.locator(".live-create-canvas .byte-count").textContent(),
     "0 B / 1 MiB",
     "LiveBin should use the paste creator's MiB limit presentation",
@@ -349,13 +359,14 @@ try {
     true,
     "the language selector should remain to the right of the title-style tab name",
   );
+  await liveCreateTabName.fill("temporary");
   await liveCreateTabName.fill("");
   await page.getByRole("button", { name: "Create", exact: true }).click();
   await expectVisible(page, "Tab name cannot be empty");
   assert.equal(
     await liveCreateTabName.inputValue(),
-    "tab1",
-    "an empty initial tab name should reset to its background default",
+    "",
+    "an empty initial tab name should reset to the untitled placeholder state",
   );
   assert.equal(
     new URL(page.url()).pathname,
@@ -1131,6 +1142,23 @@ try {
   await expectVisible(page, "Password is required.");
   const protectedPassword = page.getByPlaceholder("Password");
   await protectedPassword.fill("correct horse");
+  assert.equal(
+    await protectedPassword.getAttribute("type"),
+    "password",
+    "the protected-room password should be hidden by default",
+  );
+  await page.getByRole("button", { name: "Show password" }).click();
+  assert.equal(
+    await protectedPassword.getAttribute("type"),
+    "text",
+    "the password visibility control should reveal the entered password",
+  );
+  await page.getByRole("button", { name: "Hide password" }).click();
+  assert.equal(
+    await protectedPassword.getAttribute("type"),
+    "password",
+    "the password visibility control should hide the password again",
+  );
   await protectedPassword.press("Enter");
   assert.equal(
     new URL(page.url()).pathname,
