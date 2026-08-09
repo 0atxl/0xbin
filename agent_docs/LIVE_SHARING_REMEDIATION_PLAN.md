@@ -7,7 +7,9 @@ release audit. The live-sharing branch is not ready to merge until every phase
 below passes its gate and the final independent audit reports no unresolved
 release blocker.
 
-**Progress:** Phases 0–5A are complete. Phase 6 is next; Phases 6–7 remain.
+**Progress:** Phases 0–5A are complete. Phase 6 is locally verified but awaits
+its feature-branch push, pull request, and required `verify` check. Phase 7 has
+not started.
 
 This document does not change a settled product decision. `spec.md` remains
 authoritative, followed by `AGENTS.md`, the PRD, technical design, frontend
@@ -379,6 +381,30 @@ rules.
   requested.
 - Confirm the pull request's required `verify` check is green. Do not infer CI
   success from a push or local gate.
+
+**Local verification evidence (2026-08-09):** The committed branch is clean
+and contains 15 focused commits over `main`. The reviewed 88-file branch diff
+contains the live-sharing implementation, shared integration changes,
+contracts, documentation, and tests, with no unrelated file, conflict marker,
+or untracked file. `make format`, `make lint`, `make test` (all Go packages and
+20 frontend files / 112 tests), `make test-race`, `make test-e2e`, `make build`,
+and `git diff --check` pass from the committed state. The browser gate covers
+ordinary, encrypted, burn-after-read, hostile-input, protected-room,
+collaboration, reconnect, resynchronization, and lost-acknowledgement journeys.
+
+The 18,313,206-byte embedded release binary separately served `/`, `/live`,
+`/live/{slug}`, ordinary paste routes, and encrypted paste routes. A binary-only
+smoke also confirmed that the server never returns an encryption fragment, GET
+does not consume burn content, atomic consume makes the paste unavailable, and
+a created live room bootstraps through the API and embedded route. The build's
+existing 542.20 kB main-chunk warning is non-fatal; the chunk is 173.46 kB
+gzip, LiveBin remains a separate 56.58 kB / 16.33 kB gzip chunk, and generated
+assets contain only the current build hashes.
+
+**Outstanding external gate:** `feature/live-sharing` is two commits ahead of
+its remote, GitHub reports no associated pull request, and therefore the
+required pull-request `verify` check has not run. Phase 6 is not complete until
+those explicitly authorized release actions occur and that check is green.
 
 ### Gate
 
