@@ -9,8 +9,22 @@ import {
 } from "./live-room-ui";
 
 const documents: LiveRoomDocument[] = [
-  { id: "one", name: "one", language: "text", content: "x", revision: 1 },
-  { id: "two", name: "two", language: "text", content: "🙂", revision: 2 },
+  {
+    id: "one",
+    name: "one",
+    language: "text",
+    content: "x",
+    revision: 1,
+    position: 0,
+  },
+  {
+    id: "two",
+    name: "two",
+    language: "text",
+    content: "🙂",
+    revision: 2,
+    position: 1,
+  },
 ];
 
 const participant = (

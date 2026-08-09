@@ -12,7 +12,6 @@ import {
 } from "./live-api";
 import { CodeEditor, LanguageMenu } from "./editor";
 import {
-  blankLiveDraft,
   fallbackLiveRoomBytes,
   type LiveCreateValidation,
   type LiveDraft,

@@ -135,8 +135,9 @@ language identifiers, and 64 bytes for document identifiers.
 - Go `net/http` with the standard-library `http.ServeMux`
 - Explicit header, read, write, idle, and shutdown timeouts
 - Request ID, recovery, and client-IP resolution wrap the root handler
-- API handlers apply body limits and rate limits; additional security-header
-  hardening remains part of pending Step 17 work
+- API handlers apply body limits and rate limits; root middleware applies the
+  shared CSP, referrer, permissions, framing, content-type, and HTTPS HSTS
+  headers
 - Frontend fallback must not turn unknown API routes into HTML 200 responses
 
 ### 3.3 Paste service

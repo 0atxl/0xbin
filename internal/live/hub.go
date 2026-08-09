@@ -1945,8 +1945,6 @@ func mapSelection(selection livecollab.SelectionRange, changes livecollab.Change
 	return selection.Map(changes)
 }
 
-func (room *room) stateFromSnapshot() RoomState { return room.stateLocked() }
-
 func cloneParticipant(participant ParticipantSnapshot) ParticipantSnapshot {
 	copyParticipant := participant
 	if participant.Cursor != nil {

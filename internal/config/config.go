@@ -18,7 +18,7 @@ const maxPasteBytes = 1 << 20
 // LookupEnv is compatible with os.LookupEnv and makes configuration testable.
 type LookupEnv func(string) (string, bool)
 
-// Rate describes one rate-limit bucket. Enforcement is added in Step 7.
+// Rate describes one enforced rate-limit bucket.
 type Rate struct {
 	Count  int
 	Window time.Duration

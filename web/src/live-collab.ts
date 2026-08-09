@@ -82,10 +82,6 @@ export function randomLiveID(prefix: string): string {
   return value;
 }
 
-export function liveChangesJSON(changes: ChangeSet): unknown[] {
-  return changes.toJSON() as unknown[];
-}
-
 export function applyLiveChanges(content: string, changes: ChangeSet): string {
   return changes.apply(Text.of(content.split("\n"))).toString();
 }
@@ -151,7 +147,7 @@ export function normalizeLiveDocuments(
 ): LiveRoomDocument[] {
   return documents
     .map((document) => ({ ...document }))
-    .sort((left, right) => (left.position ?? 0) - (right.position ?? 0));
+    .sort((left, right) => left.position - right.position);
 }
 
 export function livePasteExport(

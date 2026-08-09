@@ -3,7 +3,7 @@
 ## Implementation Plan
 
 **Status:** Implemented through Steps 0A–13. Follow-up release-hardening Phases
-1–5 are complete; Phases 5A–7 in
+1–5A are complete; Phases 6–7 in
 [`LIVE_SHARING_REMEDIATION_PLAN.md`](LIVE_SHARING_REMEDIATION_PLAN.md) remain.
 
 **Related:** [`spec.md`](../spec.md), [`docs/PRD.md`](../docs/PRD.md),

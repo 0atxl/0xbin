@@ -519,13 +519,22 @@ func TestLiveWebSocketRejectsInvalidOriginUnauthorizedAccessAndOversizedFrames(t
 		t.Fatalf("unprotected create status = %d", created.StatusCode)
 	}
 	wsURL = "ws" + strings.TrimPrefix(placeholder.URL, "http") + "/api/v1/live/quietbrightotter/ws"
+	missingSession := dialLivePeer(t, wsURL, placeholder.URL, nil)
+	writeLiveMessage(t, missingSession, `{"type":"join","client_id":"legacy-client-only","metadata_revision":0,"document_revisions":[{"document_id":"main","revision":0}]}`)
+	readCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	_, _, err = missingSession.Read(readCtx)
+	cancel()
+	if websocket.CloseStatus(err) != websocket.StatusPolicyViolation {
+		t.Fatalf("missing session ID close = %v, status = %d", err, websocket.CloseStatus(err))
+	}
+
 	peer := dialLivePeer(t, wsURL, placeholder.URL, nil)
 	defer peer.CloseNow()
 	joinLivePeer(t, peer, "oversized-frame")
 	if err := peer.Write(context.Background(), websocket.MessageText, []byte(strings.Repeat("x", (64<<10)+1))); err != nil {
 		t.Fatal(err)
 	}
-	readCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	readCtx, cancel = context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	_, _, err = peer.Read(readCtx)
 	if websocket.CloseStatus(err) != websocket.StatusMessageTooBig {

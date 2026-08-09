@@ -66,8 +66,7 @@ type Server struct {
 	lifecycleDone    chan struct{}
 }
 
-// NewServer creates the HTTP server. Database readiness is deliberately not
-// wired until Step 2.
+// NewServer creates the HTTP server with an optional readiness probe.
 func NewServer(cfg config.Config, pastes PasteService, readiness ...func(context.Context) error) *Server {
 	return newServerWithLive(cfg, pastes, nil, nil, readiness...)
 }

@@ -11,6 +11,7 @@ describe("live WebSocket wire decoder", () => {
           language: "plaintext",
           content: "hello",
           revision: 4,
+          position: 0,
         },
       ]),
     ).toEqual({

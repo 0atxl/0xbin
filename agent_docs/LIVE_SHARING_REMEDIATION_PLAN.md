@@ -7,7 +7,7 @@ release audit. The live-sharing branch is not ready to merge until every phase
 below passes its gate and the final independent audit reports no unresolved
 release blocker.
 
-**Progress:** Phases 0–5 are complete. Phase 5A is next; Phases 5A–7 remain.
+**Progress:** Phases 0–5A are complete. Phase 6 is next; Phases 6–7 remain.
 
 This document does not change a settled product decision. `spec.md` remains
 authoritative, followed by `AGENTS.md`, the PRD, technical design, frontend
@@ -323,6 +323,30 @@ line-count-driven refactors.
   or explicitly justified as cohesive.
 - `make format`, `make lint`, `make test`, `make test-race`, `make test-e2e`,
   `make build`, and `git diff --check` pass.
+
+**Completion evidence (2026-08-09):** Repository-wide identifier occurrence
+checks removed the unreachable Go `stateFromSnapshot` method and TypeScript
+`liveChangesJSON` helper; each appeared only at its declaration. Enabling
+TypeScript `noUnusedLocals` and `noUnusedParameters` identified and removed one
+unused live-page import and three unused legacy icon components, and keeps that
+reachability check in the normal lint gate. The unreferenced E2E placeholder
+script and stale contributor/config/server/security-header guidance were also
+removed or corrected. The WebSocket now requires the documented explicit
+`session_id`, and the HTTP decoder requires documented metadata/document
+snapshot revisions and positions; focused negative tests cover both boundaries.
+
+The cohesive WebSocket envelopes and codec moved from `live.go` into the
+package-private, 203-line `live_wire.go`, leaving HTTP/session/peer lifecycle in
+the transport file while preserving the existing decoder fuzz and integration
+coverage. Remaining large files were reviewed and deliberately retained:
+`live-room.tsx` orchestrates already-extracted connection, resync, operation,
+editor, and UI helpers; `hub.go` owns one mutex-serialized authority and atomic
+rollback invariant; `live_test.go` shares real HTTP/WebSocket/session fixtures;
+and `e2e.mjs` owns one sequential temporary-service/browser fault matrix.
+Further splits would introduce wide state-bearing interfaces or duplicate
+release setup without isolating another cohesive authority. `make format`,
+`make lint`, `make test` (20 frontend files, 112 tests), `make test-race`,
+`make test-e2e`, `make build`, and `git diff --check` passed.
 
 ## Phase 6 — Prepare the complete release candidate
 

@@ -53,7 +53,7 @@ export type LiveRoomDocument = {
   language: string;
   content: string;
   revision: number;
-  position?: number;
+  position: number;
 };
 
 export type LiveRoomSnapshot = {
@@ -323,6 +323,7 @@ function isLiveRoomSnapshot(value: unknown): value is {
   expires_at: string;
   password_required: boolean;
   metadata_revision: number;
+  metadata_snapshot_revision: number;
   max_bytes: number;
   max_document_bytes: number;
   max_tabs: number;
@@ -336,7 +337,8 @@ function isLiveRoomSnapshot(value: unknown): value is {
     language: string;
     content: string;
     revision: number;
-    position?: number;
+    position: number;
+    snapshot_revision: number;
   }>;
   accepted_operation_ids?: string[];
 } {
@@ -350,7 +352,9 @@ function isLiveRoomSnapshot(value: unknown): value is {
     !("password_required" in value) ||
     typeof value.password_required !== "boolean" ||
     !("metadata_revision" in value) ||
-    typeof value.metadata_revision !== "number" ||
+    !nonnegativeInteger(value.metadata_revision) ||
+    !("metadata_snapshot_revision" in value) ||
+    !nonnegativeInteger(value.metadata_snapshot_revision) ||
     !("max_bytes" in value) ||
     !positiveInteger(value.max_bytes) ||
     !("max_document_bytes" in value) ||
@@ -385,13 +389,20 @@ function isLiveRoomSnapshot(value: unknown): value is {
         "content" in document &&
         typeof document.content === "string" &&
         "revision" in document &&
-        typeof document.revision === "number" &&
-        (!("position" in document) || typeof document.position === "number"),
+        nonnegativeInteger(document.revision) &&
+        "position" in document &&
+        nonnegativeInteger(document.position) &&
+        "snapshot_revision" in document &&
+        nonnegativeInteger(document.snapshot_revision),
     ) &&
     (!("accepted_operation_ids" in value) ||
       (Array.isArray(value.accepted_operation_ids) &&
+        value.accepted_operation_ids.length <= 64 &&
         value.accepted_operation_ids.every(
-          (operationID) => typeof operationID === "string",
+          (operationID) =>
+            typeof operationID === "string" &&
+            operationID.length >= 1 &&
+            operationID.length <= 128,
         )))
   );
 }
@@ -449,6 +460,7 @@ function normalizeLiveRoomSnapshot(value: {
   expires_at: string;
   password_required: boolean;
   metadata_revision: number;
+  metadata_snapshot_revision: number;
   max_bytes: number;
   max_document_bytes: number;
   max_tabs: number;
@@ -462,7 +474,8 @@ function normalizeLiveRoomSnapshot(value: {
     language: string;
     content: string;
     revision: number;
-    position?: number;
+    position: number;
+    snapshot_revision: number;
   }>;
   accepted_operation_ids?: string[];
 }): LiveRoomSnapshot {
@@ -479,7 +492,7 @@ function normalizeLiveRoomSnapshot(value: {
     roomLifetimeSeconds: value.room_lifetime_seconds,
     documents: value.documents
       .map((document) => ({ ...document }))
-      .sort((left, right) => (left.position ?? 0) - (right.position ?? 0)),
+      .sort((left, right) => left.position - right.position),
     acceptedOperationIDs: [...(value.accepted_operation_ids ?? [])],
   };
 }

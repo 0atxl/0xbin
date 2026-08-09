@@ -57,6 +57,7 @@ describe("live API client", () => {
       expires_at: "2026-08-06T12:00:00Z",
       password_required: false,
       metadata_revision: 0,
+      metadata_snapshot_revision: 0,
       max_bytes: 1048576,
       max_document_bytes: 1048576,
       max_tabs: 8,
@@ -71,7 +72,9 @@ describe("live API client", () => {
           name: "main",
           language: "plaintext",
           content: "hello",
+          position: 0,
           revision: 0,
+          snapshot_revision: 0,
         },
       ],
     });
@@ -144,6 +147,7 @@ describe("live API client", () => {
       expires_at: "2026-08-06T12:00:00Z",
       password_required: false,
       metadata_revision: 0,
+      metadata_snapshot_revision: 0,
       max_bytes: 2 << 20,
       max_document_bytes: 1 << 20,
       max_tabs: 4,
@@ -158,6 +162,53 @@ describe("live API client", () => {
     ).rejects.toMatchObject({
       code: "network_error",
     });
+  });
+
+  it("rejects snapshots missing required authority fields", async () => {
+    const base = {
+      slug: "quietbrightotter",
+      expires_at: "2026-08-06T12:00:00Z",
+      password_required: false,
+      metadata_revision: 0,
+      metadata_snapshot_revision: 0,
+      max_bytes: 1 << 20,
+      max_document_bytes: 1 << 20,
+      max_tabs: 8,
+      max_writers: 10,
+      max_viewers: 100,
+      max_participants: 110,
+      room_lifetime_seconds: 86400,
+      documents: [
+        {
+          id: "main",
+          name: "main",
+          language: "plaintext",
+          content: "hello",
+          position: 0,
+          revision: 0,
+          snapshot_revision: 0,
+        },
+      ],
+    };
+    const withoutMetadataSnapshot = { ...base };
+    Reflect.deleteProperty(
+      withoutMetadataSnapshot,
+      "metadata_snapshot_revision",
+    );
+    const withoutPosition = { ...base.documents[0] };
+    Reflect.deleteProperty(withoutPosition, "position");
+    const withoutDocumentSnapshot = { ...base.documents[0] };
+    Reflect.deleteProperty(withoutDocumentSnapshot, "snapshot_revision");
+    for (const invalid of [
+      withoutMetadataSnapshot,
+      { ...base, documents: [withoutPosition] },
+      { ...base, documents: [withoutDocumentSnapshot] },
+    ]) {
+      const request = vi.fn().mockResolvedValue(invalid);
+      await expect(
+        getLiveRoom({ request }, "quietbrightotter"),
+      ).rejects.toMatchObject({ code: "network_error" });
+    }
   });
 
   it("maps password-required responses to a focused live error", async () => {

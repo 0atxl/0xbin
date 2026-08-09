@@ -1378,27 +1378,6 @@ function MoonIcon() {
     </svg>
   );
 }
-function ChevronIcon() {
-  return (
-    <svg viewBox="0 0 20 20" aria-hidden="true">
-      <path d="m6 8 4 4 4-4" />
-    </svg>
-  );
-}
-function CheckIcon() {
-  return (
-    <svg viewBox="0 0 20 20" aria-hidden="true">
-      <path d="m4 10 4 4 8-8" />
-    </svg>
-  );
-}
-function CodeIcon() {
-  return (
-    <svg viewBox="0 0 20 20" aria-hidden="true">
-      <path d="m7 5-5 5 5 5M13 5l5 5-5 5" />
-    </svg>
-  );
-}
 function LockIcon() {
   return (
     <svg viewBox="0 0 20 20" aria-hidden="true">
