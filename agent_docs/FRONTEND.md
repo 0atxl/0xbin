@@ -771,18 +771,30 @@ marketing page.
   toast system rather than adding inline error copy. If the initial tab name is
   cleared, restore the internal `tab1` default and `Untitled tab` placeholder,
   show `Tab name cannot be empty`, and do not submit until the user retries.
+- One room-scoped browser profile appears as one participant across reload,
+  reopen, and multiple normal tabs. Incognito/private profiles, other profiles,
+  other devices, cleared site data, and other origins appear separately.
 - Participants receive unique adjective+noun names automatically, can rename
-  themselves from the participant popover, and retain a stable colour.
-- The participant popover shows only real participants, their joined time,
-  current tab, and observable connection state.
+  themselves from the participant popover, and retain their identity, nickname,
+  and colour across normal tabs and reloads. After service restart, the stable
+  identity and colour return and the last nickname is offered subject to
+  active-room uniqueness. Multiple connections share one roster row; its
+  current tab is the most recently active connection.
+- The participant popover shows only real participants in one compact list,
+  with concise `creator`, `collaborator`, or `viewer` labels, joined time,
+  connection count/state, and current tab. Do not add role-management controls
+  or separate management panels.
 - Visible cursors and selections use restrained CodeMirror decorations in the
   active tab. Nickname labels fade while idle, and stale/disconnected
   decorations disappear.
 - Add, rename, delete, and reorder tab controls remain local-looking and
   compact. Structural controls are disabled while room metadata reconnects.
-- The creator-only room controls can switch participants to watch-only mode
-  and remove active collaborator sessions. They are not shown as account or
-  ownership UI to ordinary participants.
+- The creator-only room control toggles Lock/Unlock. The creator remains
+  editable in both states; collaborators become read-only only while locked;
+  viewers remain read-only. Apply the authoritative broadcast state rather than
+  optimistic local role changes. Do not add participant removal, kicking,
+  banning, promotion, or demotion controls, and do not present creator authority
+  as an account.
 - `Save as paste` offers `Current tab` or `Every tab`; the latter appends tabs
   into one paste with clear separators and then returns to the normal paste
   options before uploading.
@@ -792,8 +804,10 @@ marketing page.
   feature cards, fake participants, sample documents, or decorative
   placeholders. Every visible string must label a function, report useful
   state, or support an immediate decision.
-- Presence, cursors, selections, draft handoff state, and room content are not
-  placed in persistent browser storage.
+- Store only the versioned room-scoped browser resume credential and last
+  authoritative nickname in `localStorage`. Keep passwords, creator/access
+  cookies, room content, cursors, selections, revisions, reconnect queues, and
+  draft handoff state out of script-visible persistent browser storage.
 
 The live route must support full keyboard operation, screen-reader status
 announcements, reduced motion, narrow-screen participant popovers, and safe

@@ -208,20 +208,25 @@ process:
   durable snapshot receives `http_resync_required` and reloads that snapshot.
   Cross-restart delta bridging is not an MVP guarantee; the resync fallback is
   the correctness boundary and does not discard acknowledged edits.
-- Room capacity distinguishes up to 10 writing sessions, 100 watch-only
-  viewer sessions, and 110 total sessions. The creator's room-scoped
-  capability authorizes the mode change and active-session removal; this is a
-  temporary capability, not durable account ownership. A kick invalidates that
-  session, not the underlying uncredentialed person.
+- Room capacity distinguishes up to 10 collaborator-capacity browser
+  participants including the creator, 100 viewers, and 110 total browser
+  participants. Each participant may own at most eight simultaneous tab
+  connections, while the process-wide ceiling continues to count every socket.
+- Access class (`creator`, `collaborator`, or `viewer`) is separate from
+  effective editing ability. A durable room lock pauses collaborators without
+  changing their class, keeps viewers read-only, and leaves the creator
+  editable. The creator can commit either lock state; individual role changes,
+  removal, and bans do not exist.
 - Ordinary protected-room access uses a short-lived, room-scoped HttpOnly
   session. Creation also sets a separate HttpOnly creator-capability cookie
   that is valid through the room expiry. After ordinary access expires, a
   protected creator must reauthenticate with the shared password; that renewal
-  does not replace the still-valid creator capability. Both opaque credentials
-  and the Hub's creator registry remain process-local and are never persisted
-  in SQLite. After a process restart, an existing creator-capability cookie has
-  no authority; a password unlock restores ordinary room access only, and the
-  room has no creator recovery flow.
+  does not replace the still-valid creator capability. SQLite stores only a
+  domain-separated SHA-256 hash of the random 256-bit creator token; the raw
+  token remains solely in the room-scoped cookie. Constant-time validation
+  therefore preserves creator authority across service restart through room
+  expiry. A password unlock restores ordinary room access only, and losing the
+  creator cookie has no recovery flow.
 - A browser can hide the HTTP status from a rejected pre-upgrade WebSocket
   request. After an abnormal reconnect close, the frontend therefore probes the
   authenticated HTTP bootstrap once before each bounded retry. A
@@ -230,18 +235,25 @@ process:
   capped backoff. During access renewal, the existing collaborative workspace
   remains mounted but hidden and read-only behind the password gate, retaining
   its bounded pending CodeMirror state. A successful unlock runs an
-  authenticated HTTP resynchronization before reconnecting. The client and
-  session IDs survive the password gate so the renewed connection reclaims its
-  participant, replays pending edits, and preserves creator authority.
-- Presence and ordinary room password sessions remain process memory only.
-  A reconnect-grace expiry publishes a deterministic participant-removal event
-  before process-local presence and cursor state are discarded.
-- Creator capabilities also remain process-local and are bounded to 10,000
-  active credentials. Creation reserves capacity before inserting the room;
-  concurrent reservations count toward the bound. A full registry rejects the
-  request with generic temporary unavailability, without inserting a room or
-  evicting an unexpired creator credential. Expired credentials are reclaimed
-  when capacity is evaluated.
+  authenticated HTTP resynchronization before reconnecting. The browser
+  participant credential and per-page connection/client IDs survive the gate
+  so the renewed connection reclaims its participant, replays pending edits,
+  and preserves creator authority.
+- One room-scoped, random browser credential in `localStorage` identifies the
+  participant across normal tabs, reload, reopen, and service restart. The raw
+  credential is never logged, broadcast, or stored in SQLite. A
+  domain-separated room/credential hash produces the stable public participant
+  ID and colour. Each mounted page owns a separate connection ID and operation
+  client ID.
+- The Hub groups connections under the browser participant. Heartbeat, current
+  tab, cursor, selection, generation, and last activity are per connection; the
+  nickname and access class are participant-wide. Reconnect grace begins only
+  after the final connection is lost. A stale connection cannot disconnect the
+  group or overwrite another connection's cursor.
+- Active presence and ordinary room password sessions remain process memory
+  only. The browser retains only the resume credential and last authoritative
+  nickname. A reconnect-grace expiry releases active participant capacity and
+  removes process-local cursor state without invalidating the browser identity.
 - Passwords use an adaptive Argon2id hash; the password itself never enters
   URLs, logs, SQLite, or telemetry.
 - The frontend uses a small native WebSocket client and React hooks with
@@ -295,10 +307,11 @@ The server parses plaintext payloads for validation and raw responses. It treats
 
 The live extension adds separate `live_rooms`, `live_documents`, and bounded
 `live_changes` tables. Live room documents are server-readable text. Room
-metadata and each document have independent revision streams. Presence,
-participant names/colours, cursors, selections, joined times, and room-session
-cookies are not durable database data. The complete migration direction and
-limits are defined in
+metadata and each document have independent revision streams. `live_rooms`
+also stores the creator-token hash and durable lock flag. Raw creator tokens,
+browser credentials, participant records, names/colours, cursors, selections,
+joined times, active connections, and room-session cookies are not database
+data. The complete fresh-install schema direction and limits are defined in
 [`LIVE_SHARING_IMPLEMENTATION_PLAN.md`](LIVE_SHARING_IMPLEMENTATION_PLAN.md).
 
 The SQLite implementation exposes a focused `live.RoomStore` boundary with
@@ -525,9 +538,11 @@ selections, acknowledgements, reconnect/resync status, and expiry events. A
 protected room requires a short-lived `HttpOnly`, `SameSite=Strict`, `Secure`
 room session under HTTPS. Live responses use `no-store` and no-index headers.
 Origin, expiry, authorization, connection-rate, and process-wide connection
-checks occur before upgrade. Per-room writer/viewer/total capacity is enforced
-after upgrade when the mandatory `join` supplies the stable room session ID; a
-full room is closed with WebSocket code `1013` before a `joined` event.
+checks occur before upgrade. The mandatory `join` supplies one room-scoped
+browser participant credential, a per-page connection ID, and a per-page
+operation client ID. Per-room collaborator/viewer/total participant capacity
+and the eight-connection participant bound are enforced after upgrade; a full
+room or browser participant closes without a `joined` event.
 The detailed message contract is maintained in the live-sharing implementation
 plan rather than mixed into the paste API contract.
 
@@ -595,8 +610,10 @@ compliant bots can observe those response directives.
 - No paste body or key in persistent browser storage
 - Server state fetched through a small typed API client
 - Live room state is owned by the live-room hook/socket client and CodeMirror;
-  presence, cursors, selections, reconnect queues, and room revisions remain
-  out of persistent browser storage.
+  one versioned room-scoped browser resume credential and the last authoritative
+  nickname may use `localStorage`. Passwords, creator capabilities, access
+  sessions, room content, cursors, selections, reconnect queues, and room
+  revisions remain out of script-visible persistent storage.
 - Avoid a global state library until demonstrated necessary
 
 ### 10.3 CodeMirror
@@ -727,14 +744,16 @@ Metrics:
 - Fuzz tests for slug parsing, payload/envelope decoding, and client-IP header parsing
 - Performance tests for 1 MiB and 10,000-line payloads
 - Live room authority, reconnect, cursor mapping, presence, password, expiry,
-  and WebSocket abuse tests, including race and malformed-message cases
+  browser-profile identity, grouped multi-connection presence, durable creator
+  authority, lock/unlock, and WebSocket abuse tests, including race and
+  malformed-message cases
 
 ## 15. Deferred Architecture
 
 - PostgreSQL adapter and multi-instance coordination
 - Redis/distributed limits
 - Object storage and attachments
-- User identity and authorization
+- Accounts, cross-device identity, and individual participant permissions
 - MCP product interface; it must reuse the companion CLI library rather than
   introducing another protocol implementation
 - Permanent records

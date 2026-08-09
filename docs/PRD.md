@@ -130,13 +130,16 @@ from the initial paste MVP.
    not copy viewed or decrypted content.
 4. User creates a room with one initial tab, an optional shared password, and
    the operator-configured lifetime (up to 24 hours).
-5. Browser opens the room, receives a temporary adjective+noun participant
-   name, and shares the room URL.
+5. Browser opens the room, receives a room-scoped browser identity and
+   adjective+noun participant name, and shares the room URL. Reloading,
+   reopening, or opening another normal tab keeps one participant identity;
+   incognito and other browser profiles join separately.
 6. Participants edit tabs together, see active cursors/selections, observe
    connection state, and can rename their temporary participant name.
-7. The creator can switch the room to watch-only mode or remove an active
-   collaborator. The room supports up to 10 writers, 100 watch-only viewers,
-   and 110 total participants.
+7. The creator can lock or unlock collaboration without losing editing access.
+   Collaborators pause while locked and resume when unlocked; viewers remain
+   read-only. The room supports up to 10 collaborator-capacity participants
+   including the creator, 100 viewers, and 110 total browser participants.
 8. A participant can save either the current tab or every tab appended into a
    single normal paste, then choose the normal paste's expiry and protection
    options.
@@ -239,11 +242,18 @@ the paste requirements above.
   deterministic conflict rules; the last tab cannot be deleted.
 - **FR-LIVE-06:** The browser displays mapped temporary participant cursors and
   selections in the active tab.
-- **FR-LIVE-07:** Each participant receives a unique adjective+noun temporary
-  name, can rename it during the session, and sees it in the participant
-  popover with joined time and connection state.
-- **FR-LIVE-08:** Presence, participant colours, cursors, selections, and
-  joined time are session-only and are not stored in SQLite.
+- **FR-LIVE-07:** Each room-scoped browser participant receives a unique
+  adjective+noun name, can rename it, and sees it in the participant popover
+  with joined time and connection state. Its ID and colour remain stable across
+  reload, reopen, multiple normal tabs, and service restart through room expiry.
+  Its last authoritative nickname is shared across normal tabs and reloads and
+  is offered after restart subject to active-room uniqueness. Incognito/private
+  profiles, other profiles, other devices, cleared site data, and other origins
+  join separately.
+- **FR-LIVE-08:** A participant may own several connection-specific active
+  tabs, cursors, and selections but appears once in the roster and capacity
+  count. Heartbeats, cursors, selections, joined time, and connection state are
+  process-local and are not stored in SQLite.
 - **FR-LIVE-09:** Live room content is server-readable plaintext and does not
   use the paste AES-GCM envelope.
 - **FR-LIVE-10:** A room may require one shared password; protected bootstrap,
@@ -274,11 +284,17 @@ the paste requirements above.
   cursor feedback.
 - **FR-LIVE-15:** LiveBin is optional in the same one-service deployment and
   can be disabled for self-hosted bare-paste installations.
-- **FR-LIVE-16:** The creator's room-scoped temporary session can switch the
-  room to watch-only mode and remove active collaborator sessions without
-  introducing accounts or durable ownership.
-- **FR-LIVE-17:** A room enforces a maximum of 10 writing participants, 100
-  watch-only viewers, and 110 total participants.
+- **FR-LIVE-16:** The creator's room-scoped HttpOnly capability survives service
+  restart through room expiry using a hash-only SQLite record. It can lock and
+  unlock collaboration without introducing accounts or a recovery path after
+  site-data loss. The creator remains editable; collaborators retain their
+  category while their effective editing ability follows the lock; viewers
+  remain read-only. There is no participant kick or individual role management.
+- **FR-LIVE-17:** A room enforces a maximum of 10 collaborator-capacity browser
+  participants including the creator, 100 viewers, 110 total browser
+  participants, and 8 simultaneous tab connections per participant. Participant
+  limits count the browser identity once; process-wide connection limits still
+  count every WebSocket.
 - **FR-LIVE-18:** A participant can export the current tab or all tabs as one
   normal paste, with the normal paste flow choosing expiry, encryption, and
   burn-after-read settings.

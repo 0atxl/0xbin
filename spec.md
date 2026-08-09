@@ -37,7 +37,7 @@ Do not describe the entire service as zero-knowledge or private. Those propertie
 | Redis/PostgreSQL | Not part of the initial design |
 | Maximum paste size | 1 MiB initially; raise only after benchmarks |
 | Public paste index | None |
-| Accounts | Not in MVP; live rooms use temporary session names only |
+| Accounts | Not included; live rooms use room-scoped browser identities without accounts |
 | Live sharing | Approved post-MVP extension under `/live`, separate from paste semantics |
 
 ## 3. URL and Slug Model
@@ -279,23 +279,39 @@ semantics.
   configured tab limit with existing language modes.
 - Multiple participants edit the same documents in real time, including
   visible temporary cursors and selections in the active tab.
-- Each participant receives an adjective+noun temporary display name and can
-  rename it during the session. Presence, colours, cursors, selections, joined
-  time, and connection state are session-only.
+- One browser profile represents one participant per room. Its room-scoped
+  browser credential preserves the participant ID and colour across reload,
+  reopen, multiple normal tabs, and service restart through room expiry. Its
+  last authoritative nickname is reused across normal tabs and reloads and is
+  offered after restart subject to active-room uniqueness. Incognito/private
+  profiles, other browser profiles, other devices, cleared site data, and other
+  origins are separate participants.
+- A participant may own several tab connections. The roster and participant
+  capacity count it once; heartbeat, active tab, cursor, selection, and
+  operation identity remain connection-specific and process-local.
 - Live room content is server-readable plaintext. Client-side AES-GCM paste
   encryption is not used for live rooms.
 - An optional shared password gates entry. It is access control, not
   end-to-end encryption. No account or recovery flow is required.
-- The room creator uses a room-scoped temporary session, not an account, to
-  switch the room to watch-only mode and remove active collaborator sessions.
-- A room allows up to 10 writing participants, up to 100 additional
-  watch-only viewers, and 110 total connected participants.
+- The room creator uses a room-scoped, high-entropy capability in an HttpOnly
+  cookie, not an account. SQLite stores only its hash so creator authority
+  survives service restart through room expiry; losing site data has no
+  recovery path.
+- The creator can lock and unlock collaboration. The creator remains editable;
+  collaborators retain their category but become temporarily read-only while
+  locked; viewers remain read-only. There is no participant kick, ban,
+  promotion, or demotion control.
+- A room allows one creator within up to 10 collaborator-capacity participants,
+  up to 100 additional viewers, and 110 total connected participants. Capacity
+  counts browser participants rather than their individual tab connections.
 - Participants can save either the current tab or every tab as one normal
   paste; the normal paste flow then controls expiry, encryption, and burn.
 - The server is the collaboration authority over WebSockets. P2P/WebRTC is
   not part of the live extension.
-- Live room documents and bounded synchronization history use separate tables
-  and routes from `pastes`; active presence is not stored in SQLite.
+- Live room documents, bounded synchronization history, the creator-capability
+  hash, and lock state use separate tables and routes from `pastes`. Browser
+  credentials, participant records, active connections, cursors, selections,
+  joined time, and connection state are not stored in SQLite.
 - The live UI keeps the existing editor-first visual baseline and notification
   treatment. Technical descriptions do not become unnecessary frontend copy.
 - The existing static paste loading state may use the same minimal top progress
@@ -411,5 +427,7 @@ The live-sharing extension is ready for release only when its separate
 implementation plan passes: concurrent editing converges, reconnect and
 resynchronization preserve acknowledged work, cursors and selections map
 correctly, optional password gates protect every access path, rooms expire and
-clean up at their configured lifetime (never longer than 24 hours), presence remains session-only, and the existing paste
-journeys remain unchanged apart from the approved loading-bar visual update.
+clean up at their configured lifetime (never longer than 24 hours), browser
+identity and creator authority follow the settled restart behavior, active
+presence remains process-local, and the existing paste journeys remain
+unchanged apart from the approved loading-bar visual update.

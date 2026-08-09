@@ -2,18 +2,17 @@
 
 ## Status
 
-**Planned. Phase 0 has not started.**
+**Phase 0 complete (2026-08-09). Phase 1 is next and has not started.**
 
 This plan defines the bounded behavioral foundation that must be completed
 before the live-workspace visual pass, final verification, and merge. It does
 not reopen the general LiveBin feature scope.
 
 The existing live-sharing implementation and release-hardening work are
-complete, but the current normative documents still describe process-local
-creator authority, one active connection per participant session, creator
-session removal, and a room-wide watch-only role. Phase 0 must reconcile those
-documents before implementation begins. Until then, `spec.md` remains the
-repository authority.
+complete. Phase 0 reconciled the former process-local creator authority,
+one-connection participant model, creator session removal, and one-way
+room-wide watch-only behavior across the normative documents. `spec.md`
+remains the repository authority.
 
 ## 1. Objective
 
@@ -268,6 +267,17 @@ requirements before implementation.
 - No normative document still requires process-local creator invalidation,
   creator read-only locking, or active participant removal.
 - The plan has no unresolved product or security choice.
+
+### Completion record — 2026-08-09
+
+- Reconciled `spec.md`, the PRD, technical and frontend designs, delivery and
+  implementation plans, WebSocket contract, and OpenAPI description.
+- Confirmed the sibling `0xbin-cli` repository consumes only the paste API and
+  encrypted-envelope contracts. It has no LiveBin endpoint or WebSocket
+  consumer, so Phase 0 requires no companion change.
+- Preserved the existing paste routes, encrypted envelope, URL-fragment key
+  handling, expiry, and burn-after-read contracts.
+- The Phase 0 gate passes. Phase 1 remains intentionally unstarted.
 
 ## Phase 1 — Add durable creator and lock storage
 

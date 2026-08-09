@@ -5,10 +5,9 @@ delivery plans, and tooling notes intended for AI coding agents and
 maintainers working on the project.
 
 The live-sharing extension is implemented through Steps 0A–13 of its
-implementation plan, and release-hardening Phases 0–10 are complete. A bounded
-browser-identity and creator-authority evolution is planned but has not started;
-its contract-reconciliation phase precedes implementation and the later
-live-workspace visual pass.
+implementation plan, and release-hardening Phases 0–10 are complete. Phase 0
+of the bounded browser-identity and creator-authority evolution is complete;
+Phase 1 implementation is next, before the later live-workspace visual pass.
 
 The repository-level instructions remain in [`AGENTS.md`](../AGENTS.md) at
 the repository root because agent tools discover that filename there.

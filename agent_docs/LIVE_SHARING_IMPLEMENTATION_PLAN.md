@@ -8,7 +8,8 @@
 complete. The approved browser-identity and creator-authority evolution is
 planned separately in
 [`LIVE_SHARING_IDENTITY_AUTHORITY_PLAN.md`](LIVE_SHARING_IDENTITY_AUTHORITY_PLAN.md)
-and has not started.
+and its contract-reconciliation Phase 0 is complete. Phase 1 implementation is
+next and has not started.
 
 **Related:** [`spec.md`](../spec.md), [`docs/PRD.md`](../docs/PRD.md),
 [`agent_docs/TECHNICAL_DESIGN.md`](TECHNICAL_DESIGN.md),
@@ -63,15 +64,24 @@ uploads, permanent storage, or a second service.
   extend expiry.
 - Expiry is enforced on room bootstrap, password unlock, WebSocket upgrade,
   and every accepted room operation. Cleanup only reclaims storage.
-- Anyone with the room URL can join and edit an unprotected room.
-- The creator receives a room-scoped session at creation time. This is a
-  temporary capability, not an account or durable ownership record. The
-  creator can switch the room to watch-only mode and can remove active
-  collaborator sessions. Kicked sessions cannot continue editing or immediately
-  rejoin with the invalidated session; without accounts, someone who still has
-  the room URL may rejoin as a new session while the room remains open.
-- A room supports at most 10 writing participants, including the creator, up
-  to 100 additional watch-only viewers, and 110 total connected participants.
+- Anyone with the room URL can join an unprotected room. Collaborator capacity
+  and the durable room lock determine effective editing ability.
+- One browser profile represents one room participant across reload, reopen,
+  service restart, and multiple normal tabs. Incognito/private profiles, other
+  profiles, other devices, cleared site data, and other origins join as separate
+  participants. Each tab keeps a separate connection, operation client, active
+  tab, and cursor beneath the shared browser participant.
+- The creator receives a room-scoped random capability at creation time. It is
+  not an account or transferable ownership record. Only its hash is stored in
+  SQLite, so the HttpOnly cookie retains authority across service restart until
+  room expiry; site-data loss has no recovery path.
+- The creator can lock and unlock collaboration while remaining editable.
+  Collaborators keep their category and pause/resume editing with the lock;
+  viewers remain read-only. Active participant removal and individual role
+  management are not part of the product.
+- A room supports at most 10 collaborator-capacity browser participants
+  including the creator, up to 100 additional viewers, 110 total browser
+  participants, and 8 simultaneous tab connections per participant.
   These are hard room bounds; request and message rate limits remain
   operator-configurable. A hosted deployment may add Cloudflare or another
   edge limiter, while a personal self-hosted deployment may choose lenient
@@ -87,7 +97,8 @@ uploads, permanent storage, or a second service.
   collision instead of adding digits. A participant can rename themselves
   from the participant popover, and renamed values are also case-insensitively
   unique within the active room.
-- Nicknames are session-scoped and are not accounts or durable identities.
+- Nicknames are room-scoped browser identity, not accounts or cross-device
+  identities.
 - A room may optionally require one shared password. Password protection gates
   entry; it does not encrypt the room content from the server or database
   operator.
@@ -96,16 +107,19 @@ uploads, permanent storage, or a second service.
 
 ### 1.3 Presence and network state
 
-Presence is ephemeral process memory, not durable room data. The live hub keeps
-the active connection ID, nickname, joined time, current tab, heartbeat state,
-connection status, stable session colour, and current cursor/selection. It
-sends the roster to a new connection and broadcasts join, leave, reconnect,
-rename, cursor/selection, and status changes to other connected participants.
+Active presence is ephemeral process memory, not durable room data. A random,
+room-scoped browser credential in `localStorage` produces the stable public
+participant ID and colour; the browser also retains the last authoritative
+nickname. The live hub groups up to eight tab connections beneath that
+participant. It tracks joined time, heartbeat, connection status, active tab,
+cursor/selection, and operation client identity per connection, sends one
+participant roster row, and broadcasts connection-specific presence.
 
-SQLite stores the room and document state, not the active participant roster.
-This avoids stale users, avoids a database write per heartbeat, and means a
-process restart naturally clears presence; users repopulate the roster when
-they reconnect.
+SQLite stores the room/document state, creator-token hash, and room lock, not
+the browser credential or active participant roster. This avoids stale users
+and a database write per heartbeat. A process restart clears active presence;
+the browser credential reconstructs the same participant ID, colour, and
+validated nickname when tabs reconnect.
 
 The UI exposes:
 
@@ -128,9 +142,11 @@ data is ephemeral presence and is never written to SQLite or change history.
 
 ### 1.4 Explicit non-goals
 
-- Signup, login, accounts, ownership, or room recovery
-- Per-user permissions or user-selected view-only access; the creator's
-  room-wide watch-only mode remains part of the settled contract
+- Signup, login, accounts, ownership transfer, cross-device identity, or
+  creator recovery after site-data loss
+- Per-user permissions, user-selected view-only access, participant removal,
+  promotion, demotion, or banning; the creator's reversible room lock remains
+  part of the settled contract
 - Saved rooms, user-visible version history, revisions, or forks (internal
   synchronization counters and bounded rebase history are not product
   versioning)
@@ -298,8 +314,10 @@ limit.
 
 Client to server:
 
-- `join`: client/session ID and last-known metadata and document revisions;
-  the server returns the generated or reconnecting participant identity
+- `join`: browser participant credential, per-page connection/client IDs,
+  optional last authoritative nickname, and last-known metadata/document
+  revisions; the server returns the grouped participant identity and effective
+  editing state
 - `push_changes`: document ID, base revision, serialized change sets
 - `document_create`: requested tab name and language
 - `document_update`: tab name/language/order changes
@@ -307,6 +325,7 @@ Client to server:
 - `document_reorder`: ordered document IDs
 - `presence`: current tab, document revision, cursor/selection anchor and head
 - `participant_rename`: requested temporary display name
+- `room_watch_only`: creator-only durable lock or unlock request
 - `ack`: highest metadata revision and per-document revisions the client has
   applied
 
@@ -339,7 +358,9 @@ joins again.
   connection without the library's supported mechanism.
 - Set a maximum frame size and per-room message budget.
 - Send periodic server pings and require pong/heartbeat progress.
-- Remove a participant after a bounded heartbeat timeout.
+- Mark one connection lost after its bounded heartbeat timeout. Remove the
+  participant's transient presence only after its final connection has been
+  lost for the reconnect-grace interval.
 - Close all live connections during application shutdown and flush pending
   room snapshots before closing SQLite.
 - Configure the reverse proxy to pass WebSocket upgrades and allow an idle
@@ -400,7 +421,10 @@ delete, and reorder events, but the invariants remain:
 - Room and document content is server-readable and never logged.
 - Passwords are represented only by an adaptive password hash.
 - Timestamps are UTC Unix seconds, matching existing storage.
-- Presence and short-lived room-auth sessions are process memory only.
+- Active presence and short-lived room-password sessions are process memory
+  only. The room stores its creator-token hash and lock state; the browser
+  stores its room-scoped participant credential and last authoritative
+  nickname.
 - Room metadata and each document have independent revision streams.
 - Metadata changes use one reserved, non-user document `stream_id`; document
   changes use their stable server-generated document ID.
@@ -427,9 +451,10 @@ Initial safety defaults, subject to benchmark confirmation:
 - 1 MiB aggregate document content per room
 - The aggregate content setting also bounds each individual document; there is
   no independent per-document operator setting.
-- 10 writing participants per room, including the creator
-- 100 additional watch-only viewers per room
-- 110 total participants per room
+- 10 collaborator-capacity browser participants per room, including the creator
+- 100 additional viewers per room
+- 110 total browser participants per room
+- 8 simultaneous tab connections per browser participant
 - 32 UTF-8 bytes for nicknames
 - 64 UTF-8 bytes for tab names
 - 64 UTF-8 bytes for language identifiers
@@ -477,8 +502,10 @@ The server validates all limits, generates the live slug, calculates the
 }
 ```
 
-The response never echoes the password or password hash. Successful creation
-of a protected room also issues the creator's room-scoped session cookie so
+The response never echoes the password, password hash, creator token, or
+creator-token hash. Creation issues the raw random creator capability only in a
+room-scoped HttpOnly cookie and stores only its domain-separated SHA-256 hash in
+SQLite. A protected room also receives the short-lived room-access cookie so
 the creator is not immediately asked to enter the same password again.
 
 ### 4.2 Bootstrap and unlock
@@ -491,7 +518,9 @@ the creator is not immediately asked to enter the same password again.
   `HttpOnly`, `SameSite=Strict` session cookie.
 - Set the cookie's `Secure` attribute whenever the public origin uses HTTPS;
   allow a non-Secure cookie only for explicit local HTTP development.
-- The cookie is not an account credential and is not stored in SQLite.
+- The room-access cookie is not an account credential and is not stored in
+  SQLite. The separate creator cookie is also not an account credential; only
+  its high-entropy token hash is durable through room expiry.
 - The WebSocket handshake accepts a protected room only with that session.
 - Passwords never appear in URLs, query strings, local storage, analytics,
   request IDs, error reports, or logs.
@@ -639,9 +668,9 @@ wire envelope and add property/fuzz coverage around the configured limits.
 1. Add the selected WebSocket package, password-hashing package, CodeMirror
    collaboration package, and `topbar`.
 2. Add validated configuration for live room lifetime, maximum tabs, total
-   bytes, writing-participant/viewer/total-participant bounds, message size,
-   connection limits, heartbeat, unlock attempts, and snapshot/compaction
-   bounds.
+   bytes, collaborator/viewer/total browser-participant bounds, message size,
+   global and per-participant connection limits, heartbeat, unlock attempts,
+   and snapshot/compaction bounds.
    `OXBIN_LIVE_MAX_BYTES` is the one content budget: it applies to the room
    aggregate and therefore to every individual document. The public
    `max_document_bytes` field is an equal compatibility/semantic alias, not a
@@ -713,8 +742,9 @@ steps.
 3. Load a room snapshot when the first client connects and evict it after the
    final client leaves or expiry is reached.
 4. Add per-tab authority state and bounded recent history.
-5. Add the participant registry with nickname, session ID, joined time,
-   stable colour, current tab, cursor/selection, heartbeat, and status.
+5. Add the participant registry keyed by a stable room/browser identity, with a
+   bounded connection map for per-tab joined time, active tab,
+   cursor/selection, heartbeat, generation, operation client, and status.
 6. Serialize room operations so document changes, tab metadata, and expiry
    transitions cannot race.
 7. Add cancellation-aware shutdown that closes connections and flushes dirty
@@ -724,11 +754,13 @@ steps.
    last remaining tab cannot be deleted; duplicate creates are idempotent by
    operation ID; and a stale reorder receives the latest metadata state for
    resynchronization instead of partially applying.
-9. Enforce creator-scoped watch-only mode, active-session removal, and the
-   10-writer/100-viewer/110-total capacity bounds in the authority.
-10. Keep generated/renamed nickname uniqueness, cursor presence, and colours in
-   process memory only. A reconnecting session reclaims its identity during
-   the bounded reconnect grace period; a new session receives a new identity.
+9. Enforce creator-editable lock/unlock, stable access categories, the
+   10-collaborator/100-viewer/110-participant bounds, and the eight-connection
+   participant bound in the authority. Do not add participant removal.
+10. Keep generated/renamed nickname uniqueness and active connection/cursor
+   presence in process memory. A browser credential reclaims the same
+   participant across tabs, reload, reopen, and restart; reconnect grace begins
+   only after its final active connection is lost.
 
 **Gate:** Unit and race tests prove deterministic room mutation, durable-before-
 acknowledgement ordering, tab conflict rules, presence join/leave behavior,
@@ -842,8 +874,9 @@ viewer content never transfers.
    control. Do not populate the editor with fake example content.
 6. Validate tab/password/content limits before submitting. Do not add a
    nickname field or nickname gate; identity is generated on room join.
-7. On success, copy the room URL and navigate to `/live/{slug}`. Protected-room
-   creation must carry the creator's new room session without another prompt.
+7. On success, copy the room URL and navigate to `/live/{slug}`. Creation must
+   carry the creator capability, and a protected room must also carry its new
+   password-access session without another prompt.
 8. Handle clipboard failure with the existing retryable feedback pattern.
 9. Route create, validation, copy, and network outcomes through the shared
    notification system; do not duplicate an error inline. Reset an empty first
@@ -857,7 +890,7 @@ are presented clearly.
 flow with the existing language selector and CodeMirror editor, visible labels,
 inline name/password/content validation, the compact 24-hour lifetime, and the
 optional `Require password` control. Successful creation copies the room URL,
-navigates to the room, and preserves the creator's scoped session cookie;
+navigates to the room, and preserves the scoped creator and room-access cookies;
 clipboard failure has retryable toast feedback. The live snapshot response now
 always includes its zero-valued metadata revision so the frontend and backend
 share one bootstrap contract. The password, encryption, and paste-only expiry
@@ -871,11 +904,12 @@ in the Go binary. Live `changes` WebSocket events carry the CodeMirror change
 set and revisions only; full documents remain in HTTP snapshots and are used
 for initial load or explicit resynchronization.
 
-**Completion update (2026-08-08):** The collaborative room UI, creator-only
-watch-only/session-removal controls, reconnect/cursor hardening, API contract,
-and browser coverage are implemented. The remediation plan records any
-remaining later-phase follow-up without reopening completed implementation
-steps.
+**Completion update (2026-08-08):** The original collaborative room UI,
+one-way watch-only/session-removal controls, reconnect/cursor hardening, API
+contract, and browser coverage were implemented. The later approved browser
+identity and authority contract supersedes those control/session semantics and
+is sequenced in
+[`LIVE_SHARING_IDENTITY_AUTHORITY_PLAN.md`](LIVE_SHARING_IDENTITY_AUTHORITY_PLAN.md).
 
 ### Recommended performance sequence
 
@@ -921,8 +955,9 @@ bundle warning alone.
    local to each browser.
 7. Show room URL copy, expiry, participant status, and connection status in the
    room toolbar.
-8. Show creator-only controls for watch-only mode and active-session removal;
-   make kicked sessions read-only/denied and do not present account ownership.
+8. Show a creator-only Lock/Unlock control. Keep the creator editable, pause
+   collaborators while locked, leave viewers read-only, and do not add
+   participant removal or account ownership UI.
 9. Add `Save as paste` with `Current tab` and `Every tab` choices. For every
    tab, append clearly separated tab contents into one normal paste and return
    to the standard paste options before upload.
@@ -939,8 +974,9 @@ bundle warning alone.
 13. Keep room chrome limited to working controls and current state. Do not add
     editor welcome text, instructional panels, fake cursors/participants,
     empty metadata rows, or badges describing the collaboration technology.
-14. Add remote cursor and selection CodeMirror decorations for participants in
-    the active tab. Keep colours stable by session ID, render a compact name
+14. Add remote cursor and selection CodeMirror decorations for participant
+    connections in the active tab. Keep colours stable by browser participant
+    ID, render a compact name
     label while active, fade the label when idle, and clear decorations on tab
     switch, leave, timeout, and resync.
 15. Throttle/coalesce cursor traffic, bound presence payloads, associate every
@@ -951,10 +987,11 @@ bundle warning alone.
 **Gate:** A user can use every existing language, switch tabs without data
 loss, edit a room from two browser contexts while changes converge, recover
 queued text after a temporary disconnect, and cannot perform unsafe structural
-tab operations before metadata resynchronizes. Creator watch-only and
-session-removal controls, capacity bounds, and current/all-tab paste export
-work without introducing durable accounts. Remote cursors and selections track
-the correct text under concurrent edits without entering durable state.
+tab operations before metadata resynchronizes. Creator-editable lock/unlock,
+stable access categories, grouped participant capacity, and current/all-tab
+paste export work without introducing durable accounts or participant-removal
+controls. Remote cursors and selections track the correct connection/text under
+concurrent edits without entering durable server state.
 
 ### Step 9 — Presence and network-status popover
 
@@ -963,9 +1000,11 @@ the correct text under concurrent edits without entering durable state.
 3. Show Connected/Reconnecting/Offline for the local user. Show Connected,
    Connection lost, or Offline for remote participants, plus relative joined
    time; do not infer that a remote browser is actively reconnecting.
-4. Broadcast current-tab changes as ephemeral presence only.
-5. Remove stale participants after heartbeat timeout and announce the change
-   without exposing IP addresses or private diagnostics.
+4. Broadcast connection-specific current-tab/cursor changes as ephemeral
+   presence while keeping one roster row per browser participant.
+5. Mark a participant stale only after its final connection exceeds heartbeat
+   timeout and reconnect grace; announce the change without exposing IP
+   addresses or private diagnostics.
 6. Add reduced-motion and narrow-screen behavior.
 7. Render only real current participants. Do not show sample avatars, empty
    participant slots, or explanatory text when the roster is otherwise
@@ -973,8 +1012,9 @@ the correct text under concurrent edits without entering durable state.
 8. Assign a unique adjective+noun name automatically on first join. Add a
    compact rename action to the participant popover, enforce active-room
    uniqueness, and retain the participant's colour when renamed.
-9. Keep reconnecting identity stable within the reconnect grace period and
-   expose no nickname field before an unprotected room opens.
+9. Keep browser identity stable across tabs, reload, reopen, and restart. Limit
+   one participant to eight active connections and expose no nickname field
+   before an unprotected room opens.
 
 **Gate:** Presence is correct for join, leave, reconnect, duplicate tabs, and
 server restart; it is absent from SQLite and not emitted into logs.
@@ -986,13 +1026,16 @@ server restart; it is absent from SQLite and not emitted into logs.
 2. Keep the gate to a visible `Password` label, field, submit action, and
    contextual error when needed. Do not add encryption/storage explanations
    to the gate.
-3. Do not place the password or session token in the URL, local storage,
-   clipboard, error messages, or telemetry.
+3. Do not place the password, password-access session, or creator token in the
+   URL, script-visible storage, clipboard, error messages, or telemetry. The
+   separate non-authorizing browser participant credential may use
+   `localStorage` only under its versioned room-scoped key.
 4. Provide a retry path for wrong passwords without additional account or
    recovery copy.
 5. Test cookie scope, expiry, same-origin WebSocket behavior, invalid Origin,
-   brute-force request limits, Argon2id concurrency limits, and session
-   invalidation after server restart.
+   brute-force request limits, Argon2id concurrency limits, password-session
+   invalidation after server restart, and creator-capability survival across
+   restart.
 6. Verify successful protected-room creation authenticates the creator and
    production HTTPS uses a `Secure`, `HttpOnly`, `SameSite=Strict` cookie.
 
@@ -1129,8 +1172,9 @@ container and one SQLite volume.
 - Concurrent tab conflicts follow deterministic rules: deletion wins, the
   final tab cannot be deleted, duplicate creates are idempotent, and stale
   reorder requests resynchronize.
-- Server restart restores room snapshots and requires protected-room unlock
-  again when in-memory sessions were lost.
+- Server restart restores room snapshots, creator authority, lock state, and
+  browser participant identity. Protected-room access still requires unlock
+  again when the short-lived in-memory access session was lost.
 - Expiry wins over a pending update and closes all active connections.
 
 ### Security and privacy
@@ -1145,8 +1189,10 @@ container and one SQLite volume.
 - WebSocket `Origin` validation rejects cross-site connection attempts.
 - Oversized frames, message floods, and connection floods are bounded.
 - Nicknames, tab names, and content render as inert text.
-- Nicknames, cursor positions, selections, participant colours, and other
-  presence are not durable and are not exposed after room shutdown/restart.
+- Raw browser credentials, cursor positions, selections, joined times,
+  connection status, and other active presence are not durable server data.
+  Stable participant ID/colour derive from the browser credential, and the
+  browser may resubmit its last authoritative nickname after restart.
 - Decrypted encrypted-paste content is never placed in a live handoff or live
   create request by the viewer's LiveBin control.
 - Live plaintext storage is documented honestly; no end-to-end-encryption claim
@@ -1168,6 +1214,13 @@ The extension is complete when:
 - Participants can see temporary nicknames and connection state.
 - Participants can rename generated adjective+noun identities and see remote
   cursors/selections in the active tab without durable presence storage.
+- One browser profile occupies one participant roster/capacity entry across
+  reload, reopen, service restart, and multiple normal tabs; incognito and
+  other profiles remain separate.
+- Creator authority and lock state survive restart through room expiry. Lock
+  and unlock converge for every connection while the creator remains editable,
+  collaborators pause/resume, and viewers remain read-only.
+- No participant kick or individual role-management path remains.
 - Local and remote connection labels only claim states the browser/server can
   actually observe.
 - The frontend follows Section 1.5: every visible element is functional or

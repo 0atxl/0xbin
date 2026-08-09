@@ -7,7 +7,8 @@ public-beta work remains open. The separate Phase 5 live-sharing extension,
 release hardening, and independent audit are complete. A bounded
 browser-identity and creator-authority evolution is planned in
 [`LIVE_SHARING_IDENTITY_AUTHORITY_PLAN.md`](LIVE_SHARING_IDENTITY_AUTHORITY_PLAN.md)
-before the live-workspace visual pass and final merge.
+before the live-workspace visual pass and final merge. Its contract-reconciliation
+Phase 0 is complete; Phase 1 implementation is next and has not started.
 
 ## Phase 0 — Foundation
 
@@ -160,12 +161,11 @@ Includes:
 Implementation plan: [`LIVE_SHARING_IMPLEMENTATION_PLAN.md`](LIVE_SHARING_IMPLEMENTATION_PLAN.md),
 Steps 0A–13.
 
-Release hardening through contract-and-limit reconciliation is complete. The
+Release hardening and its independent audit are complete. The
 single configured live content budget applies to the room aggregate and every
 individual document; HTTP exposes `max_document_bytes` only as an equal
-semantic alias. The maintainability review and release-candidate gate are
-complete; only the independent release audit remains in the separate release
-plan.
+semantic alias. The maintainability review and release-candidate gate are also
+complete.
 
 Exit criteria:
 
@@ -173,17 +173,20 @@ Exit criteria:
   reconnect, and cursor/selection mapping tests.
 - Password, origin, message-size, connection, expiry, and presence boundaries
   pass negative tests.
-- A live room survives restart through durable snapshots, but presence and
-  room sessions do not survive.
+- A live room survives restart through durable snapshots, creator authority,
+  and lock state. Browser identity reconstructs the same participant when tabs
+  reconnect; active connections, cursors, heartbeats, and password-access
+  sessions remain process-local.
 - The existing paste API, encryption, burn, expiry, rendering, and action
   behavior remain unchanged apart from the approved loading-bar visual update.
 - Full repository formatting, lint, unit, race, browser, build, and self-host
   checks pass.
 
 Not included: accounts, media calls, screen sharing, execution, file uploads,
-saved live rooms, user-visible history, per-participant permissions or
-user-selected view-only roles, or multi-instance coordination. The creator's
-room-wide watch-only mode is included.
+saved live rooms, user-visible history, per-participant permissions,
+participant kicking, user-selected view-only roles, or multi-instance
+coordination. The creator's reversible room lock is included; it pauses
+collaborators while leaving the creator editable and viewers read-only.
 
 ## Phase 6 — Post-MVP Improvements
 
