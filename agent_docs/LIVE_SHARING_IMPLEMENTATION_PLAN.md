@@ -804,7 +804,7 @@ frontend E2E suite also remains green.
    remove the visible centered `Loading paste…` placeholder but preserve an
    accessible hidden loading announcement and all existing failure states.
 9. Implement the `LiveBin` handoff in memory: create-editor title maps to
-   the first tab name (falling back to `main`), language maps to language, and
+   the first tab name (falling back to `tab1`), language maps to language, and
    content maps exactly to content. Do not carry paste expiry, burn, encryption,
    or other paste-only settings.
 10. From every paste-viewer state, open a blank live draft. Add a negative test
@@ -818,24 +818,29 @@ viewer content never transfers.
 
 ### Step 7 — Live creation flow
 
-1. Build `/live` with a first-tab name, language selector, optional password
-   toggle, password field, and `Create LiveBin room` action.
+1. Build `/live` with a borderless, directly editable title-style first-tab name
+   (defaulting to `tab1`), the existing right-aligned language selector, an
+   icon-only optional-password toggle with an animated placeholder field and
+   compact confirmation action, and a text-only `Create` action. Enter in the
+   password field confirms and focuses Create without submitting the room.
 2. Reuse the existing reviewed language choices and CodeMirror editor setup.
-3. Show the server-provided room lifetime once in compact, functional form. Do not add
+3. Keep the configured fixed room lifetime out of the creation toolbar; the
+   public configuration and documentation remain authoritative. Do not add
    `unencrypted`, `plaintext`, `browser-first`, `collaborative`, or similar
    descriptive copy to the page.
-4. Label the optional control simply as `Require password`; do not surround it
-   with a security explainer or promotional copy.
-5. Use visible field labels. Do not use placeholder text as a substitute for
-   labels or populate the form with fake example content.
+4. Give the icon-only optional control the accessible name `Require password`;
+   do not surround it with a security explainer or promotional copy.
+5. Keep programmatic labels for the borderless title-style tab-name and compact
+   password inputs while using `tab1` and `Password` as their visible in-field
+   cues. Do not populate the editor with fake example content.
 6. Validate tab/password/content limits before submitting. Do not add a
    nickname field or nickname gate; identity is generated on room join.
 7. On success, copy the room URL and navigate to `/live/{slug}`. Protected-room
    creation must carry the creator's new room session without another prompt.
 8. Handle clipboard failure with the existing retryable feedback pattern.
-9. Route create/copy/network outcomes through the shared notification system;
-   keep validation errors inline and avoid showing the same event in both a
-   toast and permanent page copy.
+9. Route create, validation, copy, and network outcomes through the shared
+   notification system; do not duplicate an error inline. Reset an empty first
+   tab name to `tab1`, toast `Tab name cannot be empty`, and stop that submit.
 
 **Gate:** Plain and password-protected rooms create successfully; the password
 never appears in the returned URL or response; invalid and oversized requests

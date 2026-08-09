@@ -320,13 +320,9 @@ View once    1 hour    1 day    3 days
 
 ### Encryption control
 
-Place the encryption toggle close to the Create action.
-
-Default copy:
-
-```text
-Encrypt this paste
-```
+Place an icon-only lock toggle close to the text-only Create action. Give it
+the accessible name and tooltip `Encrypt`; do not render visible `Encrypt`
+copy or an arrow inside either creation action.
 
 When enabled, show a brief accessible toast:
 
@@ -756,8 +752,22 @@ marketing page.
   live room is created.
 - From an existing paste viewer, always open a blank live creator. Never copy
   viewed or decrypted content automatically.
-- The live creator has one initial tab, existing language modes, an optional
-  `Require password` control, and the server-provided room lifetime.
+- The live creator mirrors the paste creator's minimal editor-first layout. Its
+  initial background tab name is `tab1`; show that value in the same borderless,
+  directly editable title treatment as paste creation. Keep the language menu
+  on the right without an added `Language` heading, show the configured default
+  limit as `1 MiB` beside the byte count, and do not add a separate content
+  header or visible fixed-lifetime label. Both Create actions are text-only.
+- Represent optional password protection with an accessible icon-only lock
+  toggle. Reveal a compact input with the `Password` placeholder using the
+  shared motion treatment and an icon-only `Set password` action. Enter in the
+  password field performs that action, validates through toasts, and focuses
+  Create; it must never create the room directly. Respect reduced-motion
+  preferences.
+- Route every live-creation validation and request failure through the shared
+  toast system rather than adding inline error copy. If the initial tab name is
+  cleared, restore `tab1`, show `Tab name cannot be empty`, and do not submit
+  until the user retries.
 - Participants receive unique adjective+noun names automatically, can rename
   themselves from the participant popover, and retain a stable colour.
 - The participant popover shows only real participants, their joined time,

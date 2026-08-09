@@ -107,8 +107,7 @@ async function createPaste(page, content, options = {}) {
       })
       .click();
   }
-  if (options.encrypted)
-    await page.getByText("Encrypt", { exact: true }).click();
+  if (options.encrypted) await page.getByTitle("Encrypt").click();
   await page.getByRole("button", { name: "Create", exact: true }).click();
   await page.waitForURL((url) => url.pathname !== "/");
   return page.url();
@@ -209,8 +208,20 @@ try {
   progress("checking create screen and responsive layout");
   await page.goto(webOrigin);
   await assertNoSeriousAccessibilityIssues(page, "create screen");
+  assert.equal(
+    await page.locator(".create-canvas .primary-action svg").count(),
+    0,
+    "paste creation should use a text-only Create action",
+  );
+  assert.equal(
+    await page
+      .getByTitle("Encrypt")
+      .evaluate((control) => Math.round(control.getBoundingClientRect().width)),
+    32,
+    "paste encryption should use the compact icon-only control",
+  );
   await page.emulateMedia({ reducedMotion: "reduce" });
-  await page.getByText("Encrypt", { exact: true }).click();
+  await page.getByTitle("Encrypt").click();
   await expectVisible(page, "The key stays in the copied link.");
   await assert.equal(
     await page
@@ -306,11 +317,56 @@ try {
   progress("checking LiveBin room, tabs, collaboration, and paste export");
   await page.goto(webOrigin);
   await page.getByRole("button", { name: "Open LiveBin" }).click();
-  await page.getByLabel("Tab name").fill("main");
+  const liveCreateTabName = page.getByLabel("Tab name");
+  assert.equal(
+    await page.locator(".live-create-canvas .byte-count").textContent(),
+    "0 B / 1 MiB",
+    "LiveBin should use the paste creator's MiB limit presentation",
+  );
+  assert.equal(
+    await liveCreateTabName.evaluate(
+      (input) => getComputedStyle(input).borderTopWidth,
+    ),
+    "0px",
+    "the initial tab name should reuse the borderless paste-title treatment",
+  );
+  assert.equal(
+    await page.locator(".live-create-canvas .primary-action svg").count(),
+    0,
+    "LiveBin creation should use a text-only Create action",
+  );
+  assert.equal(
+    await page.locator(".live-metadata-bar").evaluate((bar) => {
+      const input = bar.querySelector("input");
+      const language = bar.querySelector(".custom-select > button");
+      if (!(input instanceof HTMLElement) || !(language instanceof HTMLElement))
+        return false;
+      return (
+        input.getBoundingClientRect().right <=
+        language.getBoundingClientRect().left
+      );
+    }),
+    true,
+    "the language selector should remain to the right of the title-style tab name",
+  );
+  await liveCreateTabName.fill("");
+  await page.getByRole("button", { name: "Create", exact: true }).click();
+  await expectVisible(page, "Tab name cannot be empty");
+  assert.equal(
+    await liveCreateTabName.inputValue(),
+    "tab1",
+    "an empty initial tab name should reset to its background default",
+  );
+  assert.equal(
+    new URL(page.url()).pathname,
+    "/live",
+    "correcting an empty tab name should not submit the room",
+  );
+  await liveCreateTabName.fill("main");
   await page
     .locator(".live-create-canvas .cm-content")
     .fill("shared main content");
-  await page.getByRole("button", { name: "Create LiveBin room" }).click();
+  await page.getByRole("button", { name: "Create", exact: true }).click();
   await page.waitForURL((url) => url.pathname.startsWith("/live/"));
   const liveRoomURL = page.url();
   await expectVisible(page, "Connected");
@@ -579,7 +635,7 @@ try {
     .locator(".live-create-canvas .cm-content")
     .fill("base");
   await acknowledgementPage
-    .getByRole("button", { name: "Create LiveBin room" })
+    .getByRole("button", { name: "Create", exact: true })
     .click();
   await acknowledgementPage.waitForURL((url) =>
     url.pathname.startsWith("/live/"),
@@ -721,7 +777,7 @@ try {
     .locator(".live-create-canvas .cm-content")
     .fill("revision");
   await disagreementPage
-    .getByRole("button", { name: "Create LiveBin room" })
+    .getByRole("button", { name: "Create", exact: true })
     .click();
   await disagreementPage.waitForURL((url) => url.pathname.startsWith("/live/"));
   const disagreementURL = disagreementPage.url();
@@ -825,7 +881,7 @@ try {
     .locator(".live-create-canvas .cm-content")
     .fill("accepted");
   await validationPage
-    .getByRole("button", { name: "Create LiveBin room" })
+    .getByRole("button", { name: "Create", exact: true })
     .click();
   await validationPage.waitForURL((url) => url.pathname.startsWith("/live/"));
   const validationURL = validationPage.url();
@@ -873,7 +929,7 @@ try {
   await stalePage.goto(webOrigin);
   await stalePage.getByRole("button", { name: "Open LiveBin" }).click();
   await stalePage.locator(".live-create-canvas .cm-content").fill("base");
-  await stalePage.getByRole("button", { name: "Create LiveBin room" }).click();
+  await stalePage.getByRole("button", { name: "Create", exact: true }).click();
   await stalePage.waitForURL((url) => url.pathname.startsWith("/live/"));
   const staleRoomURL = stalePage.url();
   const staleSlug = new URL(staleRoomURL).pathname.split("/").pop();
@@ -970,7 +1026,7 @@ try {
   const staleEditor = stalePage.locator(".live-code-editor .cm-content");
   await staleEditor.click();
   await staleEditor.pressSequentially("y");
-  await staleObserver.getByRole("button", { name: "main" }).click();
+  await staleObserver.getByRole("button", { name: "tab1" }).click();
   await staleObserver.waitForFunction(() => {
     const editor = document.querySelector(".live-code-editor .cm-content");
     if (!editor) return false;
@@ -1019,7 +1075,7 @@ try {
   await failedPage.goto(webOrigin);
   await failedPage.getByRole("button", { name: "Open LiveBin" }).click();
   await failedPage.locator(".live-create-canvas .cm-content").fill("recover");
-  await failedPage.getByRole("button", { name: "Create LiveBin room" }).click();
+  await failedPage.getByRole("button", { name: "Create", exact: true }).click();
   await failedPage.waitForURL((url) => url.pathname.startsWith("/live/"));
   const failedSlug = new URL(failedPage.url()).pathname.split("/").pop();
   await expectVisible(failedPage, "Connected");
@@ -1070,12 +1126,28 @@ try {
   progress("checking protected LiveBin access and hostile text rendering");
   await page.goto(webOrigin);
   await page.getByRole("button", { name: "Open LiveBin" }).click();
-  await page.getByText("Require password", { exact: true }).click();
-  await page.locator(".live-password-field input").fill("correct horse");
+  await page.getByTitle("Require password").click();
+  await page.getByRole("button", { name: "Create", exact: true }).click();
+  await expectVisible(page, "Password is required.");
+  const protectedPassword = page.getByPlaceholder("Password");
+  await protectedPassword.fill("correct horse");
+  await protectedPassword.press("Enter");
+  assert.equal(
+    new URL(page.url()).pathname,
+    "/live",
+    "Enter in the password field should set the password without creating a room",
+  );
+  assert.equal(
+    await page
+      .getByRole("button", { name: "Create", exact: true })
+      .evaluate((button) => document.activeElement === button),
+    true,
+    "setting a valid password should move focus to Create",
+  );
   await page
     .locator(".live-create-canvas .cm-content")
     .fill('<img src=x onerror="window.__liveXSS=true">');
-  await page.getByRole("button", { name: "Create LiveBin room" }).click();
+  await page.getByRole("button", { name: "Create", exact: true }).click();
   await page.waitForURL((url) => url.pathname.startsWith("/live/"));
   const protectedLiveURL = page.url();
   await page.reload();
@@ -1210,7 +1282,7 @@ try {
   await reconnectCreator.goto(webOrigin);
   await reconnectCreator.getByRole("button", { name: "Open LiveBin" }).click();
   await reconnectCreator
-    .getByRole("button", { name: "Create LiveBin room" })
+    .getByRole("button", { name: "Create", exact: true })
     .click();
   await reconnectCreator.waitForURL((url) => url.pathname.startsWith("/live/"));
   await reconnectCreator.reload();
@@ -1243,7 +1315,7 @@ try {
   await owner
     .locator(".live-create-canvas .cm-content")
     .fill("creator controls coverage");
-  await owner.getByRole("button", { name: "Create LiveBin room" }).click();
+  await owner.getByRole("button", { name: "Create", exact: true }).click();
   await owner.waitForURL((url) => url.pathname.startsWith("/live/"));
   const accessRoomURL = owner.url();
   const accessURL = new URL(accessRoomURL);

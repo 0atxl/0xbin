@@ -237,108 +237,110 @@ svg {
 }
 
 .live-create-canvas {
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-rows: 46px minmax(0, 1fr) 56px;
 }
 
 .live-metadata-bar {
-  min-height: 46px;
-  height: auto;
-  padding-block: 7px;
-  align-items: start;
+  gap: 10px;
 }
 
-.live-field {
-  display: grid;
-  grid-template-columns: max-content minmax(0, 1fr);
-  align-items: center;
-  gap: 4px 10px;
-  min-width: 0;
+.live-tab-name-field {
   flex: 1;
 }
 
-.live-field-label {
-  color: var(--text-muted);
-  font-size: 11px;
-  white-space: nowrap;
+.encrypt-icon-toggle,
+.live-password-toggle {
+  width: 32px;
+  padding-inline: 0;
+  justify-content: center;
 }
 
-.live-field input,
-.live-password-field input {
-  min-width: 0;
+.live-password-reveal {
+  display: grid;
+  width: 0;
+  overflow: hidden;
+  opacity: 0;
+  transform: translateX(6px);
+  transition:
+    width 220ms cubic-bezier(0.16, 1, 0.3, 1),
+    opacity 150ms ease,
+    transform 220ms cubic-bezier(0.16, 1, 0.3, 1),
+    visibility 0s linear 220ms;
+  visibility: hidden;
+}
+
+.live-password-reveal[data-open="true"] {
+  width: 192px;
+  opacity: 1;
+  transform: translateX(0);
+  transition-delay: 0s;
+  visibility: visible;
+}
+
+.live-password-control {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 32px;
+  width: 192px;
   height: 32px;
-  padding: 0 9px;
   border: 1px solid var(--border-subtle);
   border-radius: 6px;
   background: var(--surface);
-  color: var(--text-primary);
 }
 
-.live-field input:focus,
-.live-password-field input:focus {
+.live-password-control:focus-within {
   border-color: var(--accent);
-  outline: 0;
 }
 
-.live-field input[aria-invalid="true"],
-.live-password-field input[aria-invalid="true"] {
+.live-password-control:has(input[aria-invalid="true"]) {
   border-color: var(--danger);
 }
 
-.live-language-field {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.live-field-error {
-  color: var(--danger);
-  font-size: 11px;
-  line-height: 1.25;
-}
-
-.live-field > .live-field-error {
-  grid-column: 2;
-}
-
-.live-editor-frame {
-  display: grid;
-  grid-template-rows: 30px minmax(0, 1fr);
+.live-password-control input {
   min-width: 0;
-  min-height: 0;
+  width: 100%;
+  height: 30px;
+  padding: 0 9px;
+  border: 0;
+  background: transparent;
+  color: var(--text-primary);
 }
 
-.live-editor-heading {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding-inline: 20px;
-  border-bottom: 1px solid var(--border-subtle);
+.live-password-control input::placeholder {
   color: var(--text-muted);
-  font-size: 11px;
+  opacity: 0.7;
 }
 
-.live-creation-toolbar {
-  flex-wrap: wrap;
-  min-height: 56px;
+.live-password-control input:focus {
+  outline: 0;
 }
 
-.live-expiry {
-  color: var(--text-muted);
-  font-size: 11px;
-}
-
-.live-password-field {
-  position: relative;
+.live-password-control button {
   display: grid;
-  grid-template-columns: max-content 160px;
-  align-items: center;
-  gap: 4px 7px;
+  width: 32px;
+  height: 30px;
+  padding: 0;
+  place-items: center;
+  border: 0;
+  border-left: 1px solid var(--border-subtle);
+  background: transparent;
   color: var(--text-muted);
-  font-size: 11px;
+  cursor: pointer;
 }
 
-.live-password-field > .live-field-error {
-  grid-column: 2;
+.live-password-control button:hover,
+.live-password-control button:focus-visible {
+  background: var(--accent-soft);
+  color: var(--accent);
+  outline: 0;
+}
+
+.live-password-control button:disabled {
+  cursor: default;
+}
+
+.live-password-control svg {
+  width: 14px;
+  height: 14px;
 }
 
 .title-field {
@@ -1885,10 +1887,6 @@ svg {
     gap: 8px 12px;
   }
 
-  .live-editor-heading {
-    padding-inline: 16px;
-  }
-
   .viewer-toolbar {
     flex-wrap: wrap;
     gap: 0;
@@ -1991,9 +1989,12 @@ svg {
     display: none;
   }
 
-  .live-password-field {
-    flex: 1 1 100%;
-    grid-template-columns: max-content minmax(0, 1fr);
+  .live-password-reveal[data-open="true"] {
+    width: 172px;
+  }
+
+  .live-password-control {
+    width: 172px;
   }
 
   .live-creation-toolbar .primary-action {

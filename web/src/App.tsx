@@ -513,7 +513,7 @@ function CreationCanvas({
             onSelect={(lifetime) => updateDraft({ lifetime })}
           />
         </fieldset>
-        <label className="encrypt-toggle">
+        <label className="encrypt-toggle encrypt-icon-toggle" title="Encrypt">
           <input
             type="checkbox"
             checked={draft.encrypted}
@@ -526,7 +526,7 @@ function CreationCanvas({
             }}
           />
           <LockIcon />
-          <span>Encrypt</span>
+          <span className="sr-only">Encrypt</span>
         </label>
         <button
           className="primary-action"
@@ -535,7 +535,6 @@ function CreationCanvas({
           onClick={() => void submit()}
         >
           {submitting ? "Creating…" : "Create"}
-          <ArrowIcon />
         </button>
       </footer>
     </main>

@@ -1,6 +1,6 @@
 import { utf8Bytes, type CreateDraft } from "./create";
 
-export const defaultLiveDocumentName = "main";
+export const defaultLiveDocumentName = "tab1";
 export const maxLiveDocumentNameBytes = 64;
 export const maxLivePasswordBytes = 256;
 export const fallbackLiveRoomBytes = 1 << 20;
@@ -48,7 +48,7 @@ export function validateLiveDraft(
   const errors: LiveCreateValidation = {};
   const name = draft.document.name;
   if (!name) {
-    errors.name = "Tab name is required.";
+    errors.name = "Tab name cannot be empty";
   } else if (name.trim() !== name) {
     errors.name = "Tab name cannot start or end with whitespace.";
   } else if (utf8Bytes(name) > maxLiveDocumentNameBytes) {

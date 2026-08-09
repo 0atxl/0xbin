@@ -27,12 +27,17 @@ describe("live draft handoff", () => {
   it("starts viewer-originated handoffs blank", () => {
     const draft = blankLiveDraft();
     expect(draft.document.content).toBe("");
-    expect(draft.document.name).toBe("main");
+    expect(draft.document.name).toBe("tab1");
     expect(draft.document.language).toBe("plaintext");
   });
 
   it("validates live-only name, password, and room limits", () => {
     const draft = blankLiveDraft();
+    draft.document.name = "";
+    expect(validateLiveDraft(draft, false, "")).toEqual({
+      name: "Tab name cannot be empty",
+    });
+    draft.document.name = "tab1";
     expect(validateLiveDraft(draft, true, "")).toEqual({
       password: "Password is required.",
     });

@@ -12,6 +12,7 @@ import {
 } from "./live-api";
 import { CodeEditor, LanguageMenu } from "./editor";
 import {
+  defaultLiveDocumentName,
   fallbackLiveRoomBytes,
   type LiveCreateValidation,
   type LiveDraft,
@@ -20,7 +21,6 @@ import {
 import { beginLoading } from "./loading";
 import { utf8Bytes } from "./create";
 import { LiveRoomWorkspace } from "./live-room";
-import { formatLiveRoomLifetime } from "./live-room-ui";
 import { randomLiveID } from "./live-collab";
 
 const fallbackLiveServiceConfig: LiveServiceConfig = {
@@ -73,6 +73,7 @@ function LiveCreateState({
   const [submitting, setSubmitting] = useState(false);
   const [limits, setLimits] = useState<LiveServiceConfig>();
   const [limitsUnavailable, setLimitsUnavailable] = useState(false);
+  const createButtonRef = useRef<HTMLButtonElement>(null);
   const contentBytes = utf8Bytes(draft.document.content);
   const effectiveLimits = limits ?? fallbackLiveServiceConfig;
 
@@ -101,8 +102,34 @@ function LiveCreateState({
     });
   }
 
+  function confirmPassword() {
+    const passwordError = validateLiveDraft(
+      draft,
+      true,
+      password,
+      effectiveLimits.maxBytes,
+    ).password;
+    if (passwordError) {
+      setErrors((current) => ({ ...current, password: passwordError }));
+      onStatus(passwordError);
+      return;
+    }
+    setErrors((current) => {
+      const next = { ...current };
+      delete next.password;
+      return next;
+    });
+    createButtonRef.current?.focus();
+  }
+
   async function submit() {
     if (!limits && !limitsUnavailable) return;
+    if (draft.document.name.length === 0) {
+      updateDocument({ name: defaultLiveDocumentName });
+      setErrors({});
+      onStatus("Tab name cannot be empty");
+      return;
+    }
     const nextErrors = validateLiveDraft(
       draft,
       requirePassword,
@@ -110,7 +137,10 @@ function LiveCreateState({
       effectiveLimits.maxBytes,
     );
     setErrors(nextErrors);
-    if (Object.keys(nextErrors).length > 0) return;
+    if (Object.keys(nextErrors).length > 0) {
+      Object.values(nextErrors).forEach((message) => onStatus(message));
+      return;
+    }
     setSubmitting(true);
     const stopLoading = beginLoading();
     try {
@@ -140,59 +170,36 @@ function LiveCreateState({
         Create LiveBin room
       </h1>
       <div className="metadata-bar live-metadata-bar">
-        <label className="live-field">
-          <span className="live-field-label">Tab name</span>
+        <label className="title-field live-tab-name-field">
+          <span className="sr-only">Tab name</span>
           <input
             value={draft.document.name}
+            placeholder={defaultLiveDocumentName}
             aria-invalid={Boolean(errors.name)}
             onChange={(event) => updateDocument({ name: event.target.value })}
+            onFocus={(event) => {
+              if (draft.document.name === defaultLiveDocumentName) {
+                event.currentTarget.select();
+              }
+            }}
           />
-          {errors.name ? (
-            <span className="live-field-error" role="alert">
-              {errors.name}
-            </span>
-          ) : null}
         </label>
-        <div className="live-language-field">
-          <span className="live-field-label">Language</span>
-          <LanguageMenu
-            value={draft.document.language}
-            onChange={(language) => updateDocument({ language })}
-          />
-        </div>
-      </div>
-
-      <div className="live-editor-frame">
-        <div className="live-editor-heading">
-          <span>Content</span>
-          {errors.content ? (
-            <span className="live-field-error" role="alert">
-              {errors.content}
-            </span>
-          ) : null}
-        </div>
-        <CodeEditor
-          value={draft.document.content}
-          language={draft.document.language}
-          ariaLabel="Live room content"
-          onChange={(content) => updateDocument({ content })}
-          onSubmit={() => void submit()}
+        <LanguageMenu
+          value={draft.document.language}
+          onChange={(language) => updateDocument({ language })}
         />
       </div>
 
+      <CodeEditor
+        value={draft.document.content}
+        language={draft.document.language}
+        ariaLabel="Live room content"
+        onChange={(content) => updateDocument({ content })}
+        onSubmit={() => void submit()}
+      />
+
       <footer className="creation-toolbar live-creation-toolbar">
-        <span
-          className="live-expiry"
-          title={
-            limits || limitsUnavailable
-              ? `Room expires in ${formatLiveRoomLifetime(effectiveLimits.roomLifetimeSeconds)}`
-              : "Loading room lifetime"
-          }
-        >
-          {limits || limitsUnavailable
-            ? formatLiveRoomLifetime(effectiveLimits.roomLifetimeSeconds)
-            : "…"}
-        </span>
+        <div className="toolbar-spacer" />
         <span
           className={
             contentBytes > effectiveLimits.maxBytes
@@ -204,8 +211,52 @@ function LiveCreateState({
             ? `${formatBytes(contentBytes)} / ${formatBytes(effectiveLimits.maxBytes)}`
             : "Loading room limits…"}
         </span>
-        <div className="toolbar-spacer" />
-        <label className="encrypt-toggle">
+        <div
+          className="live-password-reveal"
+          data-open={requirePassword}
+          aria-hidden={!requirePassword}
+        >
+          <div className="live-password-control">
+            <label className="sr-only" htmlFor="live-create-password">
+              Password
+            </label>
+            <input
+              id="live-create-password"
+              type="password"
+              placeholder="Password"
+              value={password}
+              disabled={!requirePassword}
+              aria-invalid={Boolean(errors.password)}
+              onChange={(event) => {
+                setPassword(event.target.value);
+                setErrors((current) => {
+                  const next = { ...current };
+                  delete next.password;
+                  return next;
+                });
+              }}
+              onKeyDown={(event) => {
+                if (event.key !== "Enter") return;
+                event.preventDefault();
+                event.stopPropagation();
+                confirmPassword();
+              }}
+            />
+            <button
+              type="button"
+              disabled={!requirePassword}
+              aria-label="Set password"
+              title="Set password"
+              onClick={confirmPassword}
+            >
+              <CheckIcon />
+            </button>
+          </div>
+        </div>
+        <label
+          className="encrypt-toggle live-password-toggle"
+          title="Require password"
+        >
           <input
             type="checkbox"
             checked={requirePassword}
@@ -223,38 +274,15 @@ function LiveCreateState({
             }}
           />
           <LockIcon />
-          <span>Require password</span>
+          <span className="sr-only">Require password</span>
         </label>
-        {requirePassword ? (
-          <label className="live-password-field">
-            <span>Password</span>
-            <input
-              type="password"
-              value={password}
-              aria-invalid={Boolean(errors.password)}
-              onChange={(event) => {
-                setPassword(event.target.value);
-                setErrors((current) => {
-                  const next = { ...current };
-                  delete next.password;
-                  return next;
-                });
-              }}
-            />
-            {errors.password ? (
-              <span className="live-field-error" role="alert">
-                {errors.password}
-              </span>
-            ) : null}
-          </label>
-        ) : null}
         <button
+          ref={createButtonRef}
           className="primary-action"
           type="submit"
           disabled={submitting || (!limits && !limitsUnavailable)}
         >
-          {submitting ? "Creating…" : "Create LiveBin room"}
-          <ArrowIcon />
+          {submitting ? "Creating…" : "Create"}
         </button>
       </footer>
     </form>
@@ -503,6 +531,10 @@ function liveCreateFailureMessage(error: unknown): string {
 }
 
 function formatBytes(bytes: number): string {
+  if (bytes >= 1 << 20) {
+    const mebibytes = bytes / (1 << 20);
+    return `${Number.isInteger(mebibytes) ? mebibytes : mebibytes.toFixed(1)} MiB`;
+  }
   return bytes < 1024 ? `${bytes} B` : `${(bytes / 1024).toFixed(1)} KiB`;
 }
 
@@ -515,10 +547,10 @@ function LockIcon() {
   );
 }
 
-function ArrowIcon() {
+function CheckIcon() {
   return (
     <svg viewBox="0 0 20 20" aria-hidden="true">
-      <path d="M3 10h13M11 5l5 5-5 5" />
+      <path d="m4 10 4 4 8-9" />
     </svg>
   );
 }
