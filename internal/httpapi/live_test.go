@@ -30,6 +30,25 @@ type testLiveSlugGenerator struct {
 	next  int
 }
 
+type failLiveCommitsStore struct {
+	live.RoomStore
+	mu        sync.Mutex
+	remaining int
+}
+
+func (store *failLiveCommitsStore) CommitChange(ctx context.Context, commit live.ChangeCommit, now time.Time) error {
+	store.mu.Lock()
+	fail := store.remaining > 0
+	if store.remaining > 0 {
+		store.remaining--
+	}
+	store.mu.Unlock()
+	if fail {
+		return errors.New("injected live commit failure")
+	}
+	return store.RoomStore.CommitChange(ctx, commit, now)
+}
+
 func (generator *testLiveSlugGenerator) Generate() (string, error) {
 	generator.mu.Lock()
 	defer generator.mu.Unlock()
@@ -111,8 +130,11 @@ func TestLiveCreateBootstrapAndPasswordGate(t *testing.T) {
 	if len(snapshot.Documents) != 1 || snapshot.Documents[0].Content != "shared text" || snapshot.Documents[0].Revision != 0 || snapshot.MetadataRevision != 0 {
 		t.Fatalf("unexpected bootstrap snapshot: %+v", snapshot)
 	}
-	if snapshot.MaxBytes != 1<<20 || snapshot.MaxTabs != 8 || snapshot.MaxWriters != 10 || snapshot.MaxViewers != 100 || snapshot.MaxParticipants != 110 || snapshot.RoomLifetimeSeconds != int64((24*time.Hour).Seconds()) {
+	if snapshot.MaxBytes != 1<<20 || snapshot.MaxDocumentBytes != snapshot.MaxBytes || snapshot.MaxTabs != 8 || snapshot.MaxWriters != 10 || snapshot.MaxViewers != 100 || snapshot.MaxParticipants != 110 || snapshot.RoomLifetimeSeconds != int64((24*time.Hour).Seconds()) {
 		t.Fatalf("operator live limits = %+v", snapshot)
+	}
+	if strings.Contains(bootstrap.Body.String(), `"participants"`) {
+		t.Fatalf("pre-join bootstrap unexpectedly included transient participants: %s", bootstrap.Body.String())
 	}
 	if !strings.Contains(bootstrap.Body.String(), `"metadata_revision":0`) {
 		t.Fatalf("bootstrap omitted zero metadata revision: %s", bootstrap.Body.String())
@@ -160,6 +182,9 @@ func TestLiveCreateBootstrapAndPasswordGate(t *testing.T) {
 	handler.ServeHTTP(unlocked, unlockRequest)
 	if unlocked.Code != http.StatusOK || !strings.Contains(unlocked.Body.String(), "secret text") || strings.Contains(unlocked.Body.String(), `"password_required":true`) {
 		t.Fatalf("unlock response = %d: %s", unlocked.Code, unlocked.Body.String())
+	}
+	if strings.Contains(unlocked.Body.String(), `"participants"`) {
+		t.Fatalf("pre-join unlock unexpectedly included transient participants: %s", unlocked.Body.String())
 	}
 }
 
@@ -210,34 +235,43 @@ func TestLiveBootstrapReturnsAcceptedOperationsForHTTPReconciliation(t *testing.
 }
 
 func TestLiveConfigExposesConfiguredPublicLimits(t *testing.T) {
-	handler, store, hub := newLiveTestHandler(t, "http://localhost:8080")
-	defer store.Close()
-	defer hub.Shutdown(context.Background(), time.Now().UTC())
+	for _, maxBytes := range []int64{512 << 10, 2 << 20} {
+		t.Run(strconv.FormatInt(maxBytes, 10), func(t *testing.T) {
+			handler, store, hub := newLiveTestHandlerWithConfig(t, "http://localhost:8080", func(cfg *config.Config) {
+				cfg.LiveMaxBytes = maxBytes
+			})
+			defer store.Close()
+			defer hub.Shutdown(context.Background(), time.Now().UTC())
 
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/live/config", nil))
-	if response.Code != http.StatusOK {
-		t.Fatalf("config status = %d: %s", response.Code, response.Body.String())
-	}
-	var got liveConfigResponse
-	if err := json.Unmarshal(response.Body.Bytes(), &got); err != nil {
-		t.Fatal(err)
-	}
-	if got.MaxBytes != 1<<20 || got.MaxDocumentBytes != 1<<20 || got.MaxTabs != 8 || got.MaxWriters != 10 || got.MaxViewers != 100 || got.MaxParticipants != 110 || got.RoomLifetimeSeconds != int64((24*time.Hour).Seconds()) {
-		t.Fatalf("public live config = %+v", got)
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/live/config", nil))
+			if response.Code != http.StatusOK {
+				t.Fatalf("config status = %d: %s", response.Code, response.Body.String())
+			}
+			var got liveConfigResponse
+			if err := json.Unmarshal(response.Body.Bytes(), &got); err != nil {
+				t.Fatal(err)
+			}
+			if got.MaxBytes != maxBytes || got.MaxDocumentBytes != got.MaxBytes || got.MaxTabs != 8 || got.MaxWriters != 10 || got.MaxViewers != 100 || got.MaxParticipants != 110 || got.RoomLifetimeSeconds != int64((24*time.Hour).Seconds()) {
+				t.Fatalf("public live config = %+v", got)
+			}
+		})
 	}
 }
 
 func TestLiveCreateUsesConfiguredDocumentAndRoomLimits(t *testing.T) {
 	tests := []struct {
-		name     string
-		maxBytes int64
-		content  int
-		want     int
+		name      string
+		maxBytes  int64
+		documents []int
+		want      int
 	}{
-		{name: "below former default accepts", maxBytes: 512 << 10, content: (512 << 10) - 1, want: http.StatusCreated},
-		{name: "below former default rejects", maxBytes: 512 << 10, content: (512 << 10) + 1, want: http.StatusBadRequest},
-		{name: "above former default accepts", maxBytes: 2 << 20, content: (2 << 20) - 1, want: http.StatusCreated},
+		{name: "smaller configured document limit accepts boundary", maxBytes: 512 << 10, documents: []int{512 << 10}, want: http.StatusCreated},
+		{name: "smaller configured document limit rejects overflow", maxBytes: 512 << 10, documents: []int{(512 << 10) + 1}, want: http.StatusRequestEntityTooLarge},
+		{name: "smaller configured aggregate limit rejects individually valid documents", maxBytes: 512 << 10, documents: []int{(256 << 10) + 1, (256 << 10) + 1}, want: http.StatusRequestEntityTooLarge},
+		{name: "larger configured limit accepts a document above former default", maxBytes: 2 << 20, documents: []int{(1 << 20) + 1}, want: http.StatusCreated},
+		{name: "larger configured document limit rejects overflow", maxBytes: 2 << 20, documents: []int{(2 << 20) + 1}, want: http.StatusRequestEntityTooLarge},
+		{name: "larger configured aggregate limit rejects individually valid documents", maxBytes: 2 << 20, documents: []int{(1 << 20) + 1, (1 << 20) + 1}, want: http.StatusRequestEntityTooLarge},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -246,7 +280,11 @@ func TestLiveCreateUsesConfiguredDocumentAndRoomLimits(t *testing.T) {
 			})
 			defer store.Close()
 			defer hub.Shutdown(context.Background(), time.Now().UTC())
-			body := `{"documents":[{"name":"main","language":"plaintext","content":` + strconv.Quote(strings.Repeat("x", test.content)) + `}]}`
+			documents := make([]string, 0, len(test.documents))
+			for index, size := range test.documents {
+				documents = append(documents, `{"name":`+strconv.Quote("tab-"+strconv.Itoa(index))+`,"language":"plaintext","content":`+strconv.Quote(strings.Repeat("x", size))+`}`)
+			}
+			body := `{"documents":[` + strings.Join(documents, ",") + `]}`
 			response := httptest.NewRecorder()
 			handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/v1/live", strings.NewReader(body)))
 			if response.Code != test.want {
@@ -713,6 +751,74 @@ func TestLiveWebSocketBridgesHubChanges(t *testing.T) {
 	}
 	if event["type"] != "status" || event["status"] != "http_resync_required" {
 		t.Fatalf("missing explicit HTTP resync status: %s", resyncData)
+	}
+}
+
+func TestLiveWebSocketPersistenceFailureIsRetryableAndNeverPublished(t *testing.T) {
+	ctx := context.Background()
+	placeholder := httptest.NewUnstartedServer(http.NotFoundHandler())
+	store, err := sqlite.Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	failing := &failLiveCommitsStore{RoomStore: store, remaining: 1}
+	cfg := testConfig(t)
+	cfg.BaseURL, err = url.Parse("http://" + placeholder.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	hub, err := live.NewHub(failing, nil, live.DefaultHubOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer hub.Shutdown(ctx, time.Now().UTC())
+	placeholder.Config.Handler = NewHandlerWithLive(cfg, nil, &LiveDependencies{
+		Store: failing,
+		Hub:   hub,
+		Slugs: &testLiveSlugGenerator{slugs: []string{"calmbrightotter"}},
+	})
+	placeholder.Start()
+	defer placeholder.Close()
+
+	created, err := placeholder.Client().Post(placeholder.URL+"/api/v1/live", "application/json", strings.NewReader(`{"documents":[{"name":"main","language":"plaintext","content":""}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	created.Body.Close()
+	if created.StatusCode != http.StatusCreated {
+		t.Fatalf("create status = %d", created.StatusCode)
+	}
+
+	wsURL := "ws" + strings.TrimPrefix(placeholder.URL, "http") + "/api/v1/live/calmbrightotter/ws"
+	peer := dialLivePeer(t, wsURL, placeholder.URL, created.Cookies()...)
+	defer peer.Close(websocket.StatusNormalClosure, "")
+	joinLivePeer(t, peer, "persistence-client")
+	operation := `{"type":"push_changes","operation_id":"retry-persisted-change","client_id":"persistence-client","document_id":"main","base_version":0,"changes":[[0,"hello"]]}`
+	writeLiveMessage(t, peer, operation)
+	rejected := readLiveEvent(t, peer, "error")
+	if rejected["code"] != "service_unavailable" || rejected["status"] != "retryable" || rejected["operation_id"] != "retry-persisted-change" {
+		t.Fatalf("persistence failure event = %#v", rejected)
+	}
+	unchanged, err := store.GetRoomSnapshot(ctx, "calmbrightotter", time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unchanged.Documents[0].Content != "" || unchanged.Documents[0].CurrentRevision != 0 {
+		t.Fatalf("failed commit reached SQLite or authority = %#v", unchanged.Documents[0])
+	}
+
+	writeLiveMessage(t, peer, operation)
+	accepted := readLiveEvent(t, peer, "changes")
+	if accepted["revision"] != float64(1) || accepted["operation_id"] != "retry-persisted-change" {
+		t.Fatalf("retried persistence event = %#v", accepted)
+	}
+	persisted, err := store.GetRoomSnapshot(ctx, "calmbrightotter", time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.Documents[0].Content != "hello" || persisted.Documents[0].CurrentRevision != 1 {
+		t.Fatalf("retried durable state = %#v", persisted.Documents[0])
 	}
 }
 

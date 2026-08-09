@@ -121,7 +121,9 @@ type liveCreateResponse struct {
 // browser creates its first room. It deliberately excludes rate-limit and
 // operational details.
 type liveConfigResponse struct {
-	MaxBytes            int64 `json:"max_bytes"`
+	MaxBytes int64 `json:"max_bytes"`
+	// MaxDocumentBytes is a public semantic alias for MaxBytes. Live rooms have
+	// one configurable content budget, so this value must never diverge.
 	MaxDocumentBytes    int64 `json:"max_document_bytes"`
 	MaxTabs             int   `json:"max_tabs"`
 	MaxWriters          int   `json:"max_writers"`
@@ -138,7 +140,7 @@ type liveRoomResponse struct {
 	MetadataRevision         int                       `json:"metadata_revision"`
 	MetadataSnapshotRevision int                       `json:"metadata_snapshot_revision"`
 	MaxBytes                 int64                     `json:"max_bytes"`
-	MaxDocumentBytes         int64                     `json:"max_document_bytes"`
+	MaxDocumentBytes         int64                     `json:"max_document_bytes"` // Always identical to MaxBytes.
 	MaxTabs                  int                       `json:"max_tabs"`
 	MaxWriters               int                       `json:"max_writers"`
 	MaxViewers               int                       `json:"max_viewers"`
@@ -206,8 +208,16 @@ func (api *liveAPI) create(w http.ResponseWriter, r *http.Request) {
 	var contentSize int64
 	usedIDs := make(map[string]struct{}, len(request.Documents))
 	for index, input := range request.Documents {
-		if err := live.ValidateTabName(input.Name); err != nil || live.ValidateLanguageID(input.Language) != nil || live.ValidateDocumentContent(input.Content, api.cfg.LiveMaxBytes) != nil {
+		if err := live.ValidateTabName(input.Name); err != nil || live.ValidateLanguageID(input.Language) != nil {
 			writeLiveError(w, r, http.StatusBadRequest, "invalid_request", "Invalid live room request")
+			return
+		}
+		if err := live.ValidateDocumentContent(input.Content, api.cfg.LiveMaxBytes); err != nil {
+			if int64(len(input.Content)) > api.cfg.LiveMaxBytes {
+				writeLiveError(w, r, http.StatusRequestEntityTooLarge, "message_too_large", "Live room content is too large")
+			} else {
+				writeLiveError(w, r, http.StatusBadRequest, "invalid_request", "Invalid live room request")
+			}
 			return
 		}
 		contentSize += int64(len(input.Content))

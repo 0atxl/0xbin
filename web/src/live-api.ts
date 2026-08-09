@@ -73,7 +73,6 @@ export type LiveRoomSnapshot = {
 
 export type LiveServiceConfig = {
   maxBytes: number;
-  maxDocumentBytes: number;
   maxTabs: number;
   maxWriters: number;
   maxViewers: number;
@@ -325,6 +324,7 @@ function isLiveRoomSnapshot(value: unknown): value is {
   password_required: boolean;
   metadata_revision: number;
   max_bytes: number;
+  max_document_bytes: number;
   max_tabs: number;
   max_writers: number;
   max_viewers: number;
@@ -353,6 +353,9 @@ function isLiveRoomSnapshot(value: unknown): value is {
     typeof value.metadata_revision !== "number" ||
     !("max_bytes" in value) ||
     !positiveInteger(value.max_bytes) ||
+    !("max_document_bytes" in value) ||
+    !positiveInteger(value.max_document_bytes) ||
+    value.max_document_bytes !== value.max_bytes ||
     !("max_tabs" in value) ||
     !positiveInteger(value.max_tabs) ||
     !("max_writers" in value) ||
@@ -408,6 +411,7 @@ function isLiveServiceConfig(value: unknown): value is {
     positiveInteger(value.max_bytes) &&
     "max_document_bytes" in value &&
     positiveInteger(value.max_document_bytes) &&
+    value.max_document_bytes === value.max_bytes &&
     "max_tabs" in value &&
     positiveInteger(value.max_tabs) &&
     "max_writers" in value &&
@@ -432,7 +436,6 @@ function normalizeLiveServiceConfig(value: {
 }): LiveServiceConfig {
   return {
     maxBytes: value.max_bytes,
-    maxDocumentBytes: value.max_document_bytes,
     maxTabs: value.max_tabs,
     maxWriters: value.max_writers,
     maxViewers: value.max_viewers,
@@ -447,6 +450,7 @@ function normalizeLiveRoomSnapshot(value: {
   password_required: boolean;
   metadata_revision: number;
   max_bytes: number;
+  max_document_bytes: number;
   max_tabs: number;
   max_writers: number;
   max_viewers: number;

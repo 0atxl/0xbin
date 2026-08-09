@@ -120,6 +120,10 @@ entry point, and ordinary paste cleanup skips live-room cleanup queries. When
 live mode is enabled, fail startup on unsafe or incoherent
 values. Writer, viewer, and total limits must satisfy
 `writers + viewers = total`. Do not log secrets.
+`OXBIN_LIVE_MAX_BYTES` is the single content-size setting: it limits aggregate
+UTF-8 document bytes across the room and, as a consequence, every individual
+document. The HTTP `max_document_bytes` field is an equal semantic alias for
+clients and is not independently configurable.
 The participant timeout must be at least twice the heartbeat interval and
 longer than the reconnect grace period.
 `OXBIN_LIVE_SNAPSHOT_LIMITS` uses `rows/bytes` syntax. The fixed validation
@@ -495,9 +499,11 @@ POST /api/v1/live/{slug}/unlock
 GET  /api/v1/live/{slug}/ws
 ```
 
-The public config response exposes the configured lifetime, aggregate and
-per-document content limits, and room capacity limits without operational or
-secret configuration. The HTTP bootstrap returns the bounded full room snapshot.
+The public config response exposes the configured lifetime, the single
+aggregate content limit, its equal `max_document_bytes` semantic alias, and
+room capacity limits without operational or secret configuration. The HTTP
+bootstrap and unlock responses return the bounded full room snapshot and omit
+transient participants before WebSocket join.
 During resynchronization, a browser may send its stable client ID in the
 `X-0xbin-Live-Client-ID` header; the response then includes that client's
 bounded recent accepted-operation IDs so already committed local work is
@@ -507,6 +513,10 @@ carries join, document changes, tab metadata changes, presence, cursors,
 selections, acknowledgements, reconnect/resync status, and expiry events. A
 protected room requires a short-lived `HttpOnly`, `SameSite=Strict`, `Secure`
 room session under HTTPS. Live responses use `no-store` and no-index headers.
+Origin, expiry, authorization, connection-rate, and process-wide connection
+checks occur before upgrade. Per-room writer/viewer/total capacity is enforced
+after upgrade when the mandatory `join` supplies the stable room session ID; a
+full room is closed with WebSocket code `1013` before a `joined` event.
 The detailed message contract is maintained in the live-sharing implementation
 plan rather than mixed into the paste API contract.
 

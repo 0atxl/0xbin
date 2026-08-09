@@ -58,6 +58,7 @@ describe("live API client", () => {
       password_required: false,
       metadata_revision: 0,
       max_bytes: 1048576,
+      max_document_bytes: 1048576,
       max_tabs: 8,
       max_writers: 10,
       max_viewers: 100,
@@ -110,7 +111,6 @@ describe("live API client", () => {
     });
     await expect(getLiveServiceConfig({ request })).resolves.toEqual({
       maxBytes: 2 << 20,
-      maxDocumentBytes: 2 << 20,
       maxTabs: 4,
       maxWriters: 3,
       maxViewers: 7,
@@ -121,6 +121,43 @@ describe("live API client", () => {
       "/api/v1/live/config",
       expect.objectContaining({ cache: "no-store" }),
     );
+  });
+
+  it("rejects live limit responses whose document alias differs from the room limit", async () => {
+    const configRequest = vi.fn().mockResolvedValue({
+      max_bytes: 2 << 20,
+      max_document_bytes: 1 << 20,
+      max_tabs: 4,
+      max_writers: 3,
+      max_viewers: 7,
+      max_participants: 10,
+      room_lifetime_seconds: 7200,
+    });
+    await expect(
+      getLiveServiceConfig({ request: configRequest }),
+    ).rejects.toMatchObject({
+      code: "network_error",
+    });
+
+    const roomRequest = vi.fn().mockResolvedValue({
+      slug: "quietbrightotter",
+      expires_at: "2026-08-06T12:00:00Z",
+      password_required: false,
+      metadata_revision: 0,
+      max_bytes: 2 << 20,
+      max_document_bytes: 1 << 20,
+      max_tabs: 4,
+      max_writers: 3,
+      max_viewers: 7,
+      max_participants: 10,
+      room_lifetime_seconds: 7200,
+      documents: [],
+    });
+    await expect(
+      getLiveRoom({ request: roomRequest }, "quietbrightotter"),
+    ).rejects.toMatchObject({
+      code: "network_error",
+    });
   });
 
   it("maps password-required responses to a focused live error", async () => {

@@ -3,7 +3,7 @@
 ## Implementation Plan
 
 **Status:** Implemented through Steps 0A–13. Follow-up release-hardening Phases
-1–3 are complete; Phases 4–7, including the Phase 5A maintainability gate, in
+1–5 are complete; Phases 5A–7 in
 [`LIVE_SHARING_REMEDIATION_PLAN.md`](LIVE_SHARING_REMEDIATION_PLAN.md) remain.
 
 **Related:** [`spec.md`](../spec.md), [`docs/PRD.md`](../docs/PRD.md),
@@ -421,6 +421,8 @@ Initial safety defaults, subject to benchmark confirmation:
 
 - 8 tabs per room
 - 1 MiB aggregate document content per room
+- The aggregate content setting also bounds each individual document; there is
+  no independent per-document operator setting.
 - 10 writing participants per room, including the creator
 - 100 additional watch-only viewers per room
 - 110 total participants per room
@@ -436,6 +438,7 @@ Add these routes without changing existing paste routes:
 
 ```text
 POST /api/v1/live
+GET  /api/v1/live/config
 GET  /api/v1/live/{slug}
 POST /api/v1/live/{slug}/unlock
 GET  /api/v1/live/{slug}/ws       WebSocket upgrade
@@ -635,6 +638,10 @@ wire envelope and add property/fuzz coverage around the configured limits.
    bytes, writing-participant/viewer/total-participant bounds, message size,
    connection limits, heartbeat, unlock attempts, and snapshot/compaction
    bounds.
+   `OXBIN_LIVE_MAX_BYTES` is the one content budget: it applies to the room
+   aggregate and therefore to every individual document. The public
+   `max_document_bytes` field is an equal compatibility/semantic alias, not a
+   second operator control.
 3. Extend the rate limiter with live creation, unlock, connection, and message
    categories, or add a focused live limiter that shares the existing bounded
    registry principles.

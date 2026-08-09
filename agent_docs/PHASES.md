@@ -158,6 +158,12 @@ Includes:
 Implementation plan: [`LIVE_SHARING_IMPLEMENTATION_PLAN.md`](LIVE_SHARING_IMPLEMENTATION_PLAN.md),
 Steps 0A–13.
 
+Release hardening through contract-and-limit reconciliation is complete. The
+single configured live content budget applies to the room aggregate and every
+individual document; HTTP exposes `max_document_bytes` only as an equal
+semantic alias. Maintainability review, release-candidate verification, and
+the independent release audit remain in the separate release plan.
+
 Exit criteria:
 
 - The collaboration authority converges under concurrent edits, Unicode,

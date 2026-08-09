@@ -26,7 +26,6 @@ import { randomLiveID } from "./live-collab";
 
 const fallbackLiveServiceConfig: LiveServiceConfig = {
   maxBytes: fallbackLiveRoomBytes,
-  maxDocumentBytes: fallbackLiveRoomBytes,
   maxTabs: 8,
   maxWriters: 10,
   maxViewers: 100,
@@ -109,7 +108,7 @@ function LiveCreateState({
       draft,
       requirePassword,
       password,
-      effectiveLimits.maxDocumentBytes,
+      effectiveLimits.maxBytes,
     );
     setErrors(nextErrors);
     if (Object.keys(nextErrors).length > 0) return;
@@ -197,13 +196,13 @@ function LiveCreateState({
         </span>
         <span
           className={
-            contentBytes > effectiveLimits.maxDocumentBytes
+            contentBytes > effectiveLimits.maxBytes
               ? "byte-count over-limit"
               : "byte-count"
           }
         >
           {limits || limitsUnavailable
-            ? `${formatBytes(contentBytes)} / ${formatBytes(effectiveLimits.maxDocumentBytes)}`
+            ? `${formatBytes(contentBytes)} / ${formatBytes(effectiveLimits.maxBytes)}`
             : "Loading room limits…"}
         </span>
         <div className="toolbar-spacer" />

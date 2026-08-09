@@ -12,6 +12,11 @@ header. Invalid origins receive HTTP `403`. Missing, expired, or otherwise
 unavailable rooms use the generic HTTP `404` response. A protected room
 requires its valid, short-lived, HttpOnly room-access cookie before upgrade;
 an unauthorized request receives HTTP `401` and does not establish a WebSocket.
+The process-wide connection ceiling and connection rate limits are also checked
+before upgrade. Per-room writer, viewer, and total-participant capacity cannot
+be evaluated until the client supplies its stable session identity in `join`;
+if that post-upgrade join finds the room full, the server closes the established
+socket with code `1013` without sending `joined`.
 Browsers can surface that pre-upgrade rejection only as an abnormal close. The
 client probes the authenticated HTTP bootstrap before retrying such a close,
 opens the password gate only for `password_required`, and uses bounded backoff
@@ -86,8 +91,10 @@ malformed change sets are rejected.
 | `room_watch_only` | `watch_only` | Creator-only room mode change. |
 | `participant_remove` | `participant_id` | Creator-only active-session removal. |
 
-The server bounds frame size, message rate, aggregate room bytes, per-document
-bytes, tab count, and participant capacity. It never logs raw room text,
+The server bounds frame size, message rate, the operator-configured aggregate
+room-content budget, tab count, and participant capacity. The same aggregate
+budget necessarily bounds each individual document; there is no independent
+per-document setting. It never logs raw room text,
 passwords, cookies, creator capabilities, or WebSocket frames.
 
 ## Server events
@@ -125,7 +132,9 @@ when applicable an `operation_id` and status (`validation`, `resync_required`,
 ## Capacity and creator boundary
 
 Each room has configured writer, watch-only viewer, total participant, tab,
-and content limits. A creator capability is a separate opaque, HttpOnly,
+and aggregate content limits. Pre-upgrade checks cover process-wide connection
+capacity; per-room participant capacity is enforced by `join` after upgrade.
+A creator capability is a separate opaque, HttpOnly,
 room-scoped cookie backed only by process memory. It authorizes only switching
 the whole room to watch-only and removing active sessions; it is not an
 account, is never stored in SQLite, and does not survive a process restart.

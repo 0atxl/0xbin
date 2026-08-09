@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -147,6 +148,28 @@ func TestLoadLiveLimits(t *testing.T) {
 	}
 	if cfg.LiveSnapshotLimits != (LiveSnapshotLimits{MaxRows: 2000, MaxBytes: 8 << 20}) {
 		t.Fatalf("live snapshot limits = %#v", cfg.LiveSnapshotLimits)
+	}
+}
+
+func TestLoadLiveContentLimitBelowAndAboveFormerDefault(t *testing.T) {
+	t.Parallel()
+
+	for _, maxBytes := range []string{"524288", "2097152"} {
+		t.Run(maxBytes, func(t *testing.T) {
+			t.Parallel()
+			cfg, err := Load(func(key string) (string, bool) {
+				if key == "OXBIN_LIVE_MAX_BYTES" {
+					return maxBytes, true
+				}
+				return "", false
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := strconv.FormatInt(cfg.LiveMaxBytes, 10); got != maxBytes {
+				t.Fatalf("LiveMaxBytes = %s, want %s", got, maxBytes)
+			}
+		})
 	}
 }
 

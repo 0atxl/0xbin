@@ -161,6 +161,8 @@ try {
       OXBIN_LIVE_MAX_WRITERS: "2",
       OXBIN_LIVE_MAX_VIEWERS: "1",
       OXBIN_LIVE_MAX_PARTICIPANTS: "3",
+      OXBIN_LIVE_CREATE_RATE: "100/1h",
+      OXBIN_LIVE_CONNECTION_RATE: "600/1m",
       OXBIN_LIVE_HEARTBEAT_INTERVAL: "5s",
       OXBIN_LIVE_RECONNECT_GRACE: "5s",
       OXBIN_LIVE_PARTICIPANT_TIMEOUT: "10s",
@@ -559,12 +561,10 @@ try {
         }
         if (!droppedAcknowledgement && event.type === "changes") {
           droppedAcknowledgement = true;
-          socket.send(
-            JSON.stringify({
-              type: "status",
-              status: "http_resync_required",
-            }),
-          );
+          void socket.close({
+            code: 4002,
+            reason: "drop committed acknowledgement",
+          });
           return;
         }
         socket.send(message);
@@ -631,6 +631,224 @@ try {
     return content?.textContent === "basex";
   });
   await acknowledgementContext.close();
+
+  progress("checking revision-disagreement replay");
+  const disagreementContext = await browser.newContext();
+  const disagreementObserverContext = await browser.newContext();
+  const disagreementPage = await disagreementContext.newPage();
+  let disagreementInjected = false;
+  let disagreementOperationID = "";
+  const replayedOperationIDs = [];
+  const disagreementReplayed = deferred();
+  const disagreementAccepted = deferred();
+  await disagreementPage.routeWebSocket(
+    /\/api\/v1\/live\/[^/]+\/ws$/,
+    (socket) => {
+      const server = socket.connectToServer();
+      server.onMessage((message) => {
+        const text = Buffer.isBuffer(message) ? message.toString() : message;
+        let event;
+        try {
+          event = JSON.parse(text);
+        } catch {
+          socket.send(message);
+          return;
+        }
+        if (
+          event.type === "changes" &&
+          event.operation_id === disagreementOperationID
+        ) {
+          disagreementAccepted.resolve();
+        }
+        if (
+          event.type === "error" &&
+          event.operation_id === disagreementOperationID
+        ) {
+          disagreementAccepted.reject(
+            new Error(`replayed operation rejected: ${text}`),
+          );
+        }
+        socket.send(message);
+      });
+      socket.onMessage((message) => {
+        const text = Buffer.isBuffer(message) ? message.toString() : message;
+        let event;
+        try {
+          event = JSON.parse(text);
+        } catch {
+          server.send(message);
+          return;
+        }
+        if (!disagreementInjected && event.type === "push_changes") {
+          disagreementInjected = true;
+          disagreementOperationID = event.operation_id;
+          socket.send(
+            JSON.stringify({
+              type: "error",
+              code: "resync_required",
+              message: "Revision disagreement",
+              operation_id: event.operation_id,
+              status: "resync_required",
+            }),
+          );
+          return;
+        }
+        if (
+          disagreementInjected &&
+          event.type === "push_changes" &&
+          event.operation_id === disagreementOperationID
+        ) {
+          replayedOperationIDs.push(event.operation_id);
+          disagreementReplayed.resolve();
+        }
+        server.send(message);
+      });
+    },
+  );
+  await disagreementPage.goto(webOrigin);
+  await disagreementPage.getByRole("button", { name: "Open LiveBin" }).click();
+  await disagreementPage
+    .locator(".live-create-canvas .cm-content")
+    .fill("revision");
+  await disagreementPage
+    .getByRole("button", { name: "Create LiveBin room" })
+    .click();
+  await disagreementPage.waitForURL((url) => url.pathname.startsWith("/live/"));
+  const disagreementURL = disagreementPage.url();
+  const disagreementSlug = new URL(disagreementURL).pathname.split("/").pop();
+  await expectVisible(disagreementPage, "Connected");
+  const disagreementObserver = await disagreementObserverContext.newPage();
+  await disagreementObserver.goto(disagreementURL);
+  await expectVisible(disagreementObserver, "Connected");
+  const disagreementEditor = disagreementPage.locator(
+    ".live-code-editor .cm-content",
+  );
+  await disagreementEditor.click();
+  await disagreementEditor.pressSequentially(" fixed");
+  await disagreementReplayed.promise;
+  await disagreementAccepted.promise;
+  await disagreementPage.waitForFunction(() => {
+    const content = document.querySelector(".live-code-editor .cm-content");
+    return (
+      content?.textContent === "revision fixed" &&
+      document
+        .querySelector(".live-connection-status")
+        ?.textContent?.includes("Connected")
+    );
+  });
+  await disagreementObserver.waitForFunction(() => {
+    const content = document.querySelector(".live-code-editor .cm-content");
+    if (!content) return false;
+    const copy = content.cloneNode(true);
+    copy.querySelectorAll(".live-remote-caret").forEach((cursor) => {
+      cursor.remove();
+    });
+    return copy.textContent === "revision fixed";
+  });
+  const disagreementSnapshot = await disagreementObserver.evaluate(
+    async (slug) => {
+      const response = await fetch(`/api/v1/live/${slug}`);
+      return response.json();
+    },
+    disagreementSlug,
+  );
+  assert.ok(disagreementOperationID, "expected a rejected operation ID");
+  assert.deepEqual(
+    replayedOperationIDs,
+    [disagreementOperationID],
+    "revision recovery should replay one stable operation ID",
+  );
+  assert.equal(await liveEditorText(disagreementEditor), "revision fixed");
+  assert.equal(
+    await liveEditorText(
+      disagreementObserver.locator(".live-code-editor .cm-content"),
+    ),
+    "revision fixed",
+  );
+  assert.equal(disagreementSnapshot.documents[0].content, "revision fixed");
+  await disagreementContext.close();
+  await disagreementObserverContext.close();
+
+  progress("checking validation rejection recovery");
+  const validationContext = await browser.newContext();
+  const validationObserverContext = await browser.newContext();
+  const validationPage = await validationContext.newPage();
+  let validationInjected = false;
+  await validationPage.routeWebSocket(
+    /\/api\/v1\/live\/[^/]+\/ws$/,
+    (socket) => {
+      const server = socket.connectToServer();
+      socket.onMessage((message) => {
+        const text = Buffer.isBuffer(message) ? message.toString() : message;
+        let event;
+        try {
+          event = JSON.parse(text);
+        } catch {
+          server.send(message);
+          return;
+        }
+        if (!validationInjected && event.type === "push_changes") {
+          validationInjected = true;
+          socket.send(
+            JSON.stringify({
+              type: "error",
+              code: "invalid_request",
+              message: "Rejected change",
+              operation_id: event.operation_id,
+              status: "validation",
+            }),
+          );
+          return;
+        }
+        server.send(message);
+      });
+    },
+  );
+  await validationPage.goto(webOrigin);
+  await validationPage.getByRole("button", { name: "Open LiveBin" }).click();
+  await validationPage
+    .locator(".live-create-canvas .cm-content")
+    .fill("accepted");
+  await validationPage
+    .getByRole("button", { name: "Create LiveBin room" })
+    .click();
+  await validationPage.waitForURL((url) => url.pathname.startsWith("/live/"));
+  const validationURL = validationPage.url();
+  const validationSlug = new URL(validationURL).pathname.split("/").pop();
+  await expectVisible(validationPage, "Connected");
+  const validationObserver = await validationObserverContext.newPage();
+  await validationObserver.goto(validationURL);
+  await expectVisible(validationObserver, "Connected");
+  const validationEditor = validationPage.locator(
+    ".live-code-editor .cm-content",
+  );
+  await validationEditor.click();
+  await validationEditor.pressSequentially(" rejected");
+  await expectVisible(validationPage, "Copy recovery text");
+  await expectVisible(validationPage, "Recovery");
+  assert.equal(
+    await validationPage.getByText("Connected", { exact: true }).count(),
+    0,
+    "terminal validation recovery must not claim to be connected",
+  );
+  assert.equal(
+    await liveEditorText(validationEditor),
+    "accepted rejected",
+    "validation rejection should preserve local editor text",
+  );
+  const validationSnapshot = await validationObserver.evaluate(async (slug) => {
+    const response = await fetch(`/api/v1/live/${slug}`);
+    return response.json();
+  }, validationSlug);
+  assert.equal(
+    await liveEditorText(
+      validationObserver.locator(".live-code-editor .cm-content"),
+    ),
+    "accepted",
+  );
+  assert.equal(validationSnapshot.documents[0].content, "accepted");
+  await validationContext.close();
+  await validationObserverContext.close();
 
   progress("checking stale HTTP snapshot reconciliation");
   const staleContext = await browser.newContext();
@@ -1038,6 +1256,11 @@ try {
     () =>
       document.querySelector(".live-add-tab") instanceof HTMLButtonElement &&
       document.querySelector(".live-add-tab").disabled,
+  );
+  await owner.waitForFunction(
+    () =>
+      document.querySelector(".live-participant-count")?.textContent?.trim() ===
+      "3",
   );
 
   const overflow = await overflowContext.newPage();

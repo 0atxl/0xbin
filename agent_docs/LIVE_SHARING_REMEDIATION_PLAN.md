@@ -7,8 +7,7 @@ release audit. The live-sharing branch is not ready to merge until every phase
 below passes its gate and the final independent audit reports no unresolved
 release blocker.
 
-**Progress:** Phases 0–3 are complete. Phase 4 is next; Phases 4–7, including
-the Phase 5A maintainability gate, remain.
+**Progress:** Phases 0–5 are complete. Phase 5A is next; Phases 5A–7 remain.
 
 This document does not change a settled product decision. `spec.md` remains
 authoritative, followed by `AGENTS.md`, the PRD, technical design, frontend
@@ -226,6 +225,16 @@ WebSocket, HTTP, hub, and SQLite boundaries instead of isolated helper tests.
   claim `connected`.
 - `make test-e2e` passes repeatedly.
 
+**Completion evidence (2026-08-09):** The HTTP/WebSocket integration suite
+injects an atomic SQLite commit failure, proves no failed revision is published
+or persisted, and proves the stable retry commits once. The browser matrix
+drops a committed acknowledgement by closing the socket, injects revision and
+validation failures, delays and fails HTTP snapshots, expires protected access,
+and exercises unprotected reconnect, rapid Unicode input, offline replay, and
+metadata deletion. Successful cases compare the local editor, a second browser,
+and HTTP; terminal cases retain local text in `Recovery`. The complete E2E
+suite passed twice consecutively after the matrix was finalized.
+
 ## Phase 5 — Reconcile limits and public contracts
 
 **Severity:** Medium release gate
@@ -262,6 +271,18 @@ behavior.
 - Documentation review finds no contradiction with `spec.md`, the PRD, or the
   WebSocket contract.
 - `make lint`, `make test`, and `make build` pass.
+
+**Completion evidence (2026-08-09):** `OXBIN_LIVE_MAX_BYTES` remains the one
+operator-configured content budget; `max_document_bytes` is now explicitly an
+equal semantic alias and the frontend rejects divergent wire values. Config,
+HTTP, and frontend tests cover 512 KiB and 2 MiB settings, single-document
+boundaries, and aggregate overflow by individually valid documents. OpenAPI
+now matches the participant-optional bootstrap/unlock payloads and the actual
+pre-upgrade versus post-`join` capacity boundary. The OpenAPI document parsed,
+all 60 local references resolved, all four schema examples validated, and live
+config, create, and unlock responses from a temporary built server validated
+against their schemas. `make format`, `make lint`, `make test`, and `make build`
+passed.
 
 ## Phase 5A — Remove stale code and reduce maintenance concentration
 
