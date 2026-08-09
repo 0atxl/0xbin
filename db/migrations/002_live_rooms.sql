@@ -1,6 +1,8 @@
 CREATE TABLE live_rooms (
     slug TEXT PRIMARY KEY,
     password_hash TEXT CHECK(password_hash IS NULL OR length(password_hash) > 0),
+    creator_token_hash BLOB CHECK(creator_token_hash IS NULL OR length(creator_token_hash) = 32),
+    locked INTEGER NOT NULL DEFAULT 0 CHECK(locked IN (0, 1)),
     content_size INTEGER NOT NULL CHECK(content_size >= 0),
     metadata_revision INTEGER NOT NULL CHECK(metadata_revision >= 0),
     metadata_snapshot_revision INTEGER NOT NULL CHECK(metadata_snapshot_revision >= 0),

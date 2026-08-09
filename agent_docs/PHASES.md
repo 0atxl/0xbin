@@ -7,8 +7,8 @@ public-beta work remains open. The separate Phase 5 live-sharing extension,
 release hardening, and independent audit are complete. A bounded
 browser-identity and creator-authority evolution is planned in
 [`LIVE_SHARING_IDENTITY_AUTHORITY_PLAN.md`](LIVE_SHARING_IDENTITY_AUTHORITY_PLAN.md)
-before the live-workspace visual pass and final merge. Its contract-reconciliation
-Phase 0 is complete; Phase 1 implementation is next and has not started.
+before the live-workspace visual pass and final merge. Its contract and durable
+storage Phases 0–1 are complete; Phase 2 is next and has not started.
 
 ## Phase 0 — Foundation
 

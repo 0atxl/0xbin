@@ -328,6 +328,10 @@ func TestLiveRoomRoundTripAndReopen(t *testing.T) {
 	if storedPassword != want.PasswordHash {
 		t.Fatalf("stored password hash = %q, want %q", storedPassword, want.PasswordHash)
 	}
+	if err := store.SetRoomLocked(ctx, want.Slug, true, now); err != nil {
+		t.Fatal(err)
+	}
+	want.Locked = true
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -343,6 +347,32 @@ func TestLiveRoomRoundTripAndReopen(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("reopened room = %#v, want %#v", got, want)
+	}
+}
+
+func TestLiveRoomCreatorHashAndLockSchemaConstraints(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Date(2026, time.August, 9, 12, 0, 0, 0, time.UTC)
+	room := testLiveRoom("calmbrightotter", now)
+	if err := store.CreateRoom(ctx, room); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.DB().ExecContext(ctx, "UPDATE live_rooms SET creator_token_hash = ? WHERE slug = ?", make([]byte, live.CreatorHashBytes-1), room.Slug); err == nil {
+		t.Fatal("short creator hash bypassed schema constraint")
+	}
+	if _, err := store.DB().ExecContext(ctx, "UPDATE live_rooms SET locked = 2 WHERE slug = ?", room.Slug); err == nil {
+		t.Fatal("invalid lock value bypassed schema constraint")
+	}
+	invalid := room
+	invalid.Slug = "quietquickwren"
+	invalid.CreatorTokenHash = make([]byte, live.CreatorHashBytes-1)
+	if err := store.CreateRoom(ctx, invalid); !errors.Is(err, live.ErrInvalidSnapshot) {
+		t.Fatalf("invalid creator hash error = %v", err)
 	}
 }
 
@@ -365,6 +395,9 @@ func TestLiveRoomExpiryAppliesToEveryAccessPath(t *testing.T) {
 	}
 	if err := store.SaveSnapshot(ctx, room, now); !errors.Is(err, live.ErrRoomNotFound) {
 		t.Fatalf("expired SaveSnapshot() error = %v", err)
+	}
+	if err := store.SetRoomLocked(ctx, room.Slug, true, now); !errors.Is(err, live.ErrRoomNotFound) {
+		t.Fatalf("expired SetRoomLocked() error = %v", err)
 	}
 	change := live.ChangeRecord{
 		StreamKind: live.StreamDocument, StreamID: "main", Revision: 1,
@@ -702,6 +735,7 @@ func testLiveRoom(slug string, now time.Time) live.RoomSnapshot {
 	room := live.RoomSnapshot{
 		Slug:                     slug,
 		PasswordHash:             "$argon2id$v=19$m=65536,t=3,p=1$test$hash",
+		CreatorTokenHash:         []byte("01234567890123456789012345678901"),
 		MetadataRevision:         0,
 		MetadataSnapshotRevision: 0,
 		ExpiresAt:                now.Add(24 * time.Hour),

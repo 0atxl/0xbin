@@ -26,6 +26,8 @@ var (
 type RoomSnapshot struct {
 	Slug                     string
 	PasswordHash             string
+	CreatorTokenHash         []byte
+	Locked                   bool
 	ContentSize              int64
 	MetadataRevision         int
 	MetadataSnapshotRevision int
@@ -87,6 +89,7 @@ type RoomStore interface {
 	GetRoomSnapshot(context.Context, string, time.Time) (RoomSnapshot, error)
 	GetRoomSnapshotWithClientOperations(context.Context, string, string, int, time.Time) (RoomSnapshot, []OperationRecord, error)
 	SaveSnapshot(context.Context, RoomSnapshot, time.Time) error
+	SetRoomLocked(context.Context, string, bool, time.Time) error
 	CommitChange(context.Context, ChangeCommit, time.Time) error
 	AppendChanges(context.Context, string, []ChangeRecord, time.Time) error
 	LoadChangesSince(context.Context, string, string, string, int, time.Time) ([]ChangeRecord, error)

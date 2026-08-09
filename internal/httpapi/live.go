@@ -46,7 +46,6 @@ type liveAPI struct {
 	cfg               config.Config
 	limits            *ratelimit.Registry
 	sessions          *liveSessionStore
-	creators          *liveSessionStore
 	peers             *livePeerRegistry
 	publications      *livePublicationRegistry
 	activeConnections atomic.Int64
@@ -69,10 +68,7 @@ const (
 	liveMaxSessions         = 10_000
 )
 
-var (
-	errLivePasswordBusy    = errors.New("live password verification is busy")
-	errLiveCreatorCapacity = errors.New("live creator credential capacity reached")
-)
+var errLivePasswordBusy = errors.New("live password verification is busy")
 
 func newLiveAPI(cfg config.Config, dependencies *LiveDependencies) *liveAPI {
 	if !cfg.LiveEnabled || dependencies == nil {
@@ -88,7 +84,6 @@ func newLiveAPI(cfg config.Config, dependencies *LiveDependencies) *liveAPI {
 		baseURL:       cfg.BaseURL,
 		cfg:           cfg,
 		sessions:      newLiveSessionStore(),
-		creators:      newLiveCreatorStore(),
 		peers:         newLivePeerRegistry(),
 		publications:  newLivePublicationRegistry(),
 		passwordSlots: make(chan struct{}, 4),
@@ -147,6 +142,7 @@ type liveRoomResponse struct {
 	MaxParticipants          int                       `json:"max_participants"`
 	RoomLifetimeSeconds      int64                     `json:"room_lifetime_seconds"`
 	Creator                  bool                      `json:"creator"`
+	Locked                   bool                      `json:"locked"`
 	Documents                []liveDocumentResponse    `json:"documents,omitempty"`
 	Participants             []liveParticipantResponse `json:"participants,omitempty"`
 	AcceptedOperationIDs     []string                  `json:"accepted_operation_ids,omitempty"`
@@ -247,17 +243,11 @@ func (api *liveAPI) create(w http.ResponseWriter, r *http.Request) {
 		writeLiveError(w, r, http.StatusBadRequest, "invalid_request", "Invalid live room request")
 		return
 	}
-	creatorToken, err := api.creators.reserve(now)
+	creator, err := live.NewCreatorCapability()
 	if err != nil {
 		writeLiveError(w, r, http.StatusServiceUnavailable, "service_unavailable", "Live sharing is temporarily unavailable")
 		return
 	}
-	creatorReserved := true
-	defer func() {
-		if creatorReserved {
-			api.creators.releaseReservation(creatorToken)
-		}
-	}()
 	snapshot := live.RoomSnapshot{
 		PasswordHash: passwordHash,
 		ContentSize:  contentSize,
@@ -265,27 +255,17 @@ func (api *liveAPI) create(w http.ResponseWriter, r *http.Request) {
 		CreatedAt:    now,
 		Documents:    documents,
 	}
-	slugValue, err := slugInsertRoom(r.Context(), api.slugs, api.store, snapshot)
+	slugValue, err := slugInsertRoom(r.Context(), api.slugs, api.store, snapshot, creator)
 	if err != nil {
 		api.writeStoreError(w, r, err)
 		return
 	}
 	snapshot.Slug = slugValue
-	creator, err := api.hub.IssueCreatorCapability(slugValue, snapshot.ExpiresAt)
-	if err != nil {
-		api.writeStoreError(w, r, err)
-		return
-	}
-	if !api.creators.commitReservation(creatorToken, slugValue, creator.ExpiresAt(), creator) {
-		api.hub.RevokeCreatorCapability(slugValue)
-		writeLiveError(w, r, http.StatusServiceUnavailable, "service_unavailable", "Live sharing is temporarily unavailable")
-		return
-	}
-	creatorReserved = false
+	snapshot.CreatorTokenHash = creator.HashForRoom(slugValue)
 	api.limits.RecordSuccess(clientIPFromContext(r.Context()))
 	setLiveHeaders(w.Header())
 	api.setSessionCookie(w, slugValue, now)
-	api.setCreatorCookie(w, slugValue, creator, creatorToken)
+	api.setCreatorCookie(w, slugValue, snapshot.ExpiresAt, creator)
 	writeJSON(w, http.StatusCreated, liveCreateResponse{Slug: slugValue, URL: liveRoomURL(api.baseURL, slugValue), ExpiresAt: snapshot.ExpiresAt, PasswordRequired: passwordHash != ""})
 }
 
@@ -293,9 +273,10 @@ func (api *liveAPI) config(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, api.publicConfig())
 }
 
-func slugInsertRoom(ctx context.Context, generator liveSlugGenerator, store live.RoomStore, snapshot live.RoomSnapshot) (string, error) {
+func slugInsertRoom(ctx context.Context, generator liveSlugGenerator, store live.RoomStore, snapshot live.RoomSnapshot, creator live.CreatorCapability) (string, error) {
 	return slugInsertWithRetry(ctx, generator, func(ctx context.Context, value string) error {
 		snapshot.Slug = value
+		snapshot.CreatorTokenHash = creator.HashForRoom(value)
 		return store.CreateRoom(ctx, snapshot)
 	})
 }
@@ -363,7 +344,7 @@ func (api *liveAPI) bootstrap(w http.ResponseWriter, r *http.Request) {
 			response.AcceptedOperationIDs = append(response.AcceptedOperationIDs, operation.OperationID)
 		}
 	}
-	_, response.Creator = api.creatorCapability(r, slugValue, now)
+	_, response.Creator = api.creatorCapability(r, snapshot, now)
 	writeJSON(w, http.StatusOK, response)
 }
 
@@ -473,7 +454,7 @@ func liveRoomURL(base *url.URL, slugValue string) string {
 }
 
 func responseForLiveSnapshot(snapshot live.RoomSnapshot) liveRoomResponse {
-	response := liveRoomResponse{Slug: snapshot.Slug, ExpiresAt: snapshot.ExpiresAt, PasswordRequired: false, MetadataRevision: snapshot.MetadataRevision, MetadataSnapshotRevision: snapshot.MetadataSnapshotRevision, Documents: make([]liveDocumentResponse, 0, len(snapshot.Documents))}
+	response := liveRoomResponse{Slug: snapshot.Slug, ExpiresAt: snapshot.ExpiresAt, PasswordRequired: false, MetadataRevision: snapshot.MetadataRevision, MetadataSnapshotRevision: snapshot.MetadataSnapshotRevision, Locked: snapshot.Locked, Documents: make([]liveDocumentResponse, 0, len(snapshot.Documents))}
 	for _, document := range snapshot.Documents {
 		response.Documents = append(response.Documents, liveDocumentResponse{ID: document.ID, Name: document.Name, Language: document.Language, Content: document.Content, Position: document.Position, Revision: document.CurrentRevision, SnapshotRevision: document.SnapshotRevision})
 	}
@@ -505,7 +486,7 @@ func (api *liveAPI) publicConfig() liveConfigResponse {
 }
 
 func responseForLiveState(state live.RoomState) liveRoomResponse {
-	response := liveRoomResponse{Slug: state.Slug, ExpiresAt: state.ExpiresAt, MetadataRevision: state.MetadataRevision, MetadataSnapshotRevision: state.MetadataSnapshotRevision, Documents: make([]liveDocumentResponse, 0, len(state.Documents)), Participants: make([]liveParticipantResponse, 0, len(state.Participants))}
+	response := liveRoomResponse{Slug: state.Slug, ExpiresAt: state.ExpiresAt, MetadataRevision: state.MetadataRevision, MetadataSnapshotRevision: state.MetadataSnapshotRevision, Locked: state.WatchOnly, Documents: make([]liveDocumentResponse, 0, len(state.Documents)), Participants: make([]liveParticipantResponse, 0, len(state.Participants))}
 	for _, document := range state.Documents {
 		response.Documents = append(response.Documents, liveDocumentResponse{ID: document.ID, Name: document.Name, Language: document.Language, Content: document.Content, Position: document.Position, Revision: document.Revision, SnapshotRevision: document.SnapshotRevision})
 	}
@@ -596,94 +577,37 @@ func (api *liveAPI) releasePasswordSlot() {
 type liveSessionRecord struct {
 	slug    string
 	expires time.Time
-	creator live.CreatorCapability
 }
 
 type liveSessionStore struct {
-	mu           sync.Mutex
-	records      map[string]liveSessionRecord
-	reservations map[string]struct{}
-	maxRecords   int
-	evictActive  bool
+	mu         sync.Mutex
+	records    map[string]liveSessionRecord
+	maxRecords int
 }
 
 func newLiveSessionStore() *liveSessionStore {
-	return newLiveSessionStoreWithPolicy(liveMaxSessions, true)
-}
-
-func newLiveCreatorStore() *liveSessionStore {
-	return newLiveSessionStoreWithPolicy(liveMaxSessions, false)
-}
-
-func newLiveCreatorStoreWithLimit(limit int) *liveSessionStore {
-	return newLiveSessionStoreWithPolicy(limit, false)
-}
-
-func newLiveSessionStoreWithPolicy(limit int, evictActive bool) *liveSessionStore {
-	if limit < 1 {
-		limit = 1
-	}
 	return &liveSessionStore{
-		records:      make(map[string]liveSessionRecord),
-		reservations: make(map[string]struct{}),
-		maxRecords:   limit,
-		evictActive:  evictActive,
+		records:    make(map[string]liveSessionRecord),
+		maxRecords: liveMaxSessions,
 	}
 }
 
-func (store *liveSessionStore) put(slugValue string, expires time.Time, creator live.CreatorCapability) string {
+func (store *liveSessionStore) put(slugValue string, expires time.Time) string {
 	token, err := newLiveSessionToken()
 	if err != nil {
 		return ""
 	}
 	store.mu.Lock()
 	store.pruneExpiredLocked(time.Now().UTC())
-	if len(store.records)+len(store.reservations) >= store.maxRecords {
-		if store.evictActive {
-			for key := range store.records {
-				delete(store.records, key)
-				break
-			}
-		} else {
-			store.mu.Unlock()
-			return ""
+	if len(store.records) >= store.maxRecords {
+		for key := range store.records {
+			delete(store.records, key)
+			break
 		}
 	}
-	store.records[token] = liveSessionRecord{slug: slugValue, expires: expires, creator: creator}
+	store.records[token] = liveSessionRecord{slug: slugValue, expires: expires}
 	store.mu.Unlock()
 	return token
-}
-
-func (store *liveSessionStore) reserve(now time.Time) (string, error) {
-	token, err := newLiveSessionToken()
-	if err != nil {
-		return "", err
-	}
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	store.pruneExpiredLocked(now)
-	if len(store.records)+len(store.reservations) >= store.maxRecords {
-		return "", errLiveCreatorCapacity
-	}
-	store.reservations[token] = struct{}{}
-	return token, nil
-}
-
-func (store *liveSessionStore) commitReservation(token, slugValue string, expires time.Time, creator live.CreatorCapability) bool {
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	if _, ok := store.reservations[token]; !ok {
-		return false
-	}
-	delete(store.reservations, token)
-	store.records[token] = liveSessionRecord{slug: slugValue, expires: expires, creator: creator}
-	return true
-}
-
-func (store *liveSessionStore) releaseReservation(token string) {
-	store.mu.Lock()
-	delete(store.reservations, token)
-	store.mu.Unlock()
 }
 
 func (store *liveSessionStore) pruneExpiredLocked(now time.Time) {
@@ -732,34 +656,37 @@ func (api *liveAPI) session(r *http.Request, slugValue string, now time.Time) (l
 }
 
 func (api *liveAPI) setSessionCookie(w http.ResponseWriter, slugValue string, now time.Time) {
-	token := api.sessions.put(slugValue, now.Add(liveSessionLifetime), live.CreatorCapability{})
+	token := api.sessions.put(slugValue, now.Add(liveSessionLifetime))
 	if token == "" {
 		return
 	}
 	http.SetCookie(w, &http.Cookie{Name: liveSessionCookie, Value: token, Path: "/api/v1/live/" + slugValue, Expires: now.Add(liveSessionLifetime), MaxAge: int(liveSessionLifetime.Seconds()), HttpOnly: true, Secure: strings.EqualFold(api.baseURL.Scheme, "https"), SameSite: http.SameSiteStrictMode})
 }
 
-// The creator credential is independent from the short-lived room-access
-// session. It remains only in process memory and is scoped to one room, so a
-// restart drops creator authority even when a browser still holds the cookie.
-func (api *liveAPI) setCreatorCookie(w http.ResponseWriter, slugValue string, creator live.CreatorCapability, token string) {
-	if creator == (live.CreatorCapability{}) || token == "" {
+// The raw creator credential exists only in this room-scoped HttpOnly cookie;
+// SQLite stores its room-bound hash.
+func (api *liveAPI) setCreatorCookie(w http.ResponseWriter, slugValue string, expiresAt time.Time, creator live.CreatorCapability) {
+	token := creator.CookieValue()
+	now := time.Now().UTC()
+	if token == "" || !expiresAt.After(now) {
 		return
 	}
-	now := time.Now().UTC()
-	http.SetCookie(w, &http.Cookie{Name: liveCreatorCookie, Value: token, Path: "/api/v1/live/" + slugValue, Expires: creator.ExpiresAt(), MaxAge: int(creator.ExpiresAt().Sub(now).Seconds()), HttpOnly: true, Secure: strings.EqualFold(api.baseURL.Scheme, "https"), SameSite: http.SameSiteStrictMode})
+	http.SetCookie(w, &http.Cookie{Name: liveCreatorCookie, Value: token, Path: "/api/v1/live/" + slugValue, Expires: expiresAt, MaxAge: int(expiresAt.Sub(now).Seconds()), HttpOnly: true, Secure: strings.EqualFold(api.baseURL.Scheme, "https"), SameSite: http.SameSiteStrictMode})
 }
 
-func (api *liveAPI) creatorCapability(r *http.Request, slugValue string, now time.Time) (live.CreatorCapability, bool) {
+func (api *liveAPI) creatorCapability(r *http.Request, snapshot live.RoomSnapshot, now time.Time) (live.CreatorCapability, bool) {
+	if !snapshot.ExpiresAt.After(now) {
+		return live.CreatorCapability{}, false
+	}
 	cookie, err := r.Cookie(liveCreatorCookie)
 	if err != nil {
 		return live.CreatorCapability{}, false
 	}
-	record, ok := api.creators.get(cookie.Value, slugValue, now)
-	if !ok || record.creator == (live.CreatorCapability{}) || !api.hub.ValidCreatorCapability(slugValue, record.creator, now) {
+	capability, err := live.ParseCreatorCapability(cookie.Value)
+	if err != nil || !capability.MatchesRoomHash(snapshot.Slug, snapshot.CreatorTokenHash) {
 		return live.CreatorCapability{}, false
 	}
-	return record.creator, true
+	return capability, true
 }
 
 type livePeer struct {
@@ -991,7 +918,7 @@ func (api *liveAPI) websocket(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	creator, _ := api.creatorCapability(r, slugValue, time.Now().UTC())
+	creator, _ := api.creatorCapability(r, snapshot, time.Now().UTC())
 	conn.SetReadLimit(int64(api.cfg.LiveMaxMessageBytes))
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -1214,7 +1141,7 @@ func (api *liveAPI) handleWireMessage(ctx context.Context, peer *livePeer, messa
 	case "room_watch_only":
 		unlockPublication := api.publications.lock(peer.slug)
 		defer unlockPublication()
-		state, err := peer.session.SetWatchOnly(message.WatchOnly, now)
+		state, err := peer.session.SetWatchOnly(ctx, message.WatchOnly, now)
 		if err != nil {
 			return err
 		}

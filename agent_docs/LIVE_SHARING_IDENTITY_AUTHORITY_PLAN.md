@@ -2,7 +2,7 @@
 
 ## Status
 
-**Phase 0 complete (2026-08-09). Phase 1 is next and has not started.**
+**Phases 0–1 complete (2026-08-10). Phase 2 is next and has not started.**
 
 This plan defines the bounded behavioral foundation that must be completed
 before the live-workspace visual pass, final verification, and merge. It does
@@ -308,6 +308,23 @@ changing participant behavior yet.
 
 - Storage and HTTP creator tests pass, including race-enabled concurrent cases.
 - Paste schema and paste API behavior remain unchanged.
+
+### Completion record — 2026-08-10
+
+- Revised the embedded fresh-install `002_live_rooms.sql` baseline with a
+  constrained creator-token hash and durable lock flag; no upgrade migration
+  or existing local database reset was added.
+- Creator tokens are generated before room insertion, bound to the selected
+  room slug with a domain-separated SHA-256 hash, and validated from the
+  HttpOnly cookie without either former process-local creator registry.
+- Room snapshots load the hash and lock state without exposing the hash through
+  HTTP responses. Lock changes commit to SQLite before changing or broadcasting
+  in-memory authority.
+- Fresh-schema, constraint, expiry, cascade, reopen/restart, malformed/wrong/
+  missing/cross-room/expired token, failed lock write, raw-token boundary, and
+  concurrent room-creation cases pass. The focused live/storage/HTTP race suite,
+  full Go suite, and Go vet pass.
+- The Phase 1 gate passes. Phase 2 remains intentionally unstarted.
 
 ## Phase 2 — Introduce browser and connection identity
 

@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -116,6 +117,24 @@ func TestLiveCreateBootstrapAndPasswordGate(t *testing.T) {
 	}
 	if created.PasswordRequired {
 		t.Fatal("unprotected room unexpectedly requires a password")
+	}
+	creatorCookie := cookieNamed(create.Result().Cookies(), liveCreatorCookie)
+	if creatorCookie == nil || !creatorCookie.HttpOnly || creatorCookie.SameSite != http.SameSiteStrictMode {
+		t.Fatalf("creator cookie = %+v", creatorCookie)
+	}
+	creatorCapability, err := live.ParseCreatorCapability(creatorCookie.Value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persistedRoom, err := store.GetRoomSnapshot(context.Background(), created.Slug, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !creatorCapability.MatchesRoomHash(created.Slug, persistedRoom.CreatorTokenHash) {
+		t.Fatal("stored creator hash does not match the creation cookie")
+	}
+	if bytes.Equal(persistedRoom.CreatorTokenHash, []byte(creatorCookie.Value)) || strings.Contains(create.Body.String(), creatorCookie.Value) {
+		t.Fatal("raw creator token escaped the HttpOnly cookie boundary")
 	}
 
 	bootstrap := httptest.NewRecorder()
@@ -394,178 +413,153 @@ func TestLiveSessionCookiesRemainScopedToEachRoom(t *testing.T) {
 	}
 }
 
-func TestLiveCreatorCredentialOutlivesAccessSessionWithoutBecomingDurable(t *testing.T) {
+func TestLiveCreatorCredentialSurvivesRestartAndRejectsInvalidCookies(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, time.August, 8, 12, 0, 0, 0, time.UTC)
-	store, err := sqlite.Open(ctx, t.TempDir())
+	dir := t.TempDir()
+	store, err := sqlite.Open(ctx, dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	capability, err := live.NewCreatorCapability()
+	if err != nil {
+		t.Fatal(err)
+	}
 	room := live.RoomSnapshot{
 		Slug: "calmbrightotter", CreatedAt: now, ExpiresAt: now.Add(24 * time.Hour),
-		Documents: []live.DocumentSnapshot{{ID: "main", Name: "main", Language: "plaintext", Content: "", UpdatedAt: now}},
+		CreatorTokenHash: capability.HashForRoom("calmbrightotter"),
+		Documents:        []live.DocumentSnapshot{{ID: "main", Name: "main", Language: "plaintext", Content: "", UpdatedAt: now}},
 	}
 	if err := store.CreateRoom(ctx, room); err != nil {
 		t.Fatal(err)
 	}
-	hub, err := live.NewHub(store, nil, live.DefaultHubOptions())
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = sqlite.Open(ctx, dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer hub.Shutdown(ctx, now)
-	capability, err := hub.IssueCreatorCapability(room.Slug, room.ExpiresAt)
+	defer store.Close()
+	reopened, err := store.GetRoomSnapshot(ctx, room.Slug, now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	api := &liveAPI{sessions: newLiveSessionStore(), creators: newLiveCreatorStore(), hub: hub}
-	accessToken := api.sessions.put(room.Slug, now.Add(liveSessionLifetime), live.CreatorCapability{})
-	creatorToken := api.creators.put(room.Slug, room.ExpiresAt, capability)
+	baseURL, err := url.Parse("https://0xbin.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	api := &liveAPI{baseURL: baseURL, sessions: newLiveSessionStore()}
+	accessToken := api.sessions.put(room.Slug, now.Add(liveSessionLifetime))
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/live/"+room.Slug, nil)
 	request.AddCookie(&http.Cookie{Name: liveSessionCookie, Value: accessToken})
-	request.AddCookie(&http.Cookie{Name: liveCreatorCookie, Value: creatorToken})
+	request.AddCookie(&http.Cookie{Name: liveCreatorCookie, Value: capability.CookieValue()})
 	later := now.Add(liveSessionLifetime + time.Minute)
 	if api.sessionAuthorized(request, room.Slug, later) {
 		t.Fatal("ordinary access session survived its configured lifetime")
 	}
-	got, ok := api.creatorCapability(request, room.Slug, later)
+	got, ok := api.creatorCapability(request, reopened, later)
 	if !ok {
-		t.Fatal("creator credential should survive ordinary access expiry")
+		t.Fatal("creator credential should survive access expiry and store reopen")
 	}
+	hub, err := live.NewHub(store, nil, live.DefaultHubOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer hub.Shutdown(ctx, later)
 	joined, err := hub.JoinWithCreator(ctx, room.Slug, "creator-after-renewal", got, later)
 	if err != nil || !joined.Session.IsCreator() {
 		t.Fatalf("creator reconnect = %#v, %v", joined, err)
 	}
-	hub.RevokeCreatorCapability(room.Slug)
-	if _, ok := api.creatorCapability(request, room.Slug, later); ok {
-		t.Fatal("revoked creator capability remained valid at the HTTP boundary")
-	}
-	joined, err = hub.JoinWithCreator(ctx, room.Slug, "after-revocation", got, later)
-	if err != nil || joined.Session.IsCreator() {
-		t.Fatalf("revoked creator reconnect = %#v, %v", joined, err)
-	}
-}
 
-func TestLiveCreatorCredentialCapacityPreservesExistingAuthority(t *testing.T) {
-	now := time.Date(2026, time.August, 9, 12, 0, 0, 0, time.UTC)
-	store := newLiveCreatorStoreWithLimit(2)
-
-	first, err := store.reserve(now)
-	if err != nil || !store.commitReservation(first, "calmbrightotter", now.Add(time.Minute), live.CreatorCapability{}) {
-		t.Fatalf("first creator reservation = %q, %v", first, err)
+	wrong, err := live.NewCreatorCapability()
+	if err != nil {
+		t.Fatal(err)
 	}
-	second, err := store.reserve(now)
-	if err != nil || !store.commitReservation(second, "quietbrightotter", now.Add(time.Hour), live.CreatorCapability{}) {
-		t.Fatalf("second creator reservation = %q, %v", second, err)
-	}
-	if _, err := store.reserve(now); !errors.Is(err, errLiveCreatorCapacity) {
-		t.Fatalf("full creator reservation error = %v", err)
-	}
-	if token := store.put("newbriskbadger", now.Add(time.Hour), live.CreatorCapability{}); token != "" {
-		t.Fatalf("creator put evicted valid authority for token %q", token)
-	}
-	if _, ok := store.get(first, "calmbrightotter", now); !ok {
-		t.Fatal("capacity pressure evicted the first valid creator")
-	}
-	if _, ok := store.get(second, "quietbrightotter", now); !ok {
-		t.Fatal("capacity pressure evicted the second valid creator")
-	}
-
-	later := now.Add(2 * time.Minute)
-	third, err := store.reserve(later)
-	if err != nil || !store.commitReservation(third, "newbriskbadger", later.Add(time.Hour), live.CreatorCapability{}) {
-		t.Fatalf("reservation after expiry = %q, %v", third, err)
-	}
-	if _, ok := store.get(first, "calmbrightotter", later); ok {
-		t.Fatal("expired creator survived capacity pruning")
-	}
-	if _, ok := store.get(second, "quietbrightotter", later); !ok {
-		t.Fatal("unexpired creator was removed while pruning capacity")
-	}
-}
-
-func TestLiveCreatorCredentialReservationsAreConcurrencyBounded(t *testing.T) {
-	store := newLiveCreatorStoreWithLimit(1)
-	now := time.Date(2026, time.August, 9, 12, 0, 0, 0, time.UTC)
-	const attempts = 32
-	results := make(chan string, attempts)
-	errorsSeen := make(chan error, attempts)
-	var wait sync.WaitGroup
-	for range attempts {
-		wait.Add(1)
-		go func() {
-			defer wait.Done()
-			token, err := store.reserve(now)
-			if err != nil {
-				errorsSeen <- err
-				return
+	for name, token := range map[string]string{"missing": "", "malformed": "not-base64", "wrong": wrong.CookieValue()} {
+		t.Run(name, func(t *testing.T) {
+			candidate := httptest.NewRequest(http.MethodGet, "/api/v1/live/"+room.Slug, nil)
+			if token != "" {
+				candidate.AddCookie(&http.Cookie{Name: liveCreatorCookie, Value: token})
 			}
-			results <- token
-		}()
+			if _, ok := api.creatorCapability(candidate, reopened, later); ok {
+				t.Fatalf("%s creator cookie acquired authority", name)
+			}
+		})
 	}
-	wait.Wait()
-	close(results)
-	close(errorsSeen)
-
-	var winner string
-	for token := range results {
-		if winner != "" {
-			t.Fatalf("more than one reservation crossed the capacity boundary: %q and %q", winner, token)
-		}
-		winner = token
+	crossRoom := reopened
+	crossRoom.Slug = "quietbrightotter"
+	if _, ok := api.creatorCapability(request, crossRoom, later); ok {
+		t.Fatal("creator cookie crossed room boundary")
 	}
-	if winner == "" {
-		t.Fatal("no creator reservation acquired the available slot")
-	}
-	rejected := 0
-	for err := range errorsSeen {
-		if !errors.Is(err, errLiveCreatorCapacity) {
-			t.Fatalf("concurrent reservation error = %v", err)
-		}
-		rejected++
-	}
-	if rejected != attempts-1 {
-		t.Fatalf("rejected reservations = %d, want %d", rejected, attempts-1)
-	}
-	if !store.commitReservation(winner, "calmbrightotter", now.Add(time.Hour), live.CreatorCapability{}) {
-		t.Fatal("winning creator reservation could not commit")
-	}
-	if _, ok := store.get(winner, "calmbrightotter", now); !ok {
-		t.Fatal("committed creator reservation is unavailable")
+	expired := reopened
+	expired.ExpiresAt = later
+	if _, ok := api.creatorCapability(request, expired, later); ok {
+		t.Fatal("creator cookie survived room expiry")
 	}
 }
 
-func TestLiveCreateRejectsCreatorCapacityBeforeRoomInsertion(t *testing.T) {
+func TestConcurrentLiveRoomCreationDoesNotCrossBindCreatorTokens(t *testing.T) {
 	ctx := context.Background()
-	cfg := testConfig(t)
 	store, err := sqlite.Open(ctx, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	hub, err := live.NewHub(store, nil, live.DefaultHubOptions())
-	if err != nil {
+	now := time.Date(2026, time.August, 9, 12, 0, 0, 0, time.UTC)
+	slugs := []string{"calmbrightotter", "quietquickwren", "briskcleverfox", "steadykindbadger", "gentleswiftotter", "brightcalmwren", "cleverquietfox", "kindsteadybadger"}
+	type createdRoom struct {
+		slug       string
+		capability live.CreatorCapability
+	}
+	created := make(chan createdRoom, len(slugs))
+	errorsSeen := make(chan error, len(slugs))
+	var wait sync.WaitGroup
+	for _, slugValue := range slugs {
+		slugValue := slugValue
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			capability, err := live.NewCreatorCapability()
+			if err != nil {
+				errorsSeen <- err
+				return
+			}
+			snapshot := live.RoomSnapshot{CreatedAt: now, ExpiresAt: now.Add(time.Hour), Documents: []live.DocumentSnapshot{{ID: "main", Name: "main", Language: "plaintext", UpdatedAt: now}}}
+			gotSlug, err := slugInsertRoom(ctx, &testLiveSlugGenerator{slugs: []string{slugValue}}, store, snapshot, capability)
+			if err != nil {
+				errorsSeen <- err
+				return
+			}
+			created <- createdRoom{slug: gotSlug, capability: capability}
+		}()
+	}
+	wait.Wait()
+	close(created)
+	close(errorsSeen)
+	for err := range errorsSeen {
 		t.Fatal(err)
 	}
-	defer hub.Shutdown(ctx, time.Now().UTC())
-	api := newLiveAPI(cfg, &LiveDependencies{Store: store, Hub: hub, Slugs: &testLiveSlugGenerator{}})
-	api.creators = newLiveCreatorStoreWithLimit(1)
-	now := time.Now().UTC()
-	existing, err := api.creators.reserve(now)
-	if err != nil || !api.creators.commitReservation(existing, "existingbrightotter", now.Add(time.Hour), live.CreatorCapability{}) {
-		t.Fatalf("existing creator reservation = %q, %v", existing, err)
+	rooms := make([]createdRoom, 0, len(slugs))
+	for result := range created {
+		rooms = append(rooms, result)
 	}
-	handler := newHandlerWithAPI(cfg, nil, nil, nil, api)
-	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/api/v1/live", strings.NewReader(`{"documents":[{"name":"main","language":"plaintext","content":"capacity"}]}`))
-	request.Header.Set("Content-Type", "application/json")
-	handler.ServeHTTP(recorder, request)
-	assertError(t, recorder, http.StatusServiceUnavailable, "service_unavailable")
-	if _, err := store.GetRoomSnapshot(ctx, "calmbrightotter", time.Now().UTC()); !errors.Is(err, live.ErrRoomNotFound) {
-		t.Fatalf("capacity rejection inserted a room: %v", err)
+	if len(rooms) != len(slugs) {
+		t.Fatalf("created rooms = %d, want %d", len(rooms), len(slugs))
 	}
-	if _, ok := api.creators.get(existing, "existingbrightotter", now); !ok {
-		t.Fatal("capacity rejection evicted existing creator authority")
+	for _, result := range rooms {
+		snapshot, err := store.GetRoomSnapshot(ctx, result.slug, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !result.capability.MatchesRoomHash(result.slug, snapshot.CreatorTokenHash) {
+			t.Fatalf("creator token was not bound to %q", result.slug)
+		}
+		for _, other := range rooms {
+			if other.slug != result.slug && other.capability.MatchesRoomHash(result.slug, snapshot.CreatorTokenHash) {
+				t.Fatalf("creator token for %q acquired authority over %q", other.slug, result.slug)
+			}
+		}
 	}
 }
 

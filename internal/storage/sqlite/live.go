@@ -81,13 +81,15 @@ func (s *Store) GetRoomSnapshotWithClientOperations(ctx context.Context, slug, c
 func getRoomSnapshot(ctx context.Context, tx *sql.Tx, slug string, now time.Time) (live.RoomSnapshot, error) {
 	var snapshot live.RoomSnapshot
 	var passwordHash sql.NullString
+	var creatorTokenHash []byte
+	var locked int
 	var expiresAt, createdAt int64
 	if err := tx.QueryRowContext(ctx, `
-		SELECT slug, password_hash, content_size, metadata_revision,
+		SELECT slug, password_hash, creator_token_hash, locked, content_size, metadata_revision,
 		       metadata_snapshot_revision, expires_at, created_at
 		FROM live_rooms
 		WHERE slug = ? AND expires_at > ?`, slug, unixSeconds(now)).Scan(
-		&snapshot.Slug, &passwordHash, &snapshot.ContentSize,
+		&snapshot.Slug, &passwordHash, &creatorTokenHash, &locked, &snapshot.ContentSize,
 		&snapshot.MetadataRevision, &snapshot.MetadataSnapshotRevision,
 		&expiresAt, &createdAt,
 	); errors.Is(err, sql.ErrNoRows) {
@@ -98,6 +100,8 @@ func getRoomSnapshot(ctx context.Context, tx *sql.Tx, slug string, now time.Time
 	if passwordHash.Valid {
 		snapshot.PasswordHash = passwordHash.String
 	}
+	snapshot.CreatorTokenHash = append([]byte(nil), creatorTokenHash...)
+	snapshot.Locked = locked == 1
 	snapshot.ExpiresAt = unixTime(expiresAt)
 	snapshot.CreatedAt = unixTime(createdAt)
 
@@ -129,6 +133,25 @@ func getRoomSnapshot(ctx context.Context, tx *sql.Tx, slug string, now time.Time
 		return live.RoomSnapshot{}, fmt.Errorf("close live room documents: %w", err)
 	}
 	return snapshot, nil
+}
+
+// SetRoomLocked durably updates the room lock after enforcing expiry. The
+// caller serializes this transition with other room-authority changes.
+func (s *Store) SetRoomLocked(ctx context.Context, slug string, locked bool, now time.Time) error {
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE live_rooms SET locked = ?
+		WHERE slug = ? AND expires_at > ?`, boolToInt(locked), slug, unixSeconds(now))
+	if err != nil {
+		return fmt.Errorf("update live room lock: %w", err)
+	}
+	updated, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("count live room lock update: %w", err)
+	}
+	if updated != 1 {
+		return live.ErrRoomNotFound
+	}
+	return nil
 }
 
 func (s *Store) SaveSnapshot(ctx context.Context, snapshot live.RoomSnapshot, now time.Time) error {
@@ -759,12 +782,16 @@ func insertRoom(ctx context.Context, tx *sql.Tx, snapshot live.RoomSnapshot) err
 	if snapshot.PasswordHash != "" {
 		passwordHash = snapshot.PasswordHash
 	}
+	var creatorTokenHash any
+	if len(snapshot.CreatorTokenHash) != 0 {
+		creatorTokenHash = snapshot.CreatorTokenHash
+	}
 	_, err := tx.ExecContext(ctx, `
 		INSERT INTO live_rooms(
-			slug, password_hash, content_size, metadata_revision,
+			slug, password_hash, creator_token_hash, locked, content_size, metadata_revision,
 			metadata_snapshot_revision, expires_at, created_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?)`, snapshot.Slug, passwordHash,
-		snapshot.ContentSize, snapshot.MetadataRevision,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, snapshot.Slug, passwordHash,
+		creatorTokenHash, boolToInt(snapshot.Locked), snapshot.ContentSize, snapshot.MetadataRevision,
 		snapshot.MetadataSnapshotRevision, unixSeconds(snapshot.ExpiresAt),
 		unixSeconds(snapshot.CreatedAt))
 	if err != nil {
@@ -799,6 +826,9 @@ func prepareRoomSnapshot(snapshot live.RoomSnapshot) (live.RoomSnapshot, error) 
 	if snapshot.MetadataRevision < 0 || snapshot.MetadataSnapshotRevision < 0 || snapshot.MetadataSnapshotRevision > snapshot.MetadataRevision {
 		return live.RoomSnapshot{}, live.ErrInvalidSnapshot
 	}
+	if len(snapshot.CreatorTokenHash) != 0 && len(snapshot.CreatorTokenHash) != live.CreatorHashBytes {
+		return live.RoomSnapshot{}, live.ErrInvalidSnapshot
+	}
 	if snapshot.CreatedAt.IsZero() || snapshot.ExpiresAt.IsZero() || !snapshot.ExpiresAt.After(snapshot.CreatedAt) {
 		return live.RoomSnapshot{}, live.ErrInvalidSnapshot
 	}
@@ -807,6 +837,7 @@ func prepareRoomSnapshot(snapshot live.RoomSnapshot) (live.RoomSnapshot, error) 
 	}
 	snapshot.CreatedAt = snapshot.CreatedAt.UTC()
 	snapshot.ExpiresAt = snapshot.ExpiresAt.UTC()
+	snapshot.CreatorTokenHash = append([]byte(nil), snapshot.CreatorTokenHash...)
 	snapshot.Documents = append([]live.DocumentSnapshot(nil), snapshot.Documents...)
 	seenIDs := make(map[string]struct{}, len(snapshot.Documents))
 	var contentSize int64

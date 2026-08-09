@@ -146,20 +146,6 @@ type ParticipantSnapshot struct {
 	LastSeenAt time.Time
 }
 
-// CreatorCapability is an opaque, process-local capability minted for a room
-// creator. It is deliberately neither an account identity nor SQLite data.
-type CreatorCapability struct {
-	slug      string
-	token     string
-	expiresAt time.Time
-}
-
-// ExpiresAt exposes only the capability lifetime required by the HTTP cookie
-// boundary; the opaque token and room binding remain package-private.
-func (capability CreatorCapability) ExpiresAt() time.Time {
-	return capability.expiresAt
-}
-
 type DocumentState struct {
 	ID               string
 	Name             string
@@ -271,13 +257,12 @@ func (err *DocumentResyncError) Unwrap() error { return ErrDocumentResync }
 // Hub owns process-local room state. It intentionally does not persist
 // participants, cursors, connection state, or session identities.
 type Hub struct {
-	store    RoomStore
-	names    *NameGenerator
-	options  HubOptions
-	mu       sync.Mutex
-	rooms    map[string]*room
-	creators map[string]CreatorCapability
-	closed   bool
+	store   RoomStore
+	names   *NameGenerator
+	options HubOptions
+	mu      sync.Mutex
+	rooms   map[string]*room
+	closed  bool
 }
 
 // NewHub creates an empty process-local registry. Rooms are loaded lazily when
@@ -292,45 +277,7 @@ func NewHub(store RoomStore, names *NameGenerator, options HubOptions) (*Hub, er
 	if err := options.validate(); err != nil {
 		return nil, err
 	}
-	return &Hub{store: store, names: names, options: options, rooms: make(map[string]*room), creators: make(map[string]CreatorCapability)}, nil
-}
-
-// IssueCreatorCapability mints the temporary, room-scoped creator capability.
-// It is deliberately held only in the process-local Hub and its caller.
-func (hub *Hub) IssueCreatorCapability(slug string, expiresAt time.Time) (CreatorCapability, error) {
-	if slug == "" || expiresAt.IsZero() {
-		return CreatorCapability{}, ErrRoomNotFound
-	}
-	token, err := defaultOpaqueID()
-	if err != nil {
-		return CreatorCapability{}, err
-	}
-	hub.mu.Lock()
-	defer hub.mu.Unlock()
-	if hub.closed {
-		return CreatorCapability{}, ErrHubClosed
-	}
-	capability := CreatorCapability{slug: slug, token: token, expiresAt: expiresAt.UTC()}
-	hub.creators[slug] = capability
-	return capability, nil
-}
-
-// RevokeCreatorCapability explicitly removes temporary creator authority.
-// Existing cookies then carry no authority, and the capability is never
-// durable across a process restart.
-func (hub *Hub) RevokeCreatorCapability(slug string) {
-	hub.mu.Lock()
-	delete(hub.creators, slug)
-	hub.mu.Unlock()
-}
-
-// ValidCreatorCapability checks the process-local authority record without
-// exposing the opaque capability contents to another package.
-func (hub *Hub) ValidCreatorCapability(slug string, capability CreatorCapability, now time.Time) bool {
-	now = normalizedNow(now)
-	hub.mu.Lock()
-	defer hub.mu.Unlock()
-	return !hub.closed && capability.slug == slug && capability.token != "" && capability.expiresAt.After(now) && hub.creators[slug] == capability
+	return &Hub{store: store, names: names, options: options, rooms: make(map[string]*room)}, nil
 }
 
 // Join loads a room once, assigns or reclaims a temporary identity, and
@@ -339,8 +286,8 @@ func (hub *Hub) Join(ctx context.Context, slug, sessionID string, now time.Time)
 	return hub.JoinWithCreator(ctx, slug, sessionID, CreatorCapability{}, now)
 }
 
-// JoinWithCreator grants creator authority only when the process-local
-// capability belongs to this room and this Hub instance.
+// JoinWithCreator grants creator authority only when the capability matches
+// the room-bound hash loaded from durable storage.
 func (hub *Hub) JoinWithCreator(ctx context.Context, slug, sessionID string, capability CreatorCapability, now time.Time) (JoinResult, error) {
 	if strings.TrimSpace(slug) != slug || slug == "" || sessionID == "" || len(sessionID) > maxClientIDBytes || strings.TrimSpace(sessionID) != sessionID || !utf8.ValidString(sessionID) {
 		return JoinResult{}, ErrParticipantNotFound
@@ -368,12 +315,11 @@ func (hub *Hub) JoinWithCreator(ctx context.Context, slug, sessionID string, cap
 		}
 		hub.rooms[slug] = room
 	}
-	creator := !hub.closed && capability.slug == slug && capability.token != "" && capability.expiresAt.After(now) && hub.creators[slug] == capability
 	hub.mu.Unlock()
 
-	result, err := room.join(ctx, hub, sessionID, creator, now)
+	result, err := room.join(ctx, hub, sessionID, capability, now)
 	if errors.Is(err, ErrRoomExpired) {
-		hub.removeRoom(slug, room, true)
+		hub.removeRoom(slug, room)
 	}
 	return result, err
 }
@@ -426,11 +372,6 @@ func (hub *Hub) sweep(ctx context.Context, now time.Time, publish func(slug, par
 		return 0, ErrHubClosed
 	}
 	rooms := make([]*room, 0, len(hub.rooms))
-	for slug, capability := range hub.creators {
-		if !capability.expiresAt.After(now) {
-			delete(hub.creators, slug)
-		}
-	}
 	for _, room := range hub.rooms {
 		rooms = append(rooms, room)
 	}
@@ -442,7 +383,7 @@ func (hub *Hub) sweep(ctx context.Context, now time.Time, publish func(slug, par
 			return removed, err
 		}
 		if room.shouldEvict(now) {
-			hub.removeRoom(room.snapshotSlug(), room, room.expired(now))
+			hub.removeRoom(room.snapshotSlug(), room)
 			removed++
 		}
 	}
@@ -465,7 +406,6 @@ func (hub *Hub) Shutdown(ctx context.Context, now time.Time) error {
 		rooms = append(rooms, room)
 	}
 	hub.rooms = make(map[string]*room)
-	hub.creators = make(map[string]CreatorCapability)
 	hub.mu.Unlock()
 
 	var firstErr error
@@ -477,14 +417,11 @@ func (hub *Hub) Shutdown(ctx context.Context, now time.Time) error {
 	return firstErr
 }
 
-func (hub *Hub) removeRoom(slug string, target *room, removeCreator bool) {
+func (hub *Hub) removeRoom(slug string, target *room) {
 	hub.mu.Lock()
 	defer hub.mu.Unlock()
 	if hub.rooms[slug] == target {
 		delete(hub.rooms, slug)
-		if removeCreator {
-			delete(hub.creators, slug)
-		}
 	}
 }
 
@@ -574,7 +511,7 @@ func (session *RoomSession) Leave(now time.Time) error {
 	}
 	err := session.room.leave(session.participant, session.generation, normalizedNow(now))
 	if err == nil && session.hub != nil && session.room.shouldEvict(normalizedNow(now)) {
-		session.hub.removeRoom(session.room.snapshotSlug(), session.room, false)
+		session.hub.removeRoom(session.room.snapshotSlug(), session.room)
 	}
 	return err
 }
@@ -585,13 +522,13 @@ func (session *RoomSession) IsCreator() bool {
 	return session != nil && session.creator
 }
 
-// SetWatchOnly changes process-local room mode. Enabling it immediately makes
-// every active writer watch-only.
-func (session *RoomSession) SetWatchOnly(enabled bool, now time.Time) (RoomState, error) {
+// SetWatchOnly durably changes room mode. Enabling it immediately makes every
+// active writer watch-only; later phases refine creator editing behavior.
+func (session *RoomSession) SetWatchOnly(ctx context.Context, enabled bool, now time.Time) (RoomState, error) {
 	if session == nil || session.room == nil {
 		return RoomState{}, ErrParticipantNotFound
 	}
-	return session.room.setWatchOnly(session.participant, session.generation, session.creator, enabled, normalizedNow(now))
+	return session.room.setWatchOnly(ctx, session.participant, session.generation, session.creator, enabled, normalizedNow(now))
 }
 
 // RemoveParticipant invalidates an active temporary session. A removed person
@@ -675,6 +612,7 @@ func newRoom(ctx context.Context, store RoomStore, snapshot RoomSnapshot, option
 		sessions:                  make(map[string]string),
 		removedSessions:           make(map[string]time.Time),
 		names:                     make(map[string]string),
+		watchOnly:                 snapshot.Locked,
 		operations:                make(map[string]operationRecord),
 		metadataCompactedRevision: snapshot.MetadataSnapshotRevision,
 	}
@@ -818,12 +756,13 @@ func (room *room) replay(ctx context.Context) error {
 	return nil
 }
 
-func (room *room) join(ctx context.Context, hub *Hub, sessionID string, creator bool, now time.Time) (JoinResult, error) {
+func (room *room) join(ctx context.Context, hub *Hub, sessionID string, capability CreatorCapability, now time.Time) (JoinResult, error) {
 	room.mu.Lock()
 	defer room.mu.Unlock()
 	if err := room.ensureActiveLocked(now); err != nil {
 		return JoinResult{}, err
 	}
+	creator := capability.MatchesRoomHash(room.snapshot.Slug, room.snapshot.CreatorTokenHash)
 	room.pruneDisconnectedLocked(now)
 	room.pruneRemovedSessionsLocked(now)
 	if removedUntil, removed := room.removedSessions[sessionID]; removed && removedUntil.After(now) {
@@ -917,7 +856,7 @@ func (room *room) viewerSlotCountLocked() int {
 	return count
 }
 
-func (room *room) setWatchOnly(participantID string, generation uint64, creator, enabled bool, now time.Time) (RoomState, error) {
+func (room *room) setWatchOnly(ctx context.Context, participantID string, generation uint64, creator, enabled bool, now time.Time) (RoomState, error) {
 	room.mu.Lock()
 	defer room.mu.Unlock()
 	if err := room.ensureParticipantLocked(participantID, generation, now); err != nil {
@@ -926,7 +865,14 @@ func (room *room) setWatchOnly(participantID string, generation uint64, creator,
 	if !creator {
 		return RoomState{}, ErrCreatorRequired
 	}
+	if room.watchOnly == enabled {
+		return room.stateLocked(), nil
+	}
+	if err := room.store.SetRoomLocked(ctx, room.snapshot.Slug, enabled, now); err != nil {
+		return RoomState{}, fmt.Errorf("%w: persist live room lock: %v", ErrPersistence, err)
+	}
 	room.watchOnly = enabled
+	room.snapshot.Locked = enabled
 	for _, participant := range room.participants {
 		if enabled || !participant.writerSlot {
 			participant.snapshot.Role = ParticipantWatchOnly
@@ -1518,12 +1464,6 @@ func (room *room) shouldEvict(now time.Time) bool {
 	room.pruneDisconnectedLocked(now)
 	room.pruneRemovedSessionsLocked(now)
 	return len(room.participants) == 0
-}
-
-func (room *room) expired(now time.Time) bool {
-	room.mu.Lock()
-	defer room.mu.Unlock()
-	return now.Unix() >= room.snapshot.ExpiresAt.Unix()
 }
 
 func (room *room) snapshotSlug() string {

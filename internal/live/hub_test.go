@@ -906,18 +906,12 @@ func TestHubEnforcesWriterViewerCapacityAndWatchOnlyRole(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	if err := store.CreateRoom(ctx, testRoom(now)); err != nil {
-		t.Fatal(err)
-	}
+	creatorCapability := createTestRoomWithCreator(t, ctx, store, now)
 	options := testHubOptions([]string{"creator", "viewer-a", "viewer-b", "after-kick"}, nil)
 	options.MaxWriters = 1
 	options.MaxViewers = 2
 	options.MaxParticipants = 3
 	hub, err := live.NewHub(store, nil, options)
-	if err != nil {
-		t.Fatal(err)
-	}
-	creatorCapability, err := hub.IssueCreatorCapability("calmbrightotter", now.Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -948,13 +942,13 @@ func TestHubEnforcesWriterViewerCapacityAndWatchOnlyRole(t *testing.T) {
 	}, now); !errors.Is(err, live.ErrWatchOnly) {
 		t.Fatalf("watch-only edit error = %v", err)
 	}
-	if _, err := viewerA.Session.SetWatchOnly(true, now); !errors.Is(err, live.ErrCreatorRequired) {
+	if _, err := viewerA.Session.SetWatchOnly(ctx, true, now); !errors.Is(err, live.ErrCreatorRequired) {
 		t.Fatalf("non-creator mode error = %v", err)
 	}
 	if err := viewerA.Session.RemoveParticipant(creator.Participant.ID, now); !errors.Is(err, live.ErrCreatorRequired) {
 		t.Fatalf("non-creator removal error = %v", err)
 	}
-	if _, err := creator.Session.SetWatchOnly(true, now); err != nil {
+	if _, err := creator.Session.SetWatchOnly(ctx, true, now); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := creator.Session.SubmitDocument(ctx, live.DocumentOperation{
@@ -963,7 +957,7 @@ func TestHubEnforcesWriterViewerCapacityAndWatchOnlyRole(t *testing.T) {
 	}, now); !errors.Is(err, live.ErrWatchOnly) {
 		t.Fatalf("watch-only creator edit error = %v", err)
 	}
-	writableState, err := creator.Session.SetWatchOnly(false, now)
+	writableState, err := creator.Session.SetWatchOnly(ctx, false, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1002,18 +996,12 @@ func TestHubWatchOnlyModePreservesWriterCapacitySlots(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	if err := store.CreateRoom(ctx, testRoom(now)); err != nil {
-		t.Fatal(err)
-	}
+	creatorCapability := createTestRoomWithCreator(t, ctx, store, now)
 	options := testHubOptions([]string{"creator", "writer", "viewer", "replacement"}, nil)
 	options.MaxWriters = 2
 	options.MaxViewers = 1
 	options.MaxParticipants = 3
 	hub, err := live.NewHub(store, nil, options)
-	if err != nil {
-		t.Fatal(err)
-	}
-	creatorCapability, err := hub.IssueCreatorCapability("calmbrightotter", now.Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1032,7 +1020,7 @@ func TestHubWatchOnlyModePreservesWriterCapacitySlots(t *testing.T) {
 	if writer.Participant.Role != live.ParticipantWriter || viewer.Participant.Role != live.ParticipantWatchOnly {
 		t.Fatalf("initial roles = writer %q, viewer %q", writer.Participant.Role, viewer.Participant.Role)
 	}
-	if _, err := creator.Session.SetWatchOnly(true, now); err != nil {
+	if _, err := creator.Session.SetWatchOnly(ctx, true, now); err != nil {
 		t.Fatal(err)
 	}
 	if err := creator.Session.RemoveParticipant(writer.Participant.ID, now); err != nil {
@@ -1050,7 +1038,7 @@ func TestHubWatchOnlyModePreservesWriterCapacitySlots(t *testing.T) {
 	}
 }
 
-func TestHubCreatorCapabilityAndPresenceAreProcessLocal(t *testing.T) {
+func TestHubCreatorCapabilityAndLockSurviveRestartWhilePresenceDoesNot(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, time.August, 8, 12, 0, 0, 0, time.UTC)
 	store, err := sqlite.Open(ctx, t.TempDir())
@@ -1058,14 +1046,8 @@ func TestHubCreatorCapabilityAndPresenceAreProcessLocal(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	if err := store.CreateRoom(ctx, testRoom(now)); err != nil {
-		t.Fatal(err)
-	}
+	creatorCapability := createTestRoomWithCreator(t, ctx, store, now)
 	hub, err := live.NewHub(store, nil, testHubOptions([]string{"creator", "collaborator", "after-restart"}, nil))
-	if err != nil {
-		t.Fatal(err)
-	}
-	creatorCapability, err := hub.IssueCreatorCapability("calmbrightotter", now.Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1115,6 +1097,9 @@ func TestHubCreatorCapabilityAndPresenceAreProcessLocal(t *testing.T) {
 			t.Fatalf("deleted document remains in presence: %#v", participant)
 		}
 	}
+	if _, err := creator.Session.SetWatchOnly(ctx, true, now); err != nil {
+		t.Fatal(err)
+	}
 	if err := hub.Shutdown(ctx, now); err != nil {
 		t.Fatal(err)
 	}
@@ -1126,12 +1111,12 @@ func TestHubCreatorCapabilityAndPresenceAreProcessLocal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if joined.Session.IsCreator() || len(joined.State.Participants) != 1 {
-		t.Fatalf("creator capability or presence survived restart: %#v", joined)
+	if !joined.Session.IsCreator() || !joined.State.WatchOnly || len(joined.State.Participants) != 1 {
+		t.Fatalf("durable creator/lock or transient presence after restart = %#v", joined)
 	}
 }
 
-func TestHubCreatorCapabilityOutlivesOrdinarySessionAndCanBeRevoked(t *testing.T) {
+func TestHubRejectsWrongCreatorCapabilityAndExpiredRoom(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, time.August, 8, 12, 0, 0, 0, time.UTC)
 	store, err := sqlite.Open(ctx, t.TempDir())
@@ -1139,14 +1124,8 @@ func TestHubCreatorCapabilityOutlivesOrdinarySessionAndCanBeRevoked(t *testing.T
 		t.Fatal(err)
 	}
 	defer store.Close()
-	if err := store.CreateRoom(ctx, testRoom(now)); err != nil {
-		t.Fatal(err)
-	}
+	capability := createTestRoomWithCreator(t, ctx, store, now)
 	hub, err := live.NewHub(store, nil, testHubOptions([]string{"creator", "after-revoke"}, nil))
-	if err != nil {
-		t.Fatal(err)
-	}
-	capability, err := hub.IssueCreatorCapability("calmbrightotter", now.Add(24*time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1157,17 +1136,65 @@ func TestHubCreatorCapabilityOutlivesOrdinarySessionAndCanBeRevoked(t *testing.T
 	if !joined.Session.IsCreator() {
 		t.Fatal("creator capability should outlive the ordinary access session")
 	}
-	hub.RevokeCreatorCapability("calmbrightotter")
-	joined, err = hub.JoinWithCreator(ctx, "calmbrightotter", "after-revoke-session", capability, now.Add(17*time.Minute))
+	wrong, err := live.NewCreatorCapability()
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined, err = hub.JoinWithCreator(ctx, "calmbrightotter", "wrong-capability-session", wrong, now.Add(17*time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if joined.Session.IsCreator() {
-		t.Fatal("revoked creator capability retained authority")
+		t.Fatal("wrong creator capability acquired authority")
 	}
 	if _, err := hub.JoinWithCreator(ctx, "calmbrightotter", "expired-room-session", capability, now.Add(24*time.Hour)); !errors.Is(err, live.ErrRoomExpired) {
 		t.Fatalf("expired room join error = %v", err)
 	}
+}
+
+func TestHubLockPersistenceFailureDoesNotChangeAuthorityState(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, time.August, 9, 12, 0, 0, 0, time.UTC)
+	store, err := sqlite.Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	capability := createTestRoomWithCreator(t, ctx, store, now)
+	failing := &failLockStore{RoomStore: store}
+	hub, err := live.NewHub(failing, nil, testHubOptions([]string{"creator"}, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined, err := hub.JoinWithCreator(ctx, "calmbrightotter", "creator-session", capability, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := joined.Session.SetWatchOnly(ctx, true, now); !errors.Is(err, live.ErrPersistence) {
+		t.Fatalf("lock persistence error = %v", err)
+	}
+	state, err := joined.Session.State()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.WatchOnly {
+		t.Fatal("failed lock persistence changed in-memory authority")
+	}
+	persisted, err := store.GetRoomSnapshot(ctx, "calmbrightotter", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.Locked {
+		t.Fatal("failed lock persistence changed SQLite state")
+	}
+}
+
+type failLockStore struct {
+	live.RoomStore
+}
+
+func (store *failLockStore) SetRoomLocked(context.Context, string, bool, time.Time) error {
+	return errors.New("injected lock persistence failure")
 }
 
 type recordingStore struct {
@@ -1220,6 +1247,20 @@ func testRoom(now time.Time) live.RoomSnapshot {
 			{ID: "notes", Name: "Notes", Language: "plaintext", Content: "notes", Position: 1, UpdatedAt: now},
 		},
 	}
+}
+
+func createTestRoomWithCreator(t *testing.T, ctx context.Context, store *sqlite.Store, now time.Time) live.CreatorCapability {
+	t.Helper()
+	capability, err := live.NewCreatorCapability()
+	if err != nil {
+		t.Fatal(err)
+	}
+	room := testRoom(now)
+	room.CreatorTokenHash = capability.HashForRoom(room.Slug)
+	if err := store.CreateRoom(ctx, room); err != nil {
+		t.Fatal(err)
+	}
+	return capability
 }
 
 func testHubOptions(participants, documents []string) live.HubOptions {

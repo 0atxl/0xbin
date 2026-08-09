@@ -8,8 +8,8 @@
 complete. The approved browser-identity and creator-authority evolution is
 planned separately in
 [`LIVE_SHARING_IDENTITY_AUTHORITY_PLAN.md`](LIVE_SHARING_IDENTITY_AUTHORITY_PLAN.md)
-and its contract-reconciliation Phase 0 is complete. Phase 1 implementation is
-next and has not started.
+and its contract and durable-storage Phases 0–1 are complete. Phase 2 is next
+and has not started.
 
 **Related:** [`spec.md`](../spec.md), [`docs/PRD.md`](../docs/PRD.md),
 [`agent_docs/TECHNICAL_DESIGN.md`](TECHNICAL_DESIGN.md),
