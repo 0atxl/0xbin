@@ -7,9 +7,7 @@ release audit. The live-sharing branch is not ready to merge until every phase
 below passes its gate and the final independent audit reports no unresolved
 release blocker.
 
-**Progress:** Phases 0–5A are complete. Phase 6 is locally verified but awaits
-its feature-branch push, pull request, and required `verify` check. Phase 7 has
-not started.
+**Progress:** Phases 0–6 are complete. Phase 7 is next and has not started.
 
 This document does not change a settled product decision. `spec.md` remains
 authoritative, followed by `AGENTS.md`, the PRD, technical design, frontend
@@ -401,10 +399,12 @@ existing 542.20 kB main-chunk warning is non-fatal; the chunk is 173.46 kB
 gzip, LiveBin remains a separate 56.58 kB / 16.33 kB gzip chunk, and generated
 assets contain only the current build hashes.
 
-**Outstanding external gate:** `feature/live-sharing` is two commits ahead of
-its remote, GitHub reports no associated pull request, and therefore the
-required pull-request `verify` check has not run. Phase 6 is not complete until
-those explicitly authorized release actions occur and that check is green.
+**External verification evidence (2026-08-09):** `feature/live-sharing` was
+pushed and pull request #1 was opened against `main`. The push-triggered
+`verify` run passed in 1m29s and the pull-request-triggered required `verify`
+run passed in 3m25s. Phase 6 therefore passes its local, branch-review,
+embedded-asset, pull-request, and CI gates. Phase 7 remains a separate
+review-only audit and has not started.
 
 ### Gate
 

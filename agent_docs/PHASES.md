@@ -4,9 +4,9 @@ This document groups the detailed implementation plan into product milestones. A
 
 **Current status (2026-08-09):** Phases 0–3 are complete. Phase 4 hosted
 public-beta work remains open. The separate Phase 5 live-sharing extension and
-its release-hardening phases 1–5A are implemented. Release-candidate checks
-pass locally; the feature-branch pull request, required CI check, and
-independent release audit remain explicit follow-up work.
+its release-hardening phases 1–6 are complete, including the feature-branch
+pull request and required CI check. The independent release audit remains
+explicit follow-up work.
 
 ## Phase 0 — Foundation
 
@@ -162,9 +162,9 @@ Steps 0A–13.
 Release hardening through contract-and-limit reconciliation is complete. The
 single configured live content budget applies to the room aggregate and every
 individual document; HTTP exposes `max_document_bytes` only as an equal
-semantic alias. The maintainability review and local release-candidate gate are
-complete; pull-request CI verification and the independent release audit remain
-in the separate release plan.
+semantic alias. The maintainability review and release-candidate gate are
+complete; only the independent release audit remains in the separate release
+plan.
 
 Exit criteria:
 

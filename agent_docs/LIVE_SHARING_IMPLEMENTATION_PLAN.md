@@ -3,10 +3,9 @@
 ## Implementation Plan
 
 **Status:** Implemented through Steps 0A–13. Follow-up release-hardening Phases
-1–5A are complete; Phase 6 is locally verified but awaits its feature-branch
-push, pull request, and required CI check. Phase 7 in
-[`LIVE_SHARING_REMEDIATION_PLAN.md`](LIVE_SHARING_REMEDIATION_PLAN.md) has not
-started.
+1–6 are complete; Phase 7 in
+[`LIVE_SHARING_REMEDIATION_PLAN.md`](LIVE_SHARING_REMEDIATION_PLAN.md) is next
+and has not started.
 
 **Related:** [`spec.md`](../spec.md), [`docs/PRD.md`](../docs/PRD.md),
 [`agent_docs/TECHNICAL_DESIGN.md`](TECHNICAL_DESIGN.md),
