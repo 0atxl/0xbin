@@ -5,10 +5,10 @@ delivery plans, and tooling notes intended for AI coding agents and
 maintainers working on the project.
 
 The live-sharing extension is implemented through Steps 0A–13 of its
-implementation plan. Release-hardening Phases 1–6 are complete; Phase 7 is next
-and has not started. Its settled scope
-includes creator-operated room-wide watch-only mode, but excludes accounts and
-per-participant permission roles.
+implementation plan, and release-hardening Phases 0–10 are complete. A bounded
+browser-identity and creator-authority evolution is planned but has not started;
+its contract-reconciliation phase precedes implementation and the later
+live-workspace visual pass.
 
 The repository-level instructions remain in [`AGENTS.md`](../AGENTS.md) at
 the repository root because agent tools discover that filename there.
@@ -26,6 +26,9 @@ the repository root because agent tools discover that filename there.
   work and verification gates.
 - [`LIVE_SHARING_IMPLEMENTATION_PLAN.md`](LIVE_SHARING_IMPLEMENTATION_PLAN.md)
   — comprehensive plan for the optional multi-tab live-sharing extension.
+- [`LIVE_SHARING_IDENTITY_AUTHORITY_PLAN.md`](LIVE_SHARING_IDENTITY_AUTHORITY_PLAN.md)
+  — planned browser-profile identity, durable creator capability, and
+  reversible room-lock foundation.
 - [`LIVE_SHARING_REMEDIATION_PLAN.md`](LIVE_SHARING_REMEDIATION_PLAN.md) —
   phased, usage-conscious execution plan for findings from the final
   live-sharing audit.

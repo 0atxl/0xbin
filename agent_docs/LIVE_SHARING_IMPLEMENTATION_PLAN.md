@@ -3,8 +3,11 @@
 ## Implementation Plan
 
 **Status:** Implemented through Steps 0A–13. Follow-up release-hardening Phases
-1–6 are complete; Phase 7 in
-[`LIVE_SHARING_REMEDIATION_PLAN.md`](LIVE_SHARING_REMEDIATION_PLAN.md) is next
+0–10 in
+[`LIVE_SHARING_REMEDIATION_PLAN.md`](LIVE_SHARING_REMEDIATION_PLAN.md) are
+complete. The approved browser-identity and creator-authority evolution is
+planned separately in
+[`LIVE_SHARING_IDENTITY_AUTHORITY_PLAN.md`](LIVE_SHARING_IDENTITY_AUTHORITY_PLAN.md)
 and has not started.
 
 **Related:** [`spec.md`](../spec.md), [`docs/PRD.md`](../docs/PRD.md),

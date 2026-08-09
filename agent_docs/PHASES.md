@@ -3,10 +3,11 @@
 This document groups the detailed implementation plan into product milestones. A phase is complete only when its exit criteria pass; writing code is not itself completion.
 
 **Current status (2026-08-09):** Phases 0–3 are complete. Phase 4 hosted
-public-beta work remains open. The separate Phase 5 live-sharing extension and
-its release-hardening phases 1–6 are complete, including the feature-branch
-pull request and required CI check. The independent release audit remains
-explicit follow-up work.
+public-beta work remains open. The separate Phase 5 live-sharing extension,
+release hardening, and independent audit are complete. A bounded
+browser-identity and creator-authority evolution is planned in
+[`LIVE_SHARING_IDENTITY_AUTHORITY_PLAN.md`](LIVE_SHARING_IDENTITY_AUTHORITY_PLAN.md)
+before the live-workspace visual pass and final merge.
 
 ## Phase 0 — Foundation
 
