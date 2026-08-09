@@ -453,7 +453,7 @@ try {
     .locator(".live-code-editor .cm-content")
     .fill("second tab content");
   await assert.equal(
-    await page.locator(".live-code-editor .cm-content").textContent(),
+    await liveEditorText(page.locator(".live-code-editor .cm-content")),
     "second tab content",
     "the active LiveBin editor should retain local text immediately",
   );
@@ -481,7 +481,7 @@ try {
     .click();
   await expectVisible(page, "notes");
   await assert.equal(
-    await page.locator(".live-code-editor .cm-content").textContent(),
+    await liveEditorText(page.locator(".live-code-editor .cm-content")),
     "second tab content",
     "renaming a LiveBin tab should not replace its document state",
   );
@@ -603,7 +603,12 @@ try {
   await resynchronized;
   await acknowledgementPage.waitForFunction(() => {
     const content = document.querySelector(".live-code-editor .cm-content");
-    return content?.textContent === "basex";
+    if (!content) return false;
+    const copy = content.cloneNode(true);
+    copy.querySelectorAll(".live-remote-caret").forEach((cursor) => {
+      cursor.remove();
+    });
+    return copy.textContent === "basex";
   });
   await assert.equal(
     await liveEditorText(acknowledgementEditor),
@@ -628,7 +633,12 @@ try {
   await expectVisible(acknowledgementObserver, "Connected");
   await acknowledgementObserver.waitForFunction(() => {
     const content = document.querySelector(".live-code-editor .cm-content");
-    return content?.textContent === "basex";
+    if (!content) return false;
+    const copy = content.cloneNode(true);
+    copy.querySelectorAll(".live-remote-caret").forEach((cursor) => {
+      cursor.remove();
+    });
+    return copy.textContent === "basex";
   });
   await acknowledgementContext.close();
 
@@ -729,8 +739,13 @@ try {
   await disagreementAccepted.promise;
   await disagreementPage.waitForFunction(() => {
     const content = document.querySelector(".live-code-editor .cm-content");
+    if (!content) return false;
+    const copy = content.cloneNode(true);
+    copy.querySelectorAll(".live-remote-caret").forEach((cursor) => {
+      cursor.remove();
+    });
     return (
-      content?.textContent === "revision fixed" &&
+      copy.textContent === "revision fixed" &&
       document
         .querySelector(".live-connection-status")
         ?.textContent?.includes("Connected")
@@ -919,8 +934,13 @@ try {
     await stalePage.waitForFunction(
       () => {
         const editor = document.querySelector(".live-code-editor .cm-content");
+        if (!editor) return false;
+        const copy = editor.cloneNode(true);
+        copy.querySelectorAll(".live-remote-caret").forEach((cursor) => {
+          cursor.remove();
+        });
         return (
-          editor?.textContent === "basex" &&
+          copy.textContent === "basex" &&
           ![...document.querySelectorAll(".live-tab-strip button")].some(
             (button) => button.textContent?.includes("tab-2"),
           )
@@ -953,7 +973,12 @@ try {
   await staleObserver.getByRole("button", { name: "main" }).click();
   await staleObserver.waitForFunction(() => {
     const editor = document.querySelector(".live-code-editor .cm-content");
-    return editor?.textContent === "basexy";
+    if (!editor) return false;
+    const copy = editor.cloneNode(true);
+    copy.querySelectorAll(".live-remote-caret").forEach((cursor) => {
+      cursor.remove();
+    });
+    return copy.textContent === "basexy";
   });
   const convergedSnapshot = await staleObserver.evaluate(async (slug) => {
     const response = await fetch(`/api/v1/live/${slug}`);

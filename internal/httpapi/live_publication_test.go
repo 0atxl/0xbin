@@ -12,22 +12,31 @@ func TestLivePublicationRegistryOrdersSameRoomWithoutBlockingDifferentRooms(t *t
 	firstUnlock := registry.lock("calmbrightotter")
 
 	sameRoomAcquired := make(chan struct{})
+	sameRoomReleased := make(chan struct{})
 	go func() {
 		unlock := registry.lock("calmbrightotter")
 		close(sameRoomAcquired)
 		unlock()
+		close(sameRoomReleased)
 	}()
 	differentRoomAcquired := make(chan struct{})
+	differentRoomReleased := make(chan struct{})
 	go func() {
 		unlock := registry.lock("quietbrightotter")
 		close(differentRoomAcquired)
 		unlock()
+		close(differentRoomReleased)
 	}()
 
 	select {
 	case <-differentRoomAcquired:
 	case <-time.After(time.Second):
 		t.Fatal("different-room publication was blocked")
+	}
+	select {
+	case <-differentRoomReleased:
+	case <-time.After(time.Second):
+		t.Fatal("different-room publication did not release")
 	}
 	select {
 	case <-sameRoomAcquired:
@@ -39,6 +48,11 @@ func TestLivePublicationRegistryOrdersSameRoomWithoutBlockingDifferentRooms(t *t
 	case <-sameRoomAcquired:
 	case <-time.After(time.Second):
 		t.Fatal("same-room publication did not resume")
+	}
+	select {
+	case <-sameRoomReleased:
+	case <-time.After(time.Second):
+		t.Fatal("same-room publication did not release")
 	}
 
 	registry.mu.Lock()
