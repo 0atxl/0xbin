@@ -76,6 +76,8 @@ export function LiveRoomWorkspace({
   onStatus,
   onSaveAsPaste,
   onReauthenticate,
+  authenticationRequired,
+  reauthenticationGeneration,
 }: {
   initialRoom: LiveRoomSnapshot;
   clientID: string;
@@ -87,6 +89,8 @@ export function LiveRoomWorkspace({
     content: string;
   }) => void;
   onReauthenticate: () => void;
+  authenticationRequired: boolean;
+  reauthenticationGeneration: number;
 }) {
   const api = useMemo(() => createLiveAPI(), []);
   const [documents, setDocuments] = useState(() =>
@@ -155,6 +159,7 @@ export function LiveRoomWorkspace({
   const localRoleRef = useRef<LiveParticipant["role"]>("writer");
   const kickedRef = useRef(false);
   const queueFullRef = useRef(false);
+  const reauthenticationGenerationRef = useRef(reauthenticationGeneration);
   const statusRef = useRef(onStatus);
   const reauthenticateRef = useRef(onReauthenticate);
   const participantPopoverBoundaryRef = useRef<HTMLDivElement>(null);
@@ -1252,6 +1257,26 @@ export function LiveRoomWorkspace({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialRoom.slug]);
 
+  useEffect(() => {
+    if (!authenticationRequired) return;
+    resyncControllerRef.current?.stop();
+    resyncingRef.current = false;
+    setResyncing(false);
+    stopResyncWork();
+  }, [authenticationRequired]);
+
+  useEffect(() => {
+    if (
+      authenticationRequired ||
+      reauthenticationGeneration <= reauthenticationGenerationRef.current
+    ) {
+      return;
+    }
+    reauthenticationGenerationRef.current = reauthenticationGeneration;
+    if (fatalRef.current || kickedRef.current || recoveryRef.current) return;
+    refreshSnapshot();
+  }, [authenticationRequired, reauthenticationGeneration]);
+
   const activeDocument =
     documents.find((document) => document.id === activeDocumentID) ??
     documents[0];
@@ -1273,8 +1298,14 @@ export function LiveRoomWorkspace({
   );
 
   const readOnly =
-    queueFull || localRole !== "writer" || kicked || roomFull || !!recovery;
+    authenticationRequired ||
+    queueFull ||
+    localRole !== "writer" ||
+    kicked ||
+    roomFull ||
+    !!recovery;
   const structuralDisabled =
+    authenticationRequired ||
     connection !== "connected" ||
     metadataBusy ||
     resyncing ||

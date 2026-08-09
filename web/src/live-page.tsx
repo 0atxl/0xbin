@@ -278,6 +278,8 @@ function LiveRoomPage({
   const [password, setPassword] = useState("");
   const [passwordError, setPasswordError] = useState(false);
   const [unlocking, setUnlocking] = useState(false);
+  const [reauthenticationGeneration, setReauthenticationGeneration] =
+    useState(0);
   const clientID = useRef(randomLiveID("client-")).current;
   const sessionID = useRef(randomLiveID("session-")).current;
 
@@ -331,12 +333,18 @@ function LiveRoomPage({
   }, [slug]);
 
   async function unlock() {
+    const renewingExistingWorkspace = room !== undefined;
     setUnlocking(true);
     setPasswordError(false);
     const stopLoading = beginLoading();
     try {
       const nextRoom = await unlockLiveRoom(createLiveAPI(), slug, password);
-      setRoom(nextRoom);
+      setPassword("");
+      if (renewingExistingWorkspace) {
+        setReauthenticationGeneration((generation) => generation + 1);
+      } else {
+        setRoom(nextRoom);
+      }
       setState("ready");
     } catch (error: unknown) {
       if (error instanceof LiveAPIError && error.code === "invalid_password") {
@@ -345,6 +353,10 @@ function LiveRoomPage({
       }
       if (error instanceof LiveAPIError && error.code === "room_expired") {
         setState("expired");
+        return;
+      }
+      if (renewingExistingWorkspace) {
+        onStatus("Could not renew the room session — try again");
         return;
       }
       setState("error");
@@ -356,35 +368,6 @@ function LiveRoomPage({
 
   if (state === "loading") {
     return <LoadingAnnouncement label="Loading live room…" />;
-  }
-  if (state === "password") {
-    return (
-      <main className="key-gate live-password-gate">
-        <form
-          className="live-password-form"
-          onSubmit={(event) => {
-            event.preventDefault();
-            void unlock();
-          }}
-        >
-          <label htmlFor="live-room-password">Room password</label>
-          <div className="key-entry-form">
-            <input
-              id="live-room-password"
-              type="password"
-              autoFocus
-              aria-invalid={passwordError}
-              value={password}
-              onChange={(event) => setPassword(event.target.value)}
-            />
-            <button type="submit" disabled={unlocking}>
-              Unlock
-            </button>
-          </div>
-          {passwordError ? <p role="alert">Password not accepted.</p> : null}
-        </form>
-      </main>
-    );
   }
   if (state === "unavailable") {
     return (
@@ -412,24 +395,58 @@ function LiveRoomPage({
       />
     );
   }
-  if (!room) return null;
+
+  const passwordGate =
+    state === "password" ? (
+      <main className="key-gate live-password-gate">
+        <form
+          className="live-password-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void unlock();
+          }}
+        >
+          <label htmlFor="live-room-password">Room password</label>
+          <div className="key-entry-form">
+            <input
+              id="live-room-password"
+              type="password"
+              autoFocus
+              aria-invalid={passwordError}
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+            />
+            <button type="submit" disabled={unlocking}>
+              Unlock
+            </button>
+          </div>
+          {passwordError ? <p role="alert">Password not accepted.</p> : null}
+        </form>
+      </main>
+    ) : null;
+
+  if (!room) return passwordGate;
 
   return (
     <>
-      <LiveRoomWorkspace
-        initialRoom={room}
-        clientID={clientID}
-        sessionID={sessionID}
-        onStatus={onStatus}
-        onSaveAsPaste={onSaveAsPaste}
-        onReauthenticate={() => {
-          setRoom(undefined);
-          setPassword("");
-          setPasswordError(false);
-          setState("password");
-        }}
-      />
-      {copyFailed && shareURL ? (
+      <div hidden={state === "password"}>
+        <LiveRoomWorkspace
+          initialRoom={room}
+          clientID={clientID}
+          sessionID={sessionID}
+          onStatus={onStatus}
+          onSaveAsPaste={onSaveAsPaste}
+          authenticationRequired={state === "password"}
+          reauthenticationGeneration={reauthenticationGeneration}
+          onReauthenticate={() => {
+            setPassword("");
+            setPasswordError(false);
+            setState("password");
+          }}
+        />
+      </div>
+      {passwordGate}
+      {state !== "password" && copyFailed && shareURL ? (
         <button className="copy-link-retry" type="button" onClick={onRetryCopy}>
           LiveBin room created — copy link
         </button>

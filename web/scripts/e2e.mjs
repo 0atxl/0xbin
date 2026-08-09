@@ -1068,7 +1068,6 @@ try {
   await failedContext.close();
 
   progress("checking protected LiveBin access and hostile text rendering");
-  const protectedCreatorSocket = await installLiveSocketControl(page);
   await page.goto(webOrigin);
   await page.getByRole("button", { name: "Open LiveBin" }).click();
   await page.getByText("Require password", { exact: true }).click();
@@ -1096,12 +1095,58 @@ try {
     protectedCreatorToken?.httpOnly,
     "protected creator capability should be an HttpOnly cookie",
   );
+  const protectedPendingText =
+    '<img src=x onerror="window.__liveXSS=true"> renewal pending';
+  const protectedCreatorEditor = page.locator(".live-code-editor .cm-content");
+  await page.context().setOffline(true);
+  await expectVisible(page, "Offline");
+  await protectedCreatorEditor.click();
+  await protectedCreatorEditor.press("End");
+  await protectedCreatorEditor.pressSequentially(" renewal pending");
+  await assert.equal(
+    await liveEditorText(protectedCreatorEditor),
+    protectedPendingText,
+    "the pending renewal edit must exist before authentication begins",
+  );
   await page.context().clearCookies({ name: "oxbin_live_session" });
-  await protectedCreatorSocket.disconnect();
+  await page.context().setOffline(false);
   await expectVisible(page, "Room password");
+  await assert.equal(
+    await protectedCreatorEditor.isHidden(),
+    true,
+    "the retained workspace must remain hidden behind the password gate",
+  );
+  await page.getByLabel("Room password").fill("wrong password");
+  await page.getByRole("button", { name: "Unlock" }).click();
+  await expectVisible(page, "Password not accepted.");
+  await assert.equal(
+    await page.locator(".live-room-canvas").count(),
+    1,
+    "a rejected renewal must keep the hidden workspace mounted",
+  );
   await page.getByLabel("Room password").fill("correct horse");
   await page.getByRole("button", { name: "Unlock" }).click();
   await expectVisible(page, "Connected");
+  await page.waitForFunction((content) => {
+    const editor = document.querySelector(".live-code-editor .cm-content");
+    if (!editor) return false;
+    const copy = editor.cloneNode(true);
+    copy.querySelectorAll(".live-remote-caret").forEach((cursor) => {
+      cursor.remove();
+    });
+    return copy.textContent === content;
+  }, protectedPendingText);
+  await page.waitForFunction(
+    async ({ slug, content }) => {
+      const response = await fetch(`/api/v1/live/${slug}`);
+      if (!response.ok) return false;
+      const snapshot = await response.json();
+      return snapshot.documents.some(
+        (document) => document.content === content,
+      );
+    },
+    { slug: protectedSlug, content: protectedPendingText },
+  );
   await page.locator(".live-connection-status").click();
   await expectVisible(page, "Room controls");
   const renewedCreatorCookies = await page
@@ -1135,6 +1180,13 @@ try {
   await protectedVisitor.getByLabel("Room password").fill("correct horse");
   await protectedVisitor.getByRole("button", { name: "Unlock" }).click();
   await expectVisible(protectedVisitor, "Connected");
+  await assert.equal(
+    await liveEditorText(
+      protectedVisitor.locator(".live-code-editor .cm-content"),
+    ),
+    protectedPendingText,
+    "a second browser must receive the edit retained through renewal",
+  );
   await assert.equal(
     await protectedVisitor.evaluate(() => "__liveXSS" in window),
     false,

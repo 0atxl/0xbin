@@ -7,7 +7,8 @@ release audit. The live-sharing branch is not ready to merge until every phase
 below passes its gate and the final independent audit reports no unresolved
 release blocker.
 
-**Progress:** Phases 0–6 are complete. Phase 7 is next and has not started.
+**Progress:** Phases 0–10 are complete. The implementation has passed the final
+independent audit and awaits fresh pull-request CI and merge.
 
 This document does not change a settled product decision. `spec.md` remains
 authoritative, followed by `AGENTS.md`, the PRD, technical design, frontend
@@ -457,7 +458,126 @@ same audit.
 
 ## Completion criteria
 
-Remediation is complete only when Phases 0–6 pass their gates, Phase 7 reports
+The 2026-08-09 Phase 7 audit reproduced a release-blocking loss of pending local
+text when a protected-room reconnect crossed the password-renewal gate. It also
+found that the bounded creator-credential registry arbitrarily evicts one still
+valid creator after 10,000 active credentials. The standard repository and
+pull-request gates were green, but the audit verdict was `not ready to merge`.
+
+## Phase 8 — Preserve pending edits through protected-session renewal
+
+**Severity:** Release blocker
+
+**Objective:** A protected participant who must renew an expired access session
+must retain the existing collaborative workspace and every pending local edit
+through the password gate, authoritative HTTP reconciliation, and reconnect.
+
+### Work
+
+- Keep the mounted workspace and its CodeMirror collaboration state alive while
+  the password gate hides the previously loaded room.
+- Pause editing and structural actions while authentication is required.
+- After successful unlock, reconcile the retained state against a fresh
+  authenticated HTTP snapshot before reconnecting the socket.
+- Preserve the client/session identities and creator-capability cookie.
+- Keep wrong-password, expiry, unavailable-room, and bounded retry behavior
+  explicit without exposing room content behind the password gate.
+
+### Required tests
+
+- Make an offline local edit in a protected creator session, expire the ordinary
+  access cookie, renew through the password gate, and prove the local editor,
+  a second browser, and the HTTP snapshot converge on the pending text.
+- Prove the creator capability and creator controls survive the same journey.
+- Prove the workspace is hidden and inaccessible while the password gate is
+  active and wrong-password attempts do not discard its state.
+
+### Gate
+
+- Focused connection, reconciliation, API, and collaboration tests pass.
+- The protected-renewal browser regression passes repeatedly.
+- `make lint`, `make test`, and `make test-race` pass.
+
+**Completion evidence (2026-08-09):** Protected renewal now retains the mounted
+workspace behind a hidden password gate instead of discarding its CodeMirror
+collaboration state. Editing and structural actions are disabled while access
+is absent. Successful unlock advances a renewal generation that runs the
+existing bounded authenticated HTTP resynchronizer before reconnecting; wrong
+passwords and transient unlock failures leave the workspace mounted. The real
+browser journey makes an offline local edit, removes the ordinary access
+cookie, proves the workspace is hidden through a rejected password, unlocks,
+and proves the local editor, authoritative HTTP snapshot, and a second browser
+converge. It also proves the original creator cookie and creator controls
+survive. Focused frontend tests (6 files / 45 tests), `make format`, `make lint`,
+`make test` (all Go packages and 20 frontend files / 112 tests),
+`make test-race`, and two consecutive final `make test-e2e` runs pass. Phase 8
+therefore passes its gate without beginning Phase 9.
+
+## Phase 9 — Preserve creator authority at capacity
+
+**Severity:** Release blocker
+
+**Objective:** Do not arbitrarily evict an unexpired creator credential when the
+bounded in-memory credential registry reaches capacity.
+
+### Work
+
+- Reserve creator-credential capacity before inserting a new room.
+- Count concurrent reservations against the same hard bound.
+- Reject creation with a generic temporary-unavailability response when no
+  creator slot is available, without inserting the room or weakening an
+  existing creator's authority.
+- Reclaim only expired creator credentials; never evict a valid creator to make
+  room for a newer one.
+
+### Required tests
+
+- Fill a small creator registry and prove another credential cannot evict either
+  valid creator.
+- Prove expired credentials are reclaimed without removing an unexpired one.
+- Race concurrent reservations across the final available slot and prove
+  exactly one succeeds.
+- Exercise the create endpoint at capacity and prove SQLite contains no room
+  from the rejected request.
+
+### Gate
+
+- Focused creator-lifetime, create, capacity, and concurrent-boundary tests
+  pass under the race detector.
+- The complete stable repository gate passes.
+
+**Completion evidence (2026-08-09):** Live-room creation now reserves one of
+the 10,000 process-local creator slots before SQLite insertion. Reservations
+count toward the bound and are released on every unsuccessful request. At
+capacity, creation returns the generic `service_unavailable` response before a
+room is inserted, while every unexpired creator credential remains valid;
+expired credentials are reclaimed deterministically. Focused HTTP API tests
+cover a full registry, expiry reclamation, the endpoint's no-insert guarantee,
+and 32 concurrent claims on the final slot. The concurrency set passed 20
+race-enabled repetitions. `make format`, `make lint`, `make test` (all Go
+packages and 20 frontend files / 112 tests), `make test-race`, `make test-e2e`,
+and `make build` pass. Phase 9 therefore passes its gate.
+
+## Phase 10 — Repeat the independent release audit
+
+Repeat the review-only Phase 7 scope after Phases 8–9 pass. Re-run the complete
+repository gate, review the full diff, and confirm the pull request's required
+`verify` check directly. No implementation fixes are permitted during this
+phase.
+
+**Audit outcome (2026-08-09):** No unresolved implementation or security
+finding remains. Durable operation retry, revision-safe resynchronization,
+protected creator renewal/reconnect, and creator-capacity preservation are
+closed. The focused hub, SQLite, and HTTP race matrices each passed 10 repeated
+runs; the creator-capacity concurrency set passed 20 repeated race-enabled
+runs. `make format lint test test-race test-e2e build` passed, including all Go
+packages, 20 frontend files / 112 tests, every browser journey, and the
+production build. `git diff --check` passed. Pull request 1 was mergeable and
+its required `verify` checks were green for the previous remote head
+`e64722b`; fresh CI is still required after committing and pushing Phases 8–10.
+The release verdict is `ready after non-code documentation/CI work`.
+
+Remediation is complete only when Phases 0–9 pass their gates, Phase 10 reports
 no unresolved release blocker, the complete repository gate is green, the
 branch diff has been reviewed, and the pull request's required `verify` check
 has actually passed.

@@ -227,11 +227,21 @@ process:
   authenticated HTTP bootstrap once before each bounded retry. A
   `password_required` response opens the password gate; room unavailability or
   removal stops reconnecting; transient network and overload failures use the
-  capped backoff. The client and session IDs survive the password gate so the
-  renewed connection reclaims its participant and preserves creator authority.
+  capped backoff. During access renewal, the existing collaborative workspace
+  remains mounted but hidden and read-only behind the password gate, retaining
+  its bounded pending CodeMirror state. A successful unlock runs an
+  authenticated HTTP resynchronization before reconnecting. The client and
+  session IDs survive the password gate so the renewed connection reclaims its
+  participant, replays pending edits, and preserves creator authority.
 - Presence and ordinary room password sessions remain process memory only.
   A reconnect-grace expiry publishes a deterministic participant-removal event
   before process-local presence and cursor state are discarded.
+- Creator capabilities also remain process-local and are bounded to 10,000
+  active credentials. Creation reserves capacity before inserting the room;
+  concurrent reservations count toward the bound. A full registry rejects the
+  request with generic temporary unavailability, without inserting a room or
+  evicting an unexpired creator credential. Expired credentials are reclaimed
+  when capacity is evaluated.
 - Passwords use an adaptive Argon2id hash; the password itself never enters
   URLs, logs, SQLite, or telemetry.
 - The frontend uses a small native WebSocket client and React hooks with

@@ -418,7 +418,7 @@ func TestLiveCreatorCredentialOutlivesAccessSessionWithoutBecomingDurable(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	api := &liveAPI{sessions: newLiveSessionStore(), creators: newLiveSessionStore(), hub: hub}
+	api := &liveAPI{sessions: newLiveSessionStore(), creators: newLiveCreatorStore(), hub: hub}
 	accessToken := api.sessions.put(room.Slug, now.Add(liveSessionLifetime), live.CreatorCapability{})
 	creatorToken := api.creators.put(room.Slug, room.ExpiresAt, capability)
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/live/"+room.Slug, nil)
@@ -443,6 +443,129 @@ func TestLiveCreatorCredentialOutlivesAccessSessionWithoutBecomingDurable(t *tes
 	joined, err = hub.JoinWithCreator(ctx, room.Slug, "after-revocation", got, later)
 	if err != nil || joined.Session.IsCreator() {
 		t.Fatalf("revoked creator reconnect = %#v, %v", joined, err)
+	}
+}
+
+func TestLiveCreatorCredentialCapacityPreservesExistingAuthority(t *testing.T) {
+	now := time.Date(2026, time.August, 9, 12, 0, 0, 0, time.UTC)
+	store := newLiveCreatorStoreWithLimit(2)
+
+	first, err := store.reserve(now)
+	if err != nil || !store.commitReservation(first, "calmbrightotter", now.Add(time.Minute), live.CreatorCapability{}) {
+		t.Fatalf("first creator reservation = %q, %v", first, err)
+	}
+	second, err := store.reserve(now)
+	if err != nil || !store.commitReservation(second, "quietbrightotter", now.Add(time.Hour), live.CreatorCapability{}) {
+		t.Fatalf("second creator reservation = %q, %v", second, err)
+	}
+	if _, err := store.reserve(now); !errors.Is(err, errLiveCreatorCapacity) {
+		t.Fatalf("full creator reservation error = %v", err)
+	}
+	if token := store.put("newbriskbadger", now.Add(time.Hour), live.CreatorCapability{}); token != "" {
+		t.Fatalf("creator put evicted valid authority for token %q", token)
+	}
+	if _, ok := store.get(first, "calmbrightotter", now); !ok {
+		t.Fatal("capacity pressure evicted the first valid creator")
+	}
+	if _, ok := store.get(second, "quietbrightotter", now); !ok {
+		t.Fatal("capacity pressure evicted the second valid creator")
+	}
+
+	later := now.Add(2 * time.Minute)
+	third, err := store.reserve(later)
+	if err != nil || !store.commitReservation(third, "newbriskbadger", later.Add(time.Hour), live.CreatorCapability{}) {
+		t.Fatalf("reservation after expiry = %q, %v", third, err)
+	}
+	if _, ok := store.get(first, "calmbrightotter", later); ok {
+		t.Fatal("expired creator survived capacity pruning")
+	}
+	if _, ok := store.get(second, "quietbrightotter", later); !ok {
+		t.Fatal("unexpired creator was removed while pruning capacity")
+	}
+}
+
+func TestLiveCreatorCredentialReservationsAreConcurrencyBounded(t *testing.T) {
+	store := newLiveCreatorStoreWithLimit(1)
+	now := time.Date(2026, time.August, 9, 12, 0, 0, 0, time.UTC)
+	const attempts = 32
+	results := make(chan string, attempts)
+	errorsSeen := make(chan error, attempts)
+	var wait sync.WaitGroup
+	for range attempts {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			token, err := store.reserve(now)
+			if err != nil {
+				errorsSeen <- err
+				return
+			}
+			results <- token
+		}()
+	}
+	wait.Wait()
+	close(results)
+	close(errorsSeen)
+
+	var winner string
+	for token := range results {
+		if winner != "" {
+			t.Fatalf("more than one reservation crossed the capacity boundary: %q and %q", winner, token)
+		}
+		winner = token
+	}
+	if winner == "" {
+		t.Fatal("no creator reservation acquired the available slot")
+	}
+	rejected := 0
+	for err := range errorsSeen {
+		if !errors.Is(err, errLiveCreatorCapacity) {
+			t.Fatalf("concurrent reservation error = %v", err)
+		}
+		rejected++
+	}
+	if rejected != attempts-1 {
+		t.Fatalf("rejected reservations = %d, want %d", rejected, attempts-1)
+	}
+	if !store.commitReservation(winner, "calmbrightotter", now.Add(time.Hour), live.CreatorCapability{}) {
+		t.Fatal("winning creator reservation could not commit")
+	}
+	if _, ok := store.get(winner, "calmbrightotter", now); !ok {
+		t.Fatal("committed creator reservation is unavailable")
+	}
+}
+
+func TestLiveCreateRejectsCreatorCapacityBeforeRoomInsertion(t *testing.T) {
+	ctx := context.Background()
+	cfg := testConfig(t)
+	store, err := sqlite.Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	hub, err := live.NewHub(store, nil, live.DefaultHubOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer hub.Shutdown(ctx, time.Now().UTC())
+	api := newLiveAPI(cfg, &LiveDependencies{Store: store, Hub: hub, Slugs: &testLiveSlugGenerator{}})
+	api.creators = newLiveCreatorStoreWithLimit(1)
+	now := time.Now().UTC()
+	existing, err := api.creators.reserve(now)
+	if err != nil || !api.creators.commitReservation(existing, "existingbrightotter", now.Add(time.Hour), live.CreatorCapability{}) {
+		t.Fatalf("existing creator reservation = %q, %v", existing, err)
+	}
+	handler := newHandlerWithAPI(cfg, nil, nil, nil, api)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/live", strings.NewReader(`{"documents":[{"name":"main","language":"plaintext","content":"capacity"}]}`))
+	request.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(recorder, request)
+	assertError(t, recorder, http.StatusServiceUnavailable, "service_unavailable")
+	if _, err := store.GetRoomSnapshot(ctx, "calmbrightotter", time.Now().UTC()); !errors.Is(err, live.ErrRoomNotFound) {
+		t.Fatalf("capacity rejection inserted a room: %v", err)
+	}
+	if _, ok := api.creators.get(existing, "existingbrightotter", now); !ok {
+		t.Fatal("capacity rejection evicted existing creator authority")
 	}
 }
 
