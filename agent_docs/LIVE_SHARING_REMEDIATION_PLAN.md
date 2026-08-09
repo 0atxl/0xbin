@@ -381,7 +381,7 @@ rules.
   success from a push or local gate.
 
 **Local verification evidence (2026-08-09):** The committed branch is clean
-and contains 15 focused commits over `main`. The reviewed 88-file branch diff
+and contains 19 focused commits over `main`. The reviewed 88-file branch diff
 contains the live-sharing implementation, shared integration changes,
 contracts, documentation, and tests, with no unrelated file, conflict marker,
 or untracked file. `make format`, `make lint`, `make test` (all Go packages and
@@ -400,11 +400,19 @@ gzip, LiveBin remains a separate 56.58 kB / 16.33 kB gzip chunk, and generated
 assets contain only the current build hashes.
 
 **External verification evidence (2026-08-09):** `feature/live-sharing` was
-pushed and pull request #1 was opened against `main`. The push-triggered
-`verify` run passed in 1m29s and the pull-request-triggered required `verify`
-run passed in 3m25s. Phase 6 therefore passes its local, branch-review,
-embedded-asset, pull-request, and CI gates. Phase 7 remains a separate
-review-only audit and has not started.
+pushed and pull request #1 was opened against `main`. Its initial push and
+pull-request `verify` runs passed. A later status-only push exercised different
+scheduling and exposed two test-observation defects: the publication-registry
+test inspected reference cleanup before worker unlocks completed, and several
+browser assertions compared CodeMirror DOM text without excluding remote-caret
+nickname widgets. No production code changed. Commit `7297179` waits for both
+publication unlocks and consistently compares collaborative document text
+without decorative cursor labels. The focused race test passed 100 consecutive
+runs, the full browser suite passed twice locally, and the corrected push and
+required pull-request `verify` runs passed in 1m33s and 1m51s respectively.
+Phase 6 therefore passes its local, branch-review, embedded-asset,
+pull-request, and CI gates. Phase 7 remains a separate review-only audit and
+has not started.
 
 ### Gate
 
