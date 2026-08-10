@@ -548,9 +548,75 @@ documents.
   remains by accident.
 - Normative and operational documentation matches the implementation.
 
-## Phase 8 — Batch verification and behavioral review
+## Phase 7A — Bounded code-quality and concentration pass
 
-**Objective:** Prove the foundation once, then stop before cosmetic work.
+**Objective:** Remove implementation debt after behavior and compatibility are
+settled, without changing product semantics or starting another open-ended
+audit cycle.
+
+### Work
+
+- Inventory stale, unreachable, duplicated, and superseded live-sharing code in
+  the Go authority, WebSocket transport, frontend, tests, and documentation.
+- Remove obsolete one-connection helpers and any retired participant-removal,
+  removed-session, role-alias, or fallback paths that are no longer required by
+  the explicit Phase 7 compatibility policy. Time-bounded compatibility paths
+  that must ship remain documented with a removal condition.
+- Inspect concentrated files, especially `internal/live/hub.go`,
+  `internal/httpapi/live.go`, and `web/src/live-room.tsx`. Split only along
+  established responsibilities such as connection lifecycle, presence,
+  authority operations, and wire translation; file length alone is not a
+  reason to introduce abstractions.
+- Consolidate repeated invariant checks, participant aggregation, public error
+  mapping, and event construction where doing so makes behavior easier to
+  verify. Preserve room locking, edit ordering, reconnect, expiry, and secret
+  boundaries exactly.
+- Remove unused exports, dead branches, stale comments, obsolete fixtures, and
+  tests that only assert deleted behavior. Retain negative and regression tests
+  that protect current boundaries.
+- Review dependency and generated-asset changes. Do not add a framework,
+  datastore, deployment component, account model, or speculative abstraction.
+- Record material refactors and any deliberately retained concentration or
+  compatibility debt with a concrete reason and removal condition.
+
+### Verification
+
+- Review the complete diff for behavioral changes before accepting a cleanup.
+- Run repository formatting, static analysis, unit/integration tests, the full
+  Go race suite, frontend tests, and production/embedded builds.
+- Repeat the focused multi-connection, final-disconnect, creator-lock, expiry,
+  and stale-generation matrices after responsibility-moving refactors.
+- Confirm paste, encryption, burn, slug, CLI, and one-service deployment
+  contracts remain untouched.
+
+### Gate
+
+- No known stale, unreachable, duplicated, or superseded live-sharing path
+  remains unless Phase 7 explicitly requires it for a bounded compatibility
+  window.
+- Every reviewed concentrated file is either split along a clear responsibility
+  boundary or retained with a documented cohesion reason; arbitrary line-count
+  targets are not used.
+- Full verification passes with no race, behavior, fixture, or build regression.
+- The pass ends when its recorded findings are resolved or explicitly accepted;
+  it does not trigger another general audit.
+
+## Phase 8 — Final independent release audit and behavioral review
+
+**Objective:** Independently prove the finished foundation once, issue a release
+recommendation, and then stop before cosmetic work.
+
+### Audit method
+
+- Begin as a read-only review of the complete branch diff and deployed behavior.
+- Report findings in severity order with file/line references and verification
+  evidence. Do not silently implement audit findings.
+- Confirm that every Phase 7A refactor preserved observable behavior and that no
+  compatibility or cleanup exception lacks an owner, reason, and removal
+  condition.
+- Finish with an explicit `release`, `release with accepted risks`, or `do not
+  release` recommendation. A clean result closes the audit sequence; do not add
+  another general audit without a concrete new regression or scope change.
 
 ### Backend verification
 
@@ -583,6 +649,8 @@ documents.
 - The authoritative snapshot, every connected editor, roster, roles, and lock
   state converge in every required journey.
 - No unresolved release blocker remains.
+- The independent audit reports its evidence and explicit release
+  recommendation; a green result requires no further audit.
 - Stop and obtain user approval before beginning cosmetic workspace changes.
 
 ## 8. Recommended Checkpoint Sequence
@@ -595,7 +663,8 @@ Commits are created only when explicitly requested. Recommended boundaries:
 4. `fix: make live room locking reversible`
 5. `refactor: remove participant removal controls`
 6. `feat: restore live browser identity`
-7. `test: cover live identity and authority boundaries`
+7. `refactor: simplify live identity and connection code`
+8. `test: cover live identity and authority boundaries`
 
 Push only the feature branch. Before merge, require a green pull-request
 `verify` check on the final head and review the complete branch diff.
