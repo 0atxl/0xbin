@@ -23,6 +23,7 @@ const (
 	defaultHubMaxWriters         = 10
 	defaultHubMaxViewers         = 100
 	defaultHubMaxParticipants    = defaultHubMaxWriters + defaultHubMaxViewers
+	defaultHubMaxConnections     = 8
 	defaultHubMaxMessageBytes    = 64 << 10
 	defaultHubMaxHistoryRows     = 1000
 	defaultHubMaxHistoryBytes    = int64(4 << 20)
@@ -30,8 +31,6 @@ const (
 	defaultHubHeartbeatInterval  = 20 * time.Second
 	defaultHubParticipantTimeout = 60 * time.Second
 	maxOperationIDBytes          = 128
-	maxClientIDBytes             = 128
-	participantIDGenerationTries = 8
 	documentIDGenerationTries    = 8
 	maxRemovedSessionRecords     = 1024
 )
@@ -41,6 +40,7 @@ var (
 	ErrRoomExpired         = errors.New("live room expired")
 	ErrRoomLimit           = errors.New("live room limit reached")
 	ErrParticipantLimit    = errors.New("live participant limit reached")
+	ErrConnectionLimit     = errors.New("live participant connection limit reached")
 	ErrParticipantNotFound = errors.New("live participant not found")
 	ErrParticipantInactive = errors.New("live participant is not connected")
 	ErrSessionRemoved      = errors.New("live participant session was removed")
@@ -76,43 +76,54 @@ const (
 	ParticipantWatchOnly ParticipantRole = "watch_only"
 )
 
+// ParticipantAccessClass describes capacity/authority independently from the
+// participant's effective edit permission.
+type ParticipantAccessClass string
+
+const (
+	ParticipantCreator      ParticipantAccessClass = "creator"
+	ParticipantCollaborator ParticipantAccessClass = "collaborator"
+	ParticipantViewer       ParticipantAccessClass = "viewer"
+)
+
 // HubOptions bounds all process-local room state. The HTTP/configuration layer
 // can map environment settings into this type without exposing config internals
 // to the live domain package.
 type HubOptions struct {
-	MaxTabs            int
-	MaxBytes           int64
-	MaxWriters         int
-	MaxViewers         int
-	MaxParticipants    int
-	MaxMessageBytes    int
-	MaxHistoryRows     int
-	MaxHistoryBytes    int64
-	ReconnectGrace     time.Duration
-	HeartbeatInterval  time.Duration
-	ParticipantTimeout time.Duration
-	ParticipantID      func() (string, error)
-	DocumentID         func() (string, error)
+	MaxTabs                      int
+	MaxBytes                     int64
+	MaxWriters                   int
+	MaxViewers                   int
+	MaxParticipants              int
+	MaxConnectionsPerParticipant int
+	MaxMessageBytes              int
+	MaxHistoryRows               int
+	MaxHistoryBytes              int64
+	ReconnectGrace               time.Duration
+	HeartbeatInterval            time.Duration
+	ParticipantTimeout           time.Duration
+	DocumentID                   func() (string, error)
 }
 
 func DefaultHubOptions() HubOptions {
 	return HubOptions{
-		MaxTabs:            defaultHubMaxTabs,
-		MaxBytes:           defaultHubMaxBytes,
-		MaxWriters:         defaultHubMaxWriters,
-		MaxViewers:         defaultHubMaxViewers,
-		MaxParticipants:    defaultHubMaxParticipants,
-		MaxMessageBytes:    defaultHubMaxMessageBytes,
-		MaxHistoryRows:     defaultHubMaxHistoryRows,
-		MaxHistoryBytes:    defaultHubMaxHistoryBytes,
-		ReconnectGrace:     defaultHubReconnectGrace,
-		HeartbeatInterval:  defaultHubHeartbeatInterval,
-		ParticipantTimeout: defaultHubParticipantTimeout,
+		MaxTabs:                      defaultHubMaxTabs,
+		MaxBytes:                     defaultHubMaxBytes,
+		MaxWriters:                   defaultHubMaxWriters,
+		MaxViewers:                   defaultHubMaxViewers,
+		MaxParticipants:              defaultHubMaxParticipants,
+		MaxConnectionsPerParticipant: defaultHubMaxConnections,
+		MaxMessageBytes:              defaultHubMaxMessageBytes,
+		MaxHistoryRows:               defaultHubMaxHistoryRows,
+		MaxHistoryBytes:              defaultHubMaxHistoryBytes,
+		ReconnectGrace:               defaultHubReconnectGrace,
+		HeartbeatInterval:            defaultHubHeartbeatInterval,
+		ParticipantTimeout:           defaultHubParticipantTimeout,
 	}
 }
 
 func (options HubOptions) validate() error {
-	if options.MaxTabs < 1 || options.MaxBytes < 1 || options.MaxWriters < 1 || options.MaxViewers < 0 || options.MaxParticipants < 1 || options.MaxMessageBytes < 1 || options.MaxHistoryRows < 1 || options.MaxHistoryBytes < 1 {
+	if options.MaxTabs < 1 || options.MaxBytes < 1 || options.MaxWriters < 1 || options.MaxViewers < 0 || options.MaxParticipants < 1 || options.MaxConnectionsPerParticipant < 1 || options.MaxMessageBytes < 1 || options.MaxHistoryRows < 1 || options.MaxHistoryBytes < 1 {
 		return errors.New("live hub limits must be positive")
 	}
 	if options.MaxWriters+options.MaxViewers != options.MaxParticipants {
@@ -134,16 +145,27 @@ type CursorSelection struct {
 	Head       int
 }
 
+// ConnectionCursor is one mounted page's ephemeral selection. The connection
+// identifier is public only within the room and never grants authority.
+type ConnectionCursor struct {
+	ConnectionID string
+	CursorSelection
+}
+
 type ParticipantSnapshot struct {
-	ID         string
-	Nickname   string
-	JoinedAt   time.Time
-	Color      string
-	CurrentTab string
-	Cursor     *CursorSelection
-	Status     ParticipantStatus
-	Role       ParticipantRole
-	LastSeenAt time.Time
+	ID              string
+	Nickname        string
+	JoinedAt        time.Time
+	Color           string
+	CurrentTab      string
+	Cursor          *CursorSelection
+	Cursors         []ConnectionCursor
+	Status          ParticipantStatus
+	AccessClass     ParticipantAccessClass
+	CanEdit         bool
+	ConnectionCount int
+	Role            ParticipantRole
+	LastSeenAt      time.Time
 }
 
 type DocumentState struct {
@@ -283,14 +305,23 @@ func NewHub(store RoomStore, names *NameGenerator, options HubOptions) (*Hub, er
 // Join loads a room once, assigns or reclaims a temporary identity, and
 // returns the complete current state for the joining client.
 func (hub *Hub) Join(ctx context.Context, slug, sessionID string, now time.Time) (JoinResult, error) {
-	return hub.JoinWithCreator(ctx, slug, sessionID, CreatorCapability{}, now)
+	return hub.JoinWithIdentity(ctx, slug, legacyJoinIdentity(sessionID), CreatorCapability{}, now)
 }
 
 // JoinWithCreator grants creator authority only when the capability matches
 // the room-bound hash loaded from durable storage.
 func (hub *Hub) JoinWithCreator(ctx context.Context, slug, sessionID string, capability CreatorCapability, now time.Time) (JoinResult, error) {
-	if strings.TrimSpace(slug) != slug || slug == "" || sessionID == "" || len(sessionID) > maxClientIDBytes || strings.TrimSpace(sessionID) != sessionID || !utf8.ValidString(sessionID) {
+	return hub.JoinWithIdentity(ctx, slug, legacyJoinIdentity(sessionID), capability, now)
+}
+
+// JoinWithIdentity groups bounded mounted-page connections under one stable
+// browser participant while keeping operation clients connection-scoped.
+func (hub *Hub) JoinWithIdentity(ctx context.Context, slug string, identity JoinIdentity, capability CreatorCapability, now time.Time) (JoinResult, error) {
+	if strings.TrimSpace(slug) != slug || slug == "" {
 		return JoinResult{}, ErrParticipantNotFound
+	}
+	if err := identity.Validate(); err != nil {
+		return JoinResult{}, err
 	}
 	now = normalizedNow(now)
 	hub.mu.Lock()
@@ -317,11 +348,15 @@ func (hub *Hub) JoinWithCreator(ctx context.Context, slug, sessionID string, cap
 	}
 	hub.mu.Unlock()
 
-	result, err := room.join(ctx, hub, sessionID, capability, now)
+	result, err := room.join(ctx, hub, identity, capability, now)
 	if errors.Is(err, ErrRoomExpired) {
 		hub.removeRoom(slug, room)
 	}
 	return result, err
+}
+
+func legacyJoinIdentity(sessionID string) JoinIdentity {
+	return JoinIdentity{ParticipantCredential: sessionID, ConnectionID: sessionID, ClientID: sessionID}
 }
 
 func (hub *Hub) State(slug string) (RoomState, error) {
@@ -426,19 +461,21 @@ func (hub *Hub) removeRoom(slug string, target *room) {
 }
 
 type RoomSession struct {
-	hub         *Hub
-	room        *room
-	participant string
-	sessionID   string
-	generation  uint64
-	creator     bool
+	hub          *Hub
+	room         *room
+	participant  string
+	sessionID    string
+	connectionID string
+	clientID     string
+	generation   uint64
+	creator      bool
 }
 
 func (session *RoomSession) State() (RoomState, error) {
 	if session == nil || session.room == nil {
 		return RoomState{}, ErrParticipantNotFound
 	}
-	return session.room.stateFor(session.participant, session.generation)
+	return session.room.stateFor(session.participant, session.connectionID, session.generation)
 }
 
 // Bridge returns only retained operations newer than the supplied HTTP
@@ -447,7 +484,7 @@ func (session *RoomSession) Bridge(known KnownRevisions, now time.Time) (BridgeR
 	if session == nil || session.room == nil {
 		return BridgeResult{}, ErrParticipantNotFound
 	}
-	return session.room.bridge(session.participant, session.generation, known, normalizedNow(now))
+	return session.room.bridge(session.participant, session.connectionID, session.generation, known, normalizedNow(now))
 }
 
 func (session *RoomSession) Participant() (ParticipantSnapshot, error) {
@@ -467,49 +504,49 @@ func (session *RoomSession) SubmitDocument(ctx context.Context, operation Docume
 	if session == nil || session.room == nil {
 		return AcceptedDocumentOperation{}, ErrParticipantNotFound
 	}
-	return session.room.submitDocument(ctx, session.participant, session.generation, operation, normalizedNow(now))
+	return session.room.submitDocument(ctx, session.participant, session.connectionID, session.generation, operation, normalizedNow(now))
 }
 
 func (session *RoomSession) ApplyMetadata(ctx context.Context, operation MetadataOperation, now time.Time) (AcceptedMetadataOperation, error) {
 	if session == nil || session.room == nil {
 		return AcceptedMetadataOperation{}, ErrParticipantNotFound
 	}
-	return session.room.applyMetadata(ctx, session.participant, session.generation, operation, normalizedNow(now))
+	return session.room.applyMetadata(ctx, session.participant, session.connectionID, session.generation, operation, normalizedNow(now))
 }
 
 func (session *RoomSession) UpdatePresence(update PresenceUpdate, now time.Time) (ParticipantSnapshot, error) {
 	if session == nil || session.room == nil {
 		return ParticipantSnapshot{}, ErrParticipantNotFound
 	}
-	return session.room.updatePresence(session.participant, session.generation, update, normalizedNow(now))
+	return session.room.updatePresence(session.participant, session.connectionID, session.generation, update, normalizedNow(now))
 }
 
 func (session *RoomSession) Rename(name string, now time.Time) (ParticipantSnapshot, error) {
 	if session == nil || session.room == nil {
 		return ParticipantSnapshot{}, ErrParticipantNotFound
 	}
-	return session.room.rename(session.participant, session.generation, name, normalizedNow(now))
+	return session.room.rename(session.participant, session.connectionID, session.generation, name, normalizedNow(now))
 }
 
 func (session *RoomSession) Heartbeat(now time.Time) error {
 	if session == nil || session.room == nil {
 		return ErrParticipantNotFound
 	}
-	return session.room.heartbeat(session.participant, session.generation, normalizedNow(now))
+	return session.room.heartbeat(session.participant, session.connectionID, session.generation, normalizedNow(now))
 }
 
 func (session *RoomSession) Disconnect(now time.Time) error {
 	if session == nil || session.room == nil {
 		return ErrParticipantNotFound
 	}
-	return session.room.disconnect(session.participant, session.generation, normalizedNow(now))
+	return session.room.disconnect(session.participant, session.connectionID, session.generation, normalizedNow(now))
 }
 
 func (session *RoomSession) Leave(now time.Time) error {
 	if session == nil || session.room == nil {
 		return ErrParticipantNotFound
 	}
-	err := session.room.leave(session.participant, session.generation, normalizedNow(now))
+	err := session.room.leave(session.participant, session.connectionID, session.generation, normalizedNow(now))
 	if err == nil && session.hub != nil && session.room.shouldEvict(normalizedNow(now)) {
 		session.hub.removeRoom(session.room.snapshotSlug(), session.room)
 	}
@@ -522,13 +559,29 @@ func (session *RoomSession) IsCreator() bool {
 	return session != nil && session.creator
 }
 
+// ConnectionID identifies the mounted page represented by this session.
+func (session *RoomSession) ConnectionID() string {
+	if session == nil {
+		return ""
+	}
+	return session.connectionID
+}
+
+// ClientID identifies this connection's durable operation stream.
+func (session *RoomSession) ClientID() string {
+	if session == nil {
+		return ""
+	}
+	return session.clientID
+}
+
 // SetWatchOnly durably changes room mode. Enabling it immediately makes every
 // active writer watch-only; later phases refine creator editing behavior.
 func (session *RoomSession) SetWatchOnly(ctx context.Context, enabled bool, now time.Time) (RoomState, error) {
 	if session == nil || session.room == nil {
 		return RoomState{}, ErrParticipantNotFound
 	}
-	return session.room.setWatchOnly(ctx, session.participant, session.generation, session.creator, enabled, normalizedNow(now))
+	return session.room.setWatchOnly(ctx, session.participant, session.connectionID, session.generation, session.creator, enabled, normalizedNow(now))
 }
 
 // RemoveParticipant invalidates an active temporary session. A removed person
@@ -537,7 +590,7 @@ func (session *RoomSession) RemoveParticipant(participantID string, now time.Tim
 	if session == nil || session.room == nil {
 		return ErrParticipantNotFound
 	}
-	return session.room.removeParticipant(session.participant, session.generation, session.creator, participantID, normalizedNow(now))
+	return session.room.removeParticipant(session.participant, session.connectionID, session.generation, session.creator, participantID, normalizedNow(now))
 }
 
 type room struct {
@@ -583,8 +636,20 @@ type participantState struct {
 	snapshot       ParticipantSnapshot
 	sessionID      string
 	writerSlot     bool
-	generation     uint64
+	creator        bool
+	connections    map[string]*connectionState
+	nextGeneration uint64
 	disconnectedAt time.Time
+}
+
+type connectionState struct {
+	id             string
+	clientID       string
+	generation     uint64
+	currentTab     string
+	cursor         *CursorSelection
+	lastSeenAt     time.Time
+	lastActivityAt time.Time
 }
 
 type operationRecord struct {
@@ -756,13 +821,15 @@ func (room *room) replay(ctx context.Context) error {
 	return nil
 }
 
-func (room *room) join(ctx context.Context, hub *Hub, sessionID string, capability CreatorCapability, now time.Time) (JoinResult, error) {
+func (room *room) join(ctx context.Context, hub *Hub, identity JoinIdentity, capability CreatorCapability, now time.Time) (JoinResult, error) {
 	room.mu.Lock()
 	defer room.mu.Unlock()
 	if err := room.ensureActiveLocked(now); err != nil {
 		return JoinResult{}, err
 	}
 	creator := capability.MatchesRoomHash(room.snapshot.Slug, room.snapshot.CreatorTokenHash)
+	sessionID := identity.ParticipantCredential
+	room.expireConnectionsLocked(now)
 	room.pruneDisconnectedLocked(now)
 	room.pruneRemovedSessionsLocked(now)
 	if removedUntil, removed := room.removedSessions[sessionID]; removed && removedUntil.After(now) {
@@ -770,21 +837,20 @@ func (room *room) join(ctx context.Context, hub *Hub, sessionID string, capabili
 	}
 	if existingID, exists := room.sessions[sessionID]; exists {
 		participant := room.participants[existingID]
-		if participant != nil && participant.snapshot.Status == ParticipantConnected {
-			return JoinResult{}, ErrSessionActive
-		}
-		if participant != nil && now.Sub(participant.disconnectedAt) <= room.options.ReconnectGrace {
-			participant.snapshot.Status = ParticipantConnected
-			participant.snapshot.LastSeenAt = now
-			participant.disconnectedAt = time.Time{}
-			participant.generation++
-			return room.joinResultLocked(hub, participant, creator, true), nil
-		}
-		delete(room.participants, existingID)
-		delete(room.sessions, sessionID)
 		if participant != nil {
-			delete(room.names, NameKey(participant.snapshot.Nickname))
+			if _, active := participant.connections[identity.ConnectionID]; active {
+				return JoinResult{}, ErrSessionActive
+			}
+			if len(participant.connections) >= room.options.MaxConnectionsPerParticipant {
+				return JoinResult{}, ErrConnectionLimit
+			}
+			participant.creator = participant.creator || creator
+			connection := room.addConnectionLocked(participant, identity, now)
+			participant.disconnectedAt = time.Time{}
+			room.refreshParticipantLocked(participant)
+			return room.joinResultLocked(hub, participant, connection, creator, true), nil
 		}
+		delete(room.sessions, sessionID)
 	}
 	if len(room.participants) >= room.options.MaxParticipants {
 		return JoinResult{}, ErrParticipantLimit
@@ -797,43 +863,133 @@ func (room *room) join(ctx context.Context, hub *Hub, sessionID string, capabili
 	if writerSlot && !room.watchOnly {
 		role = ParticipantWriter
 	}
-	participantID, err := uniqueGeneratedID(room.options.ParticipantID, func(id string) bool {
-		_, exists := room.participants[id]
-		return exists
-	}, participantIDGenerationTries, false)
+	participantID, err := ParticipantIDForRoom(room.snapshot.Slug, identity.ParticipantCredential)
 	if err != nil {
-		return JoinResult{}, fmt.Errorf("generate live participant ID: %w", err)
+		return JoinResult{}, err
+	}
+	if _, exists := room.participants[participantID]; exists {
+		return JoinResult{}, ErrOperationConflict
 	}
 	usedNames := make(map[string]struct{}, len(room.names))
 	for name := range room.names {
 		usedNames[name] = struct{}{}
 	}
-	nickname, err := hub.names.Generate(usedNames)
-	if err != nil {
-		return JoinResult{}, err
+	nickname := ""
+	if identity.PreferredNameSet {
+		if _, exists := usedNames[NameKey(identity.PreferredName)]; !exists {
+			nickname = identity.PreferredName
+		}
+	}
+	if nickname == "" {
+		nickname, err = hub.names.Generate(usedNames)
+		if err != nil {
+			return JoinResult{}, err
+		}
 	}
 	participant := &participantState{
-		sessionID:  sessionID,
-		writerSlot: writerSlot,
-		generation: 1,
+		sessionID: sessionID, writerSlot: writerSlot, creator: creator,
+		connections: make(map[string]*connectionState),
 		snapshot: ParticipantSnapshot{
 			ID: participantID, Nickname: nickname, JoinedAt: now,
 			Color: participantColor(participantID), CurrentTab: room.order[0],
-			Status: ParticipantConnected, Role: role, LastSeenAt: now,
+			Status: ParticipantConnected, AccessClass: participantAccessClass(creator, writerSlot),
+			CanEdit: role == ParticipantWriter, ConnectionCount: 1,
+			Role: role, LastSeenAt: now,
 		},
 	}
+	connection := room.addConnectionLocked(participant, identity, now)
+	room.refreshParticipantLocked(participant)
 	room.participants[participantID] = participant
 	room.sessions[sessionID] = participantID
 	room.names[NameKey(nickname)] = participantID
-	return room.joinResultLocked(hub, participant, creator, false), nil
+	return room.joinResultLocked(hub, participant, connection, creator, false), nil
 }
 
-func (room *room) joinResultLocked(hub *Hub, participant *participantState, creator, reconnected bool) JoinResult {
+func (room *room) addConnectionLocked(participant *participantState, identity JoinIdentity, now time.Time) *connectionState {
+	participant.nextGeneration++
+	currentTab := participant.snapshot.CurrentTab
+	if room.documents[currentTab] == nil {
+		currentTab = room.order[0]
+	}
+	connection := &connectionState{
+		id: identity.ConnectionID, clientID: identity.ClientID,
+		generation: participant.nextGeneration, currentTab: currentTab,
+		lastSeenAt: now, lastActivityAt: now,
+	}
+	participant.connections[connection.id] = connection
+	return connection
+}
+
+func (room *room) joinResultLocked(hub *Hub, participant *participantState, connection *connectionState, creator, reconnected bool) JoinResult {
 	return JoinResult{
-		Session:     &RoomSession{hub: hub, room: room, participant: participant.snapshot.ID, sessionID: participant.sessionID, generation: participant.generation, creator: creator},
+		Session: &RoomSession{
+			hub: hub, room: room, participant: participant.snapshot.ID,
+			sessionID: participant.sessionID, connectionID: connection.id,
+			clientID: connection.clientID, generation: connection.generation, creator: creator,
+		},
 		Participant: cloneParticipant(participant.snapshot),
 		State:       room.stateLocked(), Reconnected: reconnected,
 	}
+}
+
+func participantAccessClass(creator, writerSlot bool) ParticipantAccessClass {
+	if creator {
+		return ParticipantCreator
+	}
+	if writerSlot {
+		return ParticipantCollaborator
+	}
+	return ParticipantViewer
+}
+
+func (room *room) refreshParticipantLocked(participant *participantState) {
+	participant.snapshot.AccessClass = participantAccessClass(participant.creator, participant.writerSlot)
+	participant.snapshot.CanEdit = participant.snapshot.Role == ParticipantWriter
+	participant.snapshot.ConnectionCount = len(participant.connections)
+	participant.snapshot.Cursors = participant.snapshot.Cursors[:0]
+	participant.snapshot.Cursor = nil
+	if len(participant.connections) == 0 {
+		if participant.snapshot.Status != ParticipantOffline {
+			participant.snapshot.Status = ParticipantConnectionLost
+		}
+		return
+	}
+
+	participant.snapshot.Status = ParticipantConnected
+	var latestActivity *connectionState
+	var latestSeen *connectionState
+	for _, connection := range participant.connections {
+		if latestActivity == nil || connection.lastActivityAt.After(latestActivity.lastActivityAt) ||
+			(connection.lastActivityAt.Equal(latestActivity.lastActivityAt) && connection.generation > latestActivity.generation) ||
+			(connection.lastActivityAt.Equal(latestActivity.lastActivityAt) && connection.generation == latestActivity.generation && connection.id < latestActivity.id) {
+			latestActivity = connection
+		}
+		if latestSeen == nil || connection.lastSeenAt.After(latestSeen.lastSeenAt) ||
+			(connection.lastSeenAt.Equal(latestSeen.lastSeenAt) && connection.generation > latestSeen.generation) ||
+			(connection.lastSeenAt.Equal(latestSeen.lastSeenAt) && connection.generation == latestSeen.generation && connection.id < latestSeen.id) {
+			latestSeen = connection
+		}
+		if connection.cursor != nil {
+			participant.snapshot.Cursors = append(participant.snapshot.Cursors, ConnectionCursor{
+				ConnectionID: connection.id, CursorSelection: *connection.cursor,
+			})
+		}
+	}
+	sort.Slice(participant.snapshot.Cursors, func(left, right int) bool {
+		return participant.snapshot.Cursors[left].ConnectionID < participant.snapshot.Cursors[right].ConnectionID
+	})
+	participant.snapshot.CurrentTab = latestActivity.currentTab
+	participant.snapshot.LastSeenAt = latestSeen.lastSeenAt
+	if latestActivity.cursor != nil {
+		cursor := *latestActivity.cursor
+		participant.snapshot.Cursor = &cursor
+	}
+}
+
+func (room *room) markConnectionActivityLocked(participant *participantState, connection *connectionState, now time.Time) {
+	connection.lastSeenAt = now
+	connection.lastActivityAt = now
+	room.refreshParticipantLocked(participant)
 }
 
 func (room *room) writerSlotCountLocked() int {
@@ -856,12 +1012,14 @@ func (room *room) viewerSlotCountLocked() int {
 	return count
 }
 
-func (room *room) setWatchOnly(ctx context.Context, participantID string, generation uint64, creator, enabled bool, now time.Time) (RoomState, error) {
+func (room *room) setWatchOnly(ctx context.Context, participantID, connectionID string, generation uint64, creator, enabled bool, now time.Time) (RoomState, error) {
 	room.mu.Lock()
 	defer room.mu.Unlock()
-	if err := room.ensureParticipantLocked(participantID, generation, now); err != nil {
+	actor, connection, err := room.ensureConnectionLocked(participantID, connectionID, generation, now)
+	if err != nil {
 		return RoomState{}, err
 	}
+	room.markConnectionActivityLocked(actor, connection, now)
 	if !creator {
 		return RoomState{}, ErrCreatorRequired
 	}
@@ -879,16 +1037,20 @@ func (room *room) setWatchOnly(ctx context.Context, participantID string, genera
 		} else {
 			participant.snapshot.Role = ParticipantWriter
 		}
+		participant.snapshot.CanEdit = participant.snapshot.Role == ParticipantWriter
+		room.refreshParticipantLocked(participant)
 	}
 	return room.stateLocked(), nil
 }
 
-func (room *room) removeParticipant(actorID string, generation uint64, creator bool, targetID string, now time.Time) error {
+func (room *room) removeParticipant(actorID, connectionID string, generation uint64, creator bool, targetID string, now time.Time) error {
 	room.mu.Lock()
 	defer room.mu.Unlock()
-	if err := room.ensureParticipantLocked(actorID, generation, now); err != nil {
+	actor, connection, err := room.ensureConnectionLocked(actorID, connectionID, generation, now)
+	if err != nil {
 		return err
 	}
+	room.markConnectionActivityLocked(actor, connection, now)
 	if !creator {
 		return ErrCreatorRequired
 	}
@@ -910,12 +1072,14 @@ func (room *room) removeParticipant(actorID string, generation uint64, creator b
 	return nil
 }
 
-func (room *room) submitDocument(ctx context.Context, participantID string, generation uint64, operation DocumentOperation, now time.Time) (AcceptedDocumentOperation, error) {
+func (room *room) submitDocument(ctx context.Context, participantID, connectionID string, generation uint64, operation DocumentOperation, now time.Time) (AcceptedDocumentOperation, error) {
 	room.mu.Lock()
 	defer room.mu.Unlock()
-	if err := room.ensureParticipantLocked(participantID, generation, now); err != nil {
+	participant, connection, err := room.ensureConnectionLocked(participantID, connectionID, generation, now)
+	if err != nil {
 		return AcceptedDocumentOperation{}, err
 	}
+	room.markConnectionActivityLocked(participant, connection, now)
 	if room.participants[participantID].snapshot.Role != ParticipantWriter {
 		return AcceptedDocumentOperation{}, ErrWatchOnly
 	}
@@ -1005,12 +1169,14 @@ func (room *room) submitDocument(ctx context.Context, participantID string, gene
 	return accepted, nil
 }
 
-func (room *room) applyMetadata(ctx context.Context, participantID string, generation uint64, operation MetadataOperation, now time.Time) (AcceptedMetadataOperation, error) {
+func (room *room) applyMetadata(ctx context.Context, participantID, connectionID string, generation uint64, operation MetadataOperation, now time.Time) (AcceptedMetadataOperation, error) {
 	room.mu.Lock()
 	defer room.mu.Unlock()
-	if err := room.ensureParticipantLocked(participantID, generation, now); err != nil {
+	participant, connection, err := room.ensureConnectionLocked(participantID, connectionID, generation, now)
+	if err != nil {
 		return AcceptedMetadataOperation{}, err
 	}
+	room.markConnectionActivityLocked(participant, connection, now)
 	if room.participants[participantID].snapshot.Role != ParticipantWriter {
 		return AcceptedMetadataOperation{}, ErrWatchOnly
 	}
@@ -1096,12 +1262,15 @@ func (room *room) applyMetadata(ctx context.Context, participantID string, gener
 		}
 		fallbackTab := room.order[0]
 		for _, participant := range room.participants {
-			if participant.snapshot.CurrentTab == operation.DocumentID {
-				participant.snapshot.CurrentTab = fallbackTab
+			for _, connection := range participant.connections {
+				if connection.currentTab == operation.DocumentID {
+					connection.currentTab = fallbackTab
+				}
+				if connection.cursor != nil && connection.cursor.DocumentID == operation.DocumentID {
+					connection.cursor = nil
+				}
 			}
-			if participant.snapshot.Cursor != nil && participant.snapshot.Cursor.DocumentID == operation.DocumentID {
-				participant.snapshot.Cursor = nil
-			}
+			room.refreshParticipantLocked(participant)
 		}
 		accepted.DocumentID = operation.DocumentID
 		persisted.DocumentID = operation.DocumentID
@@ -1141,17 +1310,18 @@ func (room *room) applyMetadata(ctx context.Context, participantID string, gener
 	return accepted, nil
 }
 
-func (room *room) updatePresence(participantID string, generation uint64, update PresenceUpdate, now time.Time) (ParticipantSnapshot, error) {
+func (room *room) updatePresence(participantID, connectionID string, generation uint64, update PresenceUpdate, now time.Time) (ParticipantSnapshot, error) {
 	room.mu.Lock()
 	defer room.mu.Unlock()
-	if err := room.ensureParticipantLocked(participantID, generation, now); err != nil {
+	participant, connection, err := room.ensureConnectionLocked(participantID, connectionID, generation, now)
+	if err != nil {
 		return ParticipantSnapshot{}, err
 	}
 	if update.CurrentTab != "" {
 		if room.documents[update.CurrentTab] == nil {
 			return ParticipantSnapshot{}, ErrDocumentNotFound
 		}
-		room.participants[participantID].snapshot.CurrentTab = update.CurrentTab
+		connection.currentTab = update.CurrentTab
 	}
 	if update.DocumentID != "" {
 		document := room.documents[update.DocumentID]
@@ -1180,16 +1350,19 @@ func (room *room) updatePresence(participantID string, generation uint64, update
 			return ParticipantSnapshot{}, ErrInvalidPresence
 		}
 		cursor := CursorSelection{DocumentID: update.DocumentID, Revision: document.snapshot.CurrentRevision, Anchor: selection.Anchor, Head: selection.Head}
-		room.participants[participantID].snapshot.Cursor = &cursor
+		connection.cursor = &cursor
 	}
-	room.participants[participantID].snapshot.LastSeenAt = now
-	return cloneParticipant(room.participants[participantID].snapshot), nil
+	connection.lastSeenAt = now
+	connection.lastActivityAt = now
+	room.refreshParticipantLocked(participant)
+	return cloneParticipant(participant.snapshot), nil
 }
 
-func (room *room) rename(participantID string, generation uint64, name string, now time.Time) (ParticipantSnapshot, error) {
+func (room *room) rename(participantID, connectionID string, generation uint64, name string, now time.Time) (ParticipantSnapshot, error) {
 	room.mu.Lock()
 	defer room.mu.Unlock()
-	if err := room.ensureParticipantLocked(participantID, generation, now); err != nil {
+	participant, connection, err := room.ensureConnectionLocked(participantID, connectionID, generation, now)
+	if err != nil {
 		return ParticipantSnapshot{}, err
 	}
 	if err := ValidateNickname(name); err != nil {
@@ -1199,44 +1372,46 @@ func (room *room) rename(participantID string, generation uint64, name string, n
 	if owner, exists := room.names[key]; exists && owner != participantID {
 		return ParticipantSnapshot{}, ErrNameTaken
 	}
-	participant := room.participants[participantID]
 	delete(room.names, NameKey(participant.snapshot.Nickname))
 	room.names[key] = participantID
 	participant.snapshot.Nickname = name
-	participant.snapshot.LastSeenAt = now
+	room.markConnectionActivityLocked(participant, connection, now)
 	return cloneParticipant(participant.snapshot), nil
 }
 
-func (room *room) heartbeat(participantID string, generation uint64, now time.Time) error {
+func (room *room) heartbeat(participantID, connectionID string, generation uint64, now time.Time) error {
 	room.mu.Lock()
 	defer room.mu.Unlock()
-	if err := room.ensureParticipantLocked(participantID, generation, now); err != nil {
+	participant, connection, err := room.ensureConnectionLocked(participantID, connectionID, generation, now)
+	if err != nil {
 		return err
 	}
-	room.participants[participantID].snapshot.LastSeenAt = now
+	connection.lastSeenAt = now
+	room.refreshParticipantLocked(participant)
 	return nil
 }
 
-func (room *room) disconnect(participantID string, generation uint64, now time.Time) error {
+func (room *room) disconnect(participantID, connectionID string, generation uint64, now time.Time) error {
 	room.mu.Lock()
 	defer room.mu.Unlock()
 	participant := room.participants[participantID]
 	if participant == nil {
 		return ErrParticipantNotFound
 	}
-	if participant.generation != generation {
+	connection := participant.connections[connectionID]
+	if connection == nil || connection.generation != generation {
 		return ErrParticipantInactive
 	}
-	if participant.snapshot.Status != ParticipantConnected {
-		return nil
+	delete(participant.connections, connectionID)
+	if len(participant.connections) == 0 {
+		participant.snapshot.LastSeenAt = now
+		participant.disconnectedAt = now
 	}
-	participant.snapshot.Status = ParticipantConnectionLost
-	participant.snapshot.LastSeenAt = now
-	participant.disconnectedAt = now
+	room.refreshParticipantLocked(participant)
 	return nil
 }
 
-func (room *room) leave(participantID string, generation uint64, now time.Time) error {
+func (room *room) leave(participantID, connectionID string, generation uint64, now time.Time) error {
 	room.mu.Lock()
 	defer room.mu.Unlock()
 	if err := room.ensureActiveLocked(now); err != nil {
@@ -1246,8 +1421,14 @@ func (room *room) leave(participantID string, generation uint64, now time.Time) 
 	if participant == nil {
 		return ErrParticipantNotFound
 	}
-	if participant.generation != generation {
+	connection := participant.connections[connectionID]
+	if connection == nil || connection.generation != generation {
 		return ErrParticipantInactive
+	}
+	delete(participant.connections, connectionID)
+	if len(participant.connections) > 0 {
+		room.refreshParticipantLocked(participant)
+		return nil
 	}
 	delete(room.participants, participantID)
 	delete(room.sessions, participant.sessionID)
@@ -1264,25 +1445,27 @@ func (room *room) state() (RoomState, error) {
 	return room.stateLocked(), nil
 }
 
-func (room *room) stateFor(participantID string, generation uint64) (RoomState, error) {
+func (room *room) stateFor(participantID, connectionID string, generation uint64) (RoomState, error) {
 	room.mu.Lock()
 	defer room.mu.Unlock()
 	if room.closed {
 		return RoomState{}, ErrRoomExpired
 	}
-	if participantID == "" || room.participants[participantID] == nil {
+	participant := room.participants[participantID]
+	if participantID == "" || participant == nil {
 		return RoomState{}, ErrParticipantNotFound
 	}
-	if room.participants[participantID].generation != generation || room.participants[participantID].snapshot.Status != ParticipantConnected {
+	connection := participant.connections[connectionID]
+	if connection == nil || connection.generation != generation {
 		return RoomState{}, ErrParticipantInactive
 	}
 	return room.stateLocked(), nil
 }
 
-func (room *room) bridge(participantID string, generation uint64, known KnownRevisions, now time.Time) (BridgeResult, error) {
+func (room *room) bridge(participantID, connectionID string, generation uint64, known KnownRevisions, now time.Time) (BridgeResult, error) {
 	room.mu.Lock()
 	defer room.mu.Unlock()
-	if err := room.ensureParticipantLocked(participantID, generation, now); err != nil {
+	if _, _, err := room.ensureConnectionLocked(participantID, connectionID, generation, now); err != nil {
 		return BridgeResult{}, err
 	}
 	if known.Metadata < room.metadataCompactedRevision || known.Metadata > room.snapshot.MetadataRevision {
@@ -1349,17 +1532,14 @@ func (room *room) sweep(ctx context.Context, now time.Time, publish func(slug, p
 	}
 	if now.Unix() >= room.snapshot.ExpiresAt.Unix() {
 		for _, participant := range room.participants {
+			clear(participant.connections)
 			participant.snapshot.Status = ParticipantOffline
+			room.refreshParticipantLocked(participant)
 		}
 		room.closed = true
 		return nil
 	}
-	for _, participant := range room.participants {
-		if participant.snapshot.Status == ParticipantConnected && now.Sub(participant.snapshot.LastSeenAt) > room.options.ParticipantTimeout {
-			participant.snapshot.Status = ParticipantConnectionLost
-			participant.disconnectedAt = now
-		}
-	}
+	room.expireConnectionsLocked(now)
 	room.pruneDisconnectedLocked(now, publish)
 	room.pruneRemovedSessionsLocked(now)
 	return nil
@@ -1378,7 +1558,9 @@ func (room *room) shutdown(ctx context.Context, now time.Time) error {
 		room.dirty = false
 	}
 	for _, participant := range room.participants {
+		clear(participant.connections)
 		participant.snapshot.Status = ParticipantOffline
+		room.refreshParticipantLocked(participant)
 	}
 	room.closed = true
 	return nil
@@ -1392,25 +1574,27 @@ func (room *room) ensureActiveLocked(now time.Time) error {
 	return nil
 }
 
-func (room *room) ensureParticipantLocked(participantID string, generation uint64, now time.Time) error {
+func (room *room) ensureConnectionLocked(participantID, connectionID string, generation uint64, now time.Time) (*participantState, *connectionState, error) {
 	if err := room.ensureActiveLocked(now); err != nil {
-		return err
+		return nil, nil, err
 	}
 	participant := room.participants[participantID]
 	if participant == nil {
-		return ErrParticipantNotFound
+		return nil, nil, ErrParticipantNotFound
 	}
-	if participant.generation != generation || participant.snapshot.Status != ParticipantConnected {
-		return ErrParticipantInactive
+	connection := participant.connections[connectionID]
+	if connection == nil || connection.generation != generation {
+		return nil, nil, ErrParticipantInactive
 	}
-	participant.snapshot.LastSeenAt = now
-	return nil
+	connection.lastSeenAt = now
+	room.refreshParticipantLocked(participant)
+	return participant, connection, nil
 }
 
 func (room *room) pruneDisconnectedLocked(now time.Time, publish ...func(slug, participantID string)) {
 	participantIDs := make([]string, 0)
 	for participantID, participant := range room.participants {
-		if participant.snapshot.Status == ParticipantConnected || participant.disconnectedAt.IsZero() || now.Sub(participant.disconnectedAt) <= room.options.ReconnectGrace {
+		if len(participant.connections) > 0 || participant.disconnectedAt.IsZero() || now.Sub(participant.disconnectedAt) <= room.options.ReconnectGrace {
 			continue
 		}
 		participantIDs = append(participantIDs, participantID)
@@ -1424,6 +1608,31 @@ func (room *room) pruneDisconnectedLocked(now time.Time, publish ...func(slug, p
 		delete(room.participants, participantID)
 		delete(room.sessions, participant.sessionID)
 		delete(room.names, NameKey(participant.snapshot.Nickname))
+	}
+}
+
+func (room *room) expireConnectionsLocked(now time.Time) {
+	for _, participant := range room.participants {
+		removed := false
+		var finalLostAt time.Time
+		for connectionID, connection := range participant.connections {
+			if now.Sub(connection.lastSeenAt) > room.options.ParticipantTimeout {
+				delete(participant.connections, connectionID)
+				removed = true
+				timedOutAt := connection.lastSeenAt.Add(room.options.ParticipantTimeout)
+				if timedOutAt.After(finalLostAt) {
+					finalLostAt = timedOutAt
+				}
+			}
+		}
+		if !removed {
+			continue
+		}
+		if len(participant.connections) == 0 {
+			participant.snapshot.LastSeenAt = finalLostAt
+			participant.disconnectedAt = finalLostAt
+		}
+		room.refreshParticipantLocked(participant)
 	}
 }
 
@@ -1719,7 +1928,7 @@ func (room *room) restoreLocked(backup roomBackup) {
 }
 
 func (room *room) ensureOperationIDs(operationID, clientID string) error {
-	if operationID == "" || len(operationID) > maxOperationIDBytes || !utf8.ValidString(operationID) || clientID == "" || len(clientID) > maxClientIDBytes || !utf8.ValidString(clientID) {
+	if operationID == "" || len(operationID) > maxOperationIDBytes || !utf8.ValidString(operationID) || clientID == "" || len(clientID) > MaxClientIDBytes || !utf8.ValidString(clientID) {
 		return ErrOperationConflict
 	}
 	return nil
@@ -1887,6 +2096,7 @@ func mapSelection(selection livecollab.SelectionRange, changes livecollab.Change
 
 func cloneParticipant(participant ParticipantSnapshot) ParticipantSnapshot {
 	copyParticipant := participant
+	copyParticipant.Cursors = append([]ConnectionCursor(nil), participant.Cursors...)
 	if participant.Cursor != nil {
 		cursor := *participant.Cursor
 		copyParticipant.Cursor = &cursor

@@ -135,6 +135,10 @@ remains connected while another connection is active and otherwise remains
 `connection_lost` during reconnect grace. When grace expires, the server emits
 `participant_removed` solely as a natural presence-expiry event before deleting
 the participant's transient state; no creator action can produce it.
+`presence_left` includes the departed `connection_id` and the authoritative
+aggregate participant record when that participant remains in reconnect state;
+consumers must use its status and connection count rather than assuming every
+socket close disconnects the browser participant.
 `room_mode_changed` supplies the durable `locked` state and authoritative
 roster. Locking never removes participants: the creator remains editable,
 collaborators become temporarily read-only, and viewers remain read-only.

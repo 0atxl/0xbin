@@ -641,8 +641,40 @@ func TestLiveWebSocketRejectsInvalidOriginUnauthorizedAccessAndOversizedFrames(t
 	readCtx, cancel := context.WithTimeout(context.Background(), time.Second)
 	_, _, err = missingSession.Read(readCtx)
 	cancel()
-	if websocket.CloseStatus(err) != websocket.StatusPolicyViolation {
+	if websocket.CloseStatus(err) != websocket.StatusPolicyViolation || !strings.Contains(err.Error(), "invalid participant credential") {
 		t.Fatalf("missing session ID close = %v, status = %d", err, websocket.CloseStatus(err))
+	}
+	for _, test := range []struct {
+		name   string
+		field  string
+		value  string
+		reason string
+	}{
+		{"empty connection", "connection_id", "", "invalid connection ID"},
+		{"connection control", "connection_id", "connection\nvalue", "invalid connection ID"},
+		{"long client", "client_id", strings.Repeat("c", live.MaxClientIDBytes+1), "invalid client ID"},
+		{"empty preferred name", "preferred_name", "", "invalid preferred name"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			candidate := dialLivePeer(t, wsURL, placeholder.URL, nil)
+			payload, err := json.Marshal(map[string]any{
+				"type": "join", "session_id": "valid-session", test.field: test.value,
+				"metadata_revision":  0,
+				"document_revisions": []map[string]any{{"document_id": "main", "revision": 0}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := candidate.Write(context.Background(), websocket.MessageText, payload); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			_, _, err = candidate.Read(ctx)
+			cancel()
+			if websocket.CloseStatus(err) != websocket.StatusPolicyViolation || !strings.Contains(err.Error(), test.reason) {
+				t.Fatalf("close = %v, status = %d", err, websocket.CloseStatus(err))
+			}
+		})
 	}
 
 	peer := dialLivePeer(t, wsURL, placeholder.URL, nil)
@@ -659,6 +691,221 @@ func TestLiveWebSocketRejectsInvalidOriginUnauthorizedAccessAndOversizedFrames(t
 	}
 }
 
+func TestLiveWebSocketAdditiveJoinIdentityAndLegacyFallback(t *testing.T) {
+	placeholder := httptest.NewUnstartedServer(http.NotFoundHandler())
+	handler, store, hub := newLiveTestHandler(t, "http://"+placeholder.Listener.Addr().String())
+	placeholder.Config.Handler = handler
+	placeholder.Start()
+	defer placeholder.Close()
+	defer store.Close()
+	defer hub.Shutdown(context.Background(), time.Now().UTC())
+
+	created, err := placeholder.Client().Post(placeholder.URL+"/api/v1/live", "application/json", strings.NewReader(`{"documents":[{"name":"main","language":"plaintext","content":""}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	created.Body.Close()
+	if created.StatusCode != http.StatusCreated {
+		t.Fatalf("create status = %d", created.StatusCode)
+	}
+	wsURL := "ws" + strings.TrimPrefix(placeholder.URL, "http") + "/api/v1/live/calmbrightotter/ws"
+	legacy := dialLivePeer(t, wsURL, placeholder.URL, nil)
+	defer legacy.CloseNow()
+	legacyJoined := joinLivePeer(t, legacy, "legacy-session")
+	legacyParticipant, _ := legacyJoined["participant"].(map[string]any)
+	if legacyJoined["connection_id"] != "legacy-session" || legacyParticipant["connection_count"] != float64(1) || legacyParticipant["access_class"] != "collaborator" || legacyParticipant["can_edit"] != true || legacyParticipant["role"] != "writer" {
+		t.Fatalf("legacy joined event = %#v", legacyJoined)
+	}
+
+	modern := dialLivePeer(t, wsURL, placeholder.URL, nil)
+	defer modern.CloseNow()
+	writeLiveMessage(t, modern, `{"type":"join","session_id":"browser-credential","connection_id":"connection-one","client_id":"operation-client-one","preferred_name":"Quiet Otter","metadata_revision":0,"document_revisions":[{"document_id":"main","revision":0}]}`)
+	modernJoined := readLiveEvent(t, modern, "joined")
+	modernParticipant, _ := modernJoined["participant"].(map[string]any)
+	if modernJoined["connection_id"] != "connection-one" || modernParticipant["nickname"] != "Quiet Otter" || modernParticipant["connection_count"] != float64(1) || modernParticipant["access_class"] != "collaborator" || modernParticipant["can_edit"] != true || modernParticipant["role"] != "writer" {
+		t.Fatalf("modern joined event = %#v", modernJoined)
+	}
+	presence := readLiveEvent(t, legacy, "presence_joined")
+	if presence["connection_id"] != "connection-one" {
+		t.Fatalf("connection-specific presence = %#v", presence)
+	}
+	writeLiveMessage(t, modern, `{"type":"push_changes","operation_id":"modern-edit","document_id":"main","base_version":0,"changes":[[0,"hello"]]}`)
+	accepted := readLiveEvent(t, modern, "changes")
+	if accepted["client_id"] != "operation-client-one" || accepted["revision"] != float64(1) {
+		t.Fatalf("connection-scoped operation event = %#v", accepted)
+	}
+	writeLiveMessage(t, modern, `{"type":"push_changes","operation_id":"wrong-client-edit","client_id":"different-client","document_id":"main","base_version":1,"changes":[[5,[0,"!"]]]}`)
+	rejected := readLiveEvent(t, modern, "error")
+	if rejected["code"] != "invalid_request" || rejected["status"] != "validation" {
+		t.Fatalf("mismatched operation client response = %#v", rejected)
+	}
+
+	writeLiveMessage(t, modern, `{"type":"retired_operation"}`)
+	unsupported := readLiveEvent(t, modern, "error")
+	if unsupported["code"] != "unsupported_operation" || unsupported["status"] != "validation" {
+		t.Fatalf("unsupported operation response = %#v", unsupported)
+	}
+}
+
+func TestLiveWebSocketGroupsConnectionsAndPublishesAggregatePresence(t *testing.T) {
+	placeholder := httptest.NewUnstartedServer(http.NotFoundHandler())
+	handler, store, hub := newLiveTestHandler(t, "http://"+placeholder.Listener.Addr().String())
+	placeholder.Config.Handler = handler
+	placeholder.Start()
+	defer placeholder.Close()
+	defer store.Close()
+	defer hub.Shutdown(context.Background(), time.Now().UTC())
+
+	created, err := placeholder.Client().Post(placeholder.URL+"/api/v1/live", "application/json", strings.NewReader(`{"documents":[{"name":"main","language":"plaintext","content":"hello"},{"name":"notes","language":"plaintext","content":"notes"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.StatusCode != http.StatusCreated {
+		created.Body.Close()
+		t.Fatalf("create status = %d", created.StatusCode)
+	}
+	created.Body.Close()
+	bootstrap, err := placeholder.Client().Get(placeholder.URL + "/api/v1/live/calmbrightotter")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bootstrap.Body.Close()
+	var room liveRoomResponse
+	if err := json.NewDecoder(bootstrap.Body).Decode(&room); err != nil {
+		t.Fatal(err)
+	}
+	if len(room.Documents) != 2 {
+		t.Fatalf("created documents = %#v", room.Documents)
+	}
+	mainID, notesID := room.Documents[0].ID, room.Documents[1].ID
+	wsURL := "ws" + strings.TrimPrefix(placeholder.URL, "http") + "/api/v1/live/calmbrightotter/ws"
+	observer := dialLivePeer(t, wsURL, placeholder.URL, nil)
+	defer observer.CloseNow()
+	joinLivePeer(t, observer, "observer")
+
+	first := dialLivePeer(t, wsURL, placeholder.URL, nil)
+	defer first.CloseNow()
+	writeLiveMessage(t, first, `{"type":"join","session_id":"shared-browser","connection_id":"tab-one","client_id":"client-one","metadata_revision":0,"document_revisions":[{"document_id":"`+mainID+`","revision":0},{"document_id":"`+notesID+`","revision":0}]}`)
+	firstJoined := readLiveEvent(t, first, "joined")
+	firstParticipant, _ := firstJoined["participant"].(map[string]any)
+	if firstParticipant["connection_count"] != float64(1) {
+		t.Fatalf("first connection participant = %#v", firstParticipant)
+	}
+	readLiveEvent(t, observer, "presence_joined")
+
+	second := dialLivePeer(t, wsURL, placeholder.URL, nil)
+	defer second.CloseNow()
+	writeLiveMessage(t, second, `{"type":"join","session_id":"shared-browser","connection_id":"tab-two","client_id":"client-two","metadata_revision":0,"document_revisions":[{"document_id":"`+mainID+`","revision":0},{"document_id":"`+notesID+`","revision":0}]}`)
+	secondJoined := readLiveEvent(t, second, "joined")
+	secondParticipant, _ := secondJoined["participant"].(map[string]any)
+	if secondParticipant["id"] != firstParticipant["id"] || secondParticipant["connection_count"] != float64(2) {
+		t.Fatalf("second grouped connection = %#v", secondJoined)
+	}
+	joinedUpdate := readLiveEvent(t, first, "presence_joined")
+	joinedParticipant, _ := joinedUpdate["participant"].(map[string]any)
+	if joinedUpdate["connection_id"] != "tab-two" || joinedParticipant["connection_count"] != float64(2) {
+		t.Fatalf("grouped presence join = %#v", joinedUpdate)
+	}
+	readLiveEvent(t, observer, "presence_joined")
+
+	writeLiveMessage(t, first, `{"type":"presence","current_tab":"`+notesID+`","document_id":"`+notesID+`","revision":0,"anchor":1,"head":3}`)
+	firstPresence := readLiveEvent(t, observer, "presence_updated")
+	firstPresenceParticipant, _ := firstPresence["participant"].(map[string]any)
+	firstCursors, _ := firstPresenceParticipant["cursors"].([]any)
+	if firstPresence["connection_id"] != "tab-one" || len(firstCursors) != 1 {
+		t.Fatalf("first connection presence = %#v", firstPresence)
+	}
+	writeLiveMessage(t, second, `{"type":"presence","current_tab":"`+mainID+`","document_id":"`+mainID+`","revision":0,"anchor":2,"head":4}`)
+	secondPresence := readLiveEvent(t, observer, "presence_updated")
+	secondPresenceParticipant, _ := secondPresence["participant"].(map[string]any)
+	secondCursors, _ := secondPresenceParticipant["cursors"].([]any)
+	if secondPresence["connection_id"] != "tab-two" || secondPresenceParticipant["current_tab"] != mainID || len(secondCursors) != 2 {
+		t.Fatalf("second connection presence = %#v", secondPresence)
+	}
+
+	if err := first.Close(websocket.StatusNormalClosure, ""); err != nil {
+		t.Fatal(err)
+	}
+	left := readLiveEvent(t, second, "presence_left")
+	leftParticipant, _ := left["participant"].(map[string]any)
+	leftCursors, _ := leftParticipant["cursors"].([]any)
+	if left["connection_id"] != "tab-one" || leftParticipant["status"] != "connected" || leftParticipant["connection_count"] != float64(1) || len(leftCursors) != 1 {
+		t.Fatalf("single connection close = %#v", left)
+	}
+	observerLeft := readLiveEvent(t, observer, "presence_left")
+	if observerLeft["connection_id"] != "tab-one" {
+		t.Fatalf("observer single connection close = %#v", observerLeft)
+	}
+	writeLiveMessage(t, second, `{"type":"push_changes","operation_id":"remaining-edit","document_id":"`+mainID+`","base_version":0,"changes":[5,[0,"!"]]}`)
+	remainingEdit := readLiveEvent(t, second, "changes")
+	if remainingEdit["client_id"] != "client-two" || remainingEdit["revision"] != float64(1) {
+		t.Fatalf("remaining connection edit = %#v", remainingEdit)
+	}
+
+	if err := second.Close(websocket.StatusNormalClosure, ""); err != nil {
+		t.Fatal(err)
+	}
+	finalLeft := readLiveEvent(t, observer, "presence_left")
+	finalParticipant, _ := finalLeft["participant"].(map[string]any)
+	if finalLeft["connection_id"] != "tab-two" || finalParticipant["status"] != "connection_lost" || finalParticipant["connection_count"] != float64(0) {
+		t.Fatalf("final connection close = %#v", finalLeft)
+	}
+}
+
+func TestLiveWebSocketRejectsNinthConnectionWithoutEvictingExistingTabs(t *testing.T) {
+	placeholder := httptest.NewUnstartedServer(http.NotFoundHandler())
+	handler, store, hub := newLiveTestHandler(t, "http://"+placeholder.Listener.Addr().String())
+	placeholder.Config.Handler = handler
+	placeholder.Start()
+	defer placeholder.Close()
+	defer store.Close()
+	defer hub.Shutdown(context.Background(), time.Now().UTC())
+
+	created, err := placeholder.Client().Post(placeholder.URL+"/api/v1/live", "application/json", strings.NewReader(`{"documents":[{"name":"main","language":"plaintext","content":""}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	created.Body.Close()
+	if created.StatusCode != http.StatusCreated {
+		t.Fatalf("create status = %d", created.StatusCode)
+	}
+	wsURL := "ws" + strings.TrimPrefix(placeholder.URL, "http") + "/api/v1/live/calmbrightotter/ws"
+	connections := make([]*websocket.Conn, 0, 8)
+	for index := 1; index <= 8; index++ {
+		connection := dialLivePeer(t, wsURL, placeholder.URL, nil)
+		connections = append(connections, connection)
+		connectionID := "tab-" + strconv.Itoa(index)
+		writeLiveMessage(t, connection, `{"type":"join","session_id":"bounded-browser","connection_id":"`+connectionID+`","client_id":"client-`+strconv.Itoa(index)+`","metadata_revision":0,"document_revisions":[{"document_id":"main","revision":0}]}`)
+		joined := readLiveEvent(t, connection, "joined")
+		participant, _ := joined["participant"].(map[string]any)
+		if participant["connection_count"] != float64(index) {
+			t.Fatalf("connection %d join = %#v", index, joined)
+		}
+	}
+	defer func() {
+		for _, connection := range connections {
+			connection.CloseNow()
+		}
+	}()
+
+	overflow := dialLivePeer(t, wsURL, placeholder.URL, nil)
+	defer overflow.CloseNow()
+	writeLiveMessage(t, overflow, `{"type":"join","session_id":"bounded-browser","connection_id":"tab-9","client_id":"client-9","metadata_revision":0,"document_revisions":[{"document_id":"main","revision":0}]}`)
+	readCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	_, _, err = overflow.Read(readCtx)
+	if websocket.CloseStatus(err) != websocket.StatusTryAgainLater || !strings.Contains(err.Error(), "connection limit reached") {
+		t.Fatalf("ninth connection close = %v, status = %d", err, websocket.CloseStatus(err))
+	}
+
+	writeLiveMessage(t, connections[0], `{"type":"heartbeat"}`)
+	writeLiveMessage(t, connections[0], `{"type":"push_changes","operation_id":"still-active","document_id":"main","base_version":0,"changes":[[0,"ok"]]}`)
+	accepted := readLiveEvent(t, connections[0], "changes")
+	if accepted["revision"] != float64(1) {
+		t.Fatalf("existing connection after overflow = %#v", accepted)
+	}
+}
+
 func TestDecodeLiveWireMessageRejectsMalformedAndUnknownFields(t *testing.T) {
 	for _, payload := range [][]byte{
 		[]byte(`{"type":"unknown"}`),
@@ -668,6 +915,9 @@ func TestDecodeLiveWireMessageRejectsMalformedAndUnknownFields(t *testing.T) {
 		if _, err := decodeLiveWireMessage(payload); err == nil {
 			t.Errorf("decodeLiveWireMessage(%s) succeeded", payload)
 		}
+	}
+	if _, err := decodeLiveWireMessage([]byte(`{"type":"unknown"}`)); !errors.Is(err, errLiveUnsupportedOperation) {
+		t.Fatalf("unknown message error = %v", err)
 	}
 	if _, err := decodeLiveWireMessage([]byte(`{"type":"heartbeat"}`)); err != nil {
 		t.Fatalf("valid heartbeat rejected: %v", err)
@@ -979,7 +1229,7 @@ func TestLiveCreatorControlsRequireCreatorSession(t *testing.T) {
 		t.Fatalf("creator joined without creator authority: %s", creatorJoined)
 	}
 	creatorParticipant, _ := creatorJoined["participant"].(map[string]any)
-	if creatorParticipant == nil || creatorParticipant["role"] != "writer" {
+	if creatorParticipant == nil || creatorParticipant["role"] != "writer" || creatorParticipant["access_class"] != "creator" || creatorParticipant["can_edit"] != true || creatorParticipant["connection_count"] != float64(1) {
 		t.Fatalf("creator participant = %#v", creatorParticipant)
 	}
 
@@ -999,7 +1249,7 @@ func TestLiveCreatorControlsRequireCreatorSession(t *testing.T) {
 		t.Fatalf("ordinary password access acquired creator authority: %s", writerJoined)
 	}
 	writerParticipant, _ := writerJoined["participant"].(map[string]any)
-	if writerParticipant == nil || writerParticipant["role"] != "writer" {
+	if writerParticipant == nil || writerParticipant["role"] != "writer" || writerParticipant["access_class"] != "collaborator" || writerParticipant["can_edit"] != true {
 		t.Fatalf("writer participant = %#v", writerParticipant)
 	}
 
@@ -1093,18 +1343,28 @@ func TestLiveSweepDeliversExpiredStatusBeforeClose(t *testing.T) {
 	conn := dialLivePeer(t, "ws"+strings.TrimPrefix(placeholder.URL, "http")+"/api/v1/live/calmbrightotter/ws", placeholder.URL, created.Cookies()[0])
 	defer conn.CloseNow()
 	joinLivePeer(t, conn, "expiry-session")
+	second := dialLivePeer(t, "ws"+strings.TrimPrefix(placeholder.URL, "http")+"/api/v1/live/calmbrightotter/ws", placeholder.URL, created.Cookies()[0])
+	defer second.CloseNow()
+	writeLiveMessage(t, second, `{"type":"join","session_id":"expiry-session","connection_id":"expiry-tab-two","client_id":"expiry-client-two","metadata_revision":0,"document_revisions":[{"document_id":"main","revision":0}]}`)
+	secondJoined := readLiveEvent(t, second, "joined")
+	secondParticipant, _ := secondJoined["participant"].(map[string]any)
+	if secondParticipant["connection_count"] != float64(2) {
+		t.Fatalf("expiry grouped connection = %#v", secondJoined)
+	}
 	if err := api.sweep(context.Background(), time.Now().UTC().Add(2*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
-	status := readLiveEvent(t, conn, "status")
-	if status["status"] != "expired" {
-		t.Fatalf("expiry status = %#v", status)
-	}
-	readCtx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	_, _, err = conn.Read(readCtx)
-	if websocket.CloseStatus(err) != websocket.StatusTryAgainLater || !strings.Contains(err.Error(), "room expired") {
-		t.Fatalf("expiry close error = %v, status = %d", err, websocket.CloseStatus(err))
+	for index, connection := range []*websocket.Conn{conn, second} {
+		status := readLiveEvent(t, connection, "status")
+		if status["status"] != "expired" {
+			t.Fatalf("expiry status %d = %#v", index, status)
+		}
+		readCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		_, _, readErr := connection.Read(readCtx)
+		cancel()
+		if websocket.CloseStatus(readErr) != websocket.StatusTryAgainLater || !strings.Contains(readErr.Error(), "room expired") {
+			t.Fatalf("expiry close error %d = %v, status = %d", index, readErr, websocket.CloseStatus(readErr))
+		}
 	}
 }
 

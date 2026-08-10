@@ -90,6 +90,462 @@ func TestHubRebasesConcurrentEditsAndPersistsBeforeReturn(t *testing.T) {
 	}
 }
 
+func TestHubJoinIdentitySeparatesParticipantConnectionAndClient(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, time.August, 10, 12, 0, 0, 0, time.UTC)
+	store, err := sqlite.Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.CreateRoom(ctx, testRoom(now)); err != nil {
+		t.Fatal(err)
+	}
+	hub, err := live.NewHub(store, nil, testHubOptions(nil, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity := live.JoinIdentity{
+		ParticipantCredential: "browser-credential",
+		ConnectionID:          "connection-one",
+		ClientID:              "operation-client-one",
+		PreferredName:         "Quiet Otter",
+		PreferredNameSet:      true,
+	}
+	joined, err := hub.JoinWithIdentity(ctx, "calmbrightotter", identity, live.CreatorCapability{}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantID, err := live.ParticipantIDForRoom("calmbrightotter", identity.ParticipantCredential)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if joined.Participant.ID != wantID || joined.Participant.Nickname != identity.PreferredName || joined.Participant.AccessClass != live.ParticipantCollaborator || !joined.Participant.CanEdit || joined.Participant.ConnectionCount != 1 || joined.Participant.Role != live.ParticipantWriter {
+		t.Fatalf("joined participant = %#v", joined.Participant)
+	}
+	if joined.Session.ConnectionID() != identity.ConnectionID || joined.Session.ClientID() != identity.ClientID {
+		t.Fatalf("session identities = connection %q, client %q", joined.Session.ConnectionID(), joined.Session.ClientID())
+	}
+	overlap := identity
+	overlap.ConnectionID = "connection-two"
+	overlap.ClientID = "operation-client-two"
+	overlapped, err := hub.JoinWithIdentity(ctx, "calmbrightotter", overlap, live.CreatorCapability{}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if overlapped.Participant.ID != wantID || overlapped.Participant.ConnectionCount != 2 || len(overlapped.State.Participants) != 1 {
+		t.Fatalf("grouped connection identity = %#v", overlapped)
+	}
+	if err := joined.Session.Disconnect(now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	afterDisconnect, err := overlapped.Session.Participant()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterDisconnect.Status != live.ParticipantConnected || afterDisconnect.ConnectionCount != 1 {
+		t.Fatalf("remaining grouped connection = %#v", afterDisconnect)
+	}
+	reconnected, err := hub.JoinWithIdentity(ctx, "calmbrightotter", identity, live.CreatorCapability{}, now.Add(2*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reconnected.Reconnected || reconnected.Participant.ID != wantID || reconnected.Participant.ConnectionCount != 2 || reconnected.Session.ConnectionID() != identity.ConnectionID || reconnected.Session.ClientID() != identity.ClientID {
+		t.Fatalf("reconnected identity = %#v", reconnected)
+	}
+	if err := joined.Session.Heartbeat(now.Add(2 * time.Second)); !errors.Is(err, live.ErrParticipantInactive) {
+		t.Fatalf("stale connection heartbeat error = %v", err)
+	}
+	if err := hub.Shutdown(ctx, now.Add(3*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := live.NewHub(store, nil, testHubOptions(nil, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restarted.Shutdown(ctx, now.Add(time.Hour))
+	afterRestart, err := restarted.JoinWithIdentity(ctx, "calmbrightotter", identity, live.CreatorCapability{}, now.Add(4*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterRestart.Reconnected || afterRestart.Participant.ID != wantID || afterRestart.Participant.Color != joined.Participant.Color || afterRestart.Participant.Nickname != identity.PreferredName {
+		t.Fatalf("restart identity = %#v", afterRestart)
+	}
+	collision := identity
+	collision.ParticipantCredential = "another-browser"
+	collision.ConnectionID = "another-connection"
+	collision.ClientID = "another-client"
+	colliding, err := restarted.JoinWithIdentity(ctx, "calmbrightotter", collision, live.CreatorCapability{}, now.Add(5*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if colliding.Participant.Nickname == identity.PreferredName {
+		t.Fatal("preferred-name collision bypassed active-room uniqueness")
+	}
+	legacy, err := restarted.Join(ctx, "calmbrightotter", "legacy-session", now.Add(6*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if legacy.Session.ConnectionID() != "legacy-session" || legacy.Session.ClientID() != "legacy-session" || legacy.Participant.ConnectionCount != 1 {
+		t.Fatalf("legacy join compatibility = %#v", legacy)
+	}
+}
+
+func TestHubGroupsBoundedConnectionsAndKeepsPresenceConnectionScoped(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, time.August, 10, 13, 0, 0, 0, time.UTC)
+	store, err := sqlite.Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.CreateRoom(ctx, testRoom(now)); err != nil {
+		t.Fatal(err)
+	}
+	options := testHubOptions(nil, nil)
+	options.MaxConnectionsPerParticipant = 3
+	hub, err := live.NewHub(store, nil, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer hub.Shutdown(ctx, now.Add(time.Hour))
+
+	identity := func(connection string) live.JoinIdentity {
+		return live.JoinIdentity{
+			ParticipantCredential: "shared-browser-credential",
+			ConnectionID:          connection,
+			ClientID:              "client-" + connection,
+			PreferredName:         "Quiet Otter",
+			PreferredNameSet:      true,
+		}
+	}
+	first, err := hub.JoinWithIdentity(ctx, "calmbrightotter", identity("one"), live.CreatorCapability{}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := hub.JoinWithIdentity(ctx, "calmbrightotter", identity("one"), live.CreatorCapability{}, now); !errors.Is(err, live.ErrSessionActive) {
+		t.Fatalf("duplicate connection error = %v, want %v", err, live.ErrSessionActive)
+	}
+	second, err := hub.JoinWithIdentity(ctx, "calmbrightotter", identity("two"), live.CreatorCapability{}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	third, err := hub.JoinWithIdentity(ctx, "calmbrightotter", identity("three"), live.CreatorCapability{}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Participant.ID != second.Participant.ID || first.Participant.ID != third.Participant.ID || third.Participant.ConnectionCount != 3 || len(third.State.Participants) != 1 {
+		t.Fatalf("grouped participants = first %#v, second %#v, third %#v", first.Participant, second.Participant, third.Participant)
+	}
+	if _, err := hub.JoinWithIdentity(ctx, "calmbrightotter", identity("four"), live.CreatorCapability{}, now); !errors.Is(err, live.ErrConnectionLimit) {
+		t.Fatalf("connection overflow error = %v, want %v", err, live.ErrConnectionLimit)
+	}
+
+	firstEdit, err := first.Session.SubmitDocument(ctx, live.DocumentOperation{
+		OperationID: "first-connection-edit", ClientID: "client-one", DocumentID: "main", BaseVersion: 0,
+		Changes: mustChangeSet(t, `[5,[0,"!"]]`),
+	}, now.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondEdit, err := second.Session.SubmitDocument(ctx, live.DocumentOperation{
+		OperationID: "second-connection-edit", ClientID: "client-two", DocumentID: "main", BaseVersion: 1,
+		Changes: mustChangeSet(t, `[6,[0,"?"]]`),
+	}, now.Add(2*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstEdit.ClientID != "client-one" || secondEdit.ClientID != "client-two" || secondEdit.Revision != 2 {
+		t.Fatalf("connection operation streams = %#v, %#v", firstEdit, secondEdit)
+	}
+	if _, err := first.Session.UpdatePresence(live.PresenceUpdate{
+		CurrentTab: "notes", DocumentID: "notes", Revision: 0, Anchor: 1, Head: 3,
+	}, now.Add(3*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	presence, err := second.Session.UpdatePresence(live.PresenceUpdate{
+		CurrentTab: "main", DocumentID: "main", Revision: 2, Anchor: 2, Head: 4,
+	}, now.Add(4*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if presence.CurrentTab != "main" || presence.Cursor == nil || presence.Cursor.DocumentID != "main" || len(presence.Cursors) != 2 || presence.Cursors[0].ConnectionID != "one" || presence.Cursors[1].ConnectionID != "two" {
+		t.Fatalf("connection-scoped presence = %#v", presence)
+	}
+	if err := first.Session.Heartbeat(now.Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	afterHeartbeat, err := second.Session.Participant()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterHeartbeat.CurrentTab != "main" || afterHeartbeat.Cursor == nil || afterHeartbeat.Cursor.DocumentID != "main" {
+		t.Fatalf("heartbeat changed latest active tab = %#v", afterHeartbeat)
+	}
+
+	if err := first.Session.Disconnect(now.Add(6 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	remaining, err := second.Session.Participant()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if remaining.Status != live.ParticipantConnected || remaining.ConnectionCount != 2 || len(remaining.Cursors) != 1 || remaining.Cursors[0].ConnectionID != "two" {
+		t.Fatalf("participant after one connection closes = %#v", remaining)
+	}
+	reloaded, err := hub.JoinWithIdentity(ctx, "calmbrightotter", identity("one"), live.CreatorCapability{}, now.Add(6*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reloaded.Reconnected || reloaded.Participant.ConnectionCount != 3 || len(reloaded.Participant.Cursors) != 1 {
+		t.Fatalf("reload overlap = %#v", reloaded.Participant)
+	}
+	if err := first.Session.Disconnect(now.Add(7 * time.Second)); !errors.Is(err, live.ErrParticipantInactive) {
+		t.Fatalf("stale disconnect error = %v", err)
+	}
+	if err := first.Session.Heartbeat(now.Add(7 * time.Second)); !errors.Is(err, live.ErrParticipantInactive) {
+		t.Fatalf("stale heartbeat error = %v", err)
+	}
+	afterStale, err := reloaded.Session.Participant()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterStale.ConnectionCount != 3 || afterStale.Status != live.ParticipantConnected {
+		t.Fatalf("stale connection changed participant = %#v", afterStale)
+	}
+
+	if err := second.Session.Disconnect(now.Add(8 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := third.Session.Disconnect(now.Add(9 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := reloaded.Session.Disconnect(now.Add(10 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	disconnected, err := hub.State("calmbrightotter")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(disconnected.Participants) != 1 || disconnected.Participants[0].Status != live.ParticipantConnectionLost || disconnected.Participants[0].ConnectionCount != 0 || disconnected.Participants[0].Cursor != nil || len(disconnected.Participants[0].Cursors) != 0 {
+		t.Fatalf("final disconnect state = %#v", disconnected.Participants)
+	}
+	reopened, err := hub.JoinWithIdentity(ctx, "calmbrightotter", identity("four"), live.CreatorCapability{}, now.Add(11*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reopened.Reconnected || reopened.Participant.ID != first.Participant.ID || !reopened.Participant.JoinedAt.Equal(first.Participant.JoinedAt) || reopened.Participant.ConnectionCount != 1 {
+		t.Fatalf("final-connection grace reclaim = %#v", reopened.Participant)
+	}
+	if err := hub.Shutdown(ctx, now.Add(12*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reopened.Session.State(); !errors.Is(err, live.ErrRoomExpired) {
+		t.Fatalf("grouped session after shutdown error = %v", err)
+	}
+}
+
+func TestHubParticipantCapacityCountsBrowserIdentityUntilFinalConnectionGraceExpires(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, time.August, 10, 14, 0, 0, 0, time.UTC)
+	store, err := sqlite.Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.CreateRoom(ctx, testRoom(now)); err != nil {
+		t.Fatal(err)
+	}
+	options := testHubOptions(nil, nil)
+	options.MaxWriters, options.MaxViewers, options.MaxParticipants = 1, 1, 2
+	hub, err := live.NewHub(store, nil, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer hub.Shutdown(ctx, now.Add(time.Hour))
+	join := func(credential, connection string, at time.Time) (live.JoinResult, error) {
+		return hub.JoinWithIdentity(ctx, "calmbrightotter", live.JoinIdentity{
+			ParticipantCredential: credential, ConnectionID: connection, ClientID: "client-" + connection,
+		}, live.CreatorCapability{}, at)
+	}
+	first, err := join("browser-a", "a-one", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondTab, err := join("browser-a", "a-two", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondBrowser, err := join("browser-b", "b-one", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(secondBrowser.State.Participants) != 2 || secondTab.Participant.ConnectionCount != 2 || first.Participant.ID == secondBrowser.Participant.ID {
+		t.Fatalf("participant-scoped capacity = %#v", secondBrowser.State.Participants)
+	}
+	if _, err := join("browser-c", "c-one", now); !errors.Is(err, live.ErrParticipantLimit) {
+		t.Fatalf("full room error = %v", err)
+	}
+	if err := first.Session.Disconnect(now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := join("browser-c", "c-one", now.Add(time.Second)); !errors.Is(err, live.ErrParticipantLimit) {
+		t.Fatalf("single-tab close released participant capacity: %v", err)
+	}
+	if err := secondTab.Session.Disconnect(now.Add(2 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := join("browser-c", "c-one", now.Add(2*time.Second)); !errors.Is(err, live.ErrParticipantLimit) {
+		t.Fatalf("reconnect grace released participant capacity: %v", err)
+	}
+	if _, err := hub.Sweep(ctx, now.Add(2*time.Second+options.ReconnectGrace+time.Nanosecond)); err != nil {
+		t.Fatal(err)
+	}
+	thirdBrowser, err := join("browser-c", "c-one", now.Add(3*time.Second+options.ReconnectGrace))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if thirdBrowser.Participant.ID == first.Participant.ID || thirdBrowser.Participant.ConnectionCount != 1 {
+		t.Fatalf("capacity replacement = %#v", thirdBrowser.Participant)
+	}
+}
+
+func TestHubSweepExpiresOnlyStaleConnections(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, time.August, 10, 15, 0, 0, 0, time.UTC)
+	store, err := sqlite.Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.CreateRoom(ctx, testRoom(now)); err != nil {
+		t.Fatal(err)
+	}
+	options := testHubOptions(nil, nil)
+	options.HeartbeatInterval = time.Second
+	options.ReconnectGrace = 2 * time.Second
+	options.ParticipantTimeout = 3 * time.Second
+	hub, err := live.NewHub(store, nil, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer hub.Shutdown(ctx, now.Add(time.Hour))
+	identity := func(connection string) live.JoinIdentity {
+		return live.JoinIdentity{ParticipantCredential: "browser", ConnectionID: connection, ClientID: "client-" + connection}
+	}
+	stale, err := hub.JoinWithIdentity(ctx, "calmbrightotter", identity("stale"), live.CreatorCapability{}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	healthy, err := hub.JoinWithIdentity(ctx, "calmbrightotter", identity("healthy"), live.CreatorCapability{}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := healthy.Session.Heartbeat(now.Add(2500 * time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := hub.Sweep(ctx, now.Add(3*time.Second+time.Nanosecond)); err != nil {
+		t.Fatal(err)
+	}
+	participant, err := healthy.Session.Participant()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if participant.Status != live.ParticipantConnected || participant.ConnectionCount != 1 {
+		t.Fatalf("healthy grouped participant = %#v", participant)
+	}
+	if err := stale.Session.Heartbeat(now.Add(3 * time.Second)); !errors.Is(err, live.ErrParticipantInactive) {
+		t.Fatalf("stale connection heartbeat error = %v", err)
+	}
+	if err := healthy.Session.Heartbeat(now.Add(4 * time.Second)); err != nil {
+		t.Fatalf("healthy connection was invalidated: %v", err)
+	}
+}
+
+func TestHubConcurrentConnectionAdmissionAndFinalDisconnectStayGrouped(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, time.August, 10, 16, 0, 0, 0, time.UTC)
+	store, err := sqlite.Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.CreateRoom(ctx, testRoom(now)); err != nil {
+		t.Fatal(err)
+	}
+	hub, err := live.NewHub(store, nil, testHubOptions(nil, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer hub.Shutdown(ctx, now.Add(time.Hour))
+
+	type joinOutcome struct {
+		result live.JoinResult
+		err    error
+	}
+	outcomes := make(chan joinOutcome, 16)
+	var joins sync.WaitGroup
+	for index := 0; index < 16; index++ {
+		joins.Add(1)
+		go func(index int) {
+			defer joins.Done()
+			connection := "connection-" + strconv.Itoa(index)
+			result, joinErr := hub.JoinWithIdentity(ctx, "calmbrightotter", live.JoinIdentity{
+				ParticipantCredential: "concurrent-browser", ConnectionID: connection, ClientID: "client-" + connection,
+			}, live.CreatorCapability{}, now)
+			outcomes <- joinOutcome{result: result, err: joinErr}
+		}(index)
+	}
+	joins.Wait()
+	close(outcomes)
+	var sessions []*live.RoomSession
+	limited := 0
+	for outcome := range outcomes {
+		switch {
+		case outcome.err == nil:
+			sessions = append(sessions, outcome.result.Session)
+		case errors.Is(outcome.err, live.ErrConnectionLimit):
+			limited++
+		default:
+			t.Fatalf("concurrent join error = %v", outcome.err)
+		}
+	}
+	if len(sessions) != 8 || limited != 8 {
+		t.Fatalf("concurrent admission = %d joined, %d limited", len(sessions), limited)
+	}
+	state, err := sessions[0].State()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Participants) != 1 || state.Participants[0].ConnectionCount != 8 {
+		t.Fatalf("concurrent grouped state = %#v", state.Participants)
+	}
+
+	var disconnects sync.WaitGroup
+	disconnectErrs := make(chan error, len(sessions))
+	for _, session := range sessions {
+		disconnects.Add(1)
+		go func(session *live.RoomSession) {
+			defer disconnects.Done()
+			disconnectErrs <- session.Disconnect(now.Add(time.Second))
+		}(session)
+	}
+	disconnects.Wait()
+	close(disconnectErrs)
+	for disconnectErr := range disconnectErrs {
+		if disconnectErr != nil {
+			t.Fatalf("concurrent disconnect error = %v", disconnectErr)
+		}
+	}
+	disconnected, err := hub.State("calmbrightotter")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(disconnected.Participants) != 1 || disconnected.Participants[0].Status != live.ParticipantConnectionLost || disconnected.Participants[0].ConnectionCount != 0 {
+		t.Fatalf("concurrent final disconnect = %#v", disconnected.Participants)
+	}
+}
+
 func TestHubMetadataConflictsAndIdempotentCreate(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, time.July, 16, 12, 0, 0, 0, time.UTC)
@@ -265,7 +721,7 @@ func TestHubPresenceReconnectsWithinGraceAndEvictsAfterLeave(t *testing.T) {
 			disconnected = participant
 		}
 	}
-	if disconnected.Status != live.ParticipantConnectionLost || disconnected.Cursor == nil || disconnected.CurrentTab != "notes" {
+	if disconnected.Status != live.ParticipantConnectionLost || disconnected.Cursor != nil || len(disconnected.Cursors) != 0 || disconnected.CurrentTab != "notes" {
 		t.Fatalf("disconnected presence = %#v", disconnected)
 	}
 	reconnected, err := hub.Join(ctx, "calmbrightotter", "session-a", now.Add(3*time.Second))
@@ -919,7 +1375,7 @@ func TestHubEnforcesWriterViewerCapacityAndWatchOnlyRole(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !creator.Session.IsCreator() || creator.Participant.Role != live.ParticipantWriter {
+	if !creator.Session.IsCreator() || creator.Participant.Role != live.ParticipantWriter || creator.Participant.AccessClass != live.ParticipantCreator || !creator.Participant.CanEdit || creator.Participant.ConnectionCount != 1 {
 		t.Fatalf("creator session = %#v", creator)
 	}
 	viewerA, err := hub.Join(ctx, "calmbrightotter", "viewer-a-session", now)
@@ -930,7 +1386,7 @@ func TestHubEnforcesWriterViewerCapacityAndWatchOnlyRole(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if viewerA.Participant.Role != live.ParticipantWatchOnly || viewerB.Participant.Role != live.ParticipantWatchOnly {
+	if viewerA.Participant.Role != live.ParticipantWatchOnly || viewerB.Participant.Role != live.ParticipantWatchOnly || viewerA.Participant.AccessClass != live.ParticipantViewer || viewerB.Participant.AccessClass != live.ParticipantViewer || viewerA.Participant.CanEdit || viewerB.Participant.CanEdit {
 		t.Fatalf("viewer roles = %q, %q", viewerA.Participant.Role, viewerB.Participant.Role)
 	}
 	if _, err := hub.Join(ctx, "calmbrightotter", "overflow-session", now); !errors.Is(err, live.ErrParticipantLimit) {
@@ -1265,9 +1721,7 @@ func createTestRoomWithCreator(t *testing.T, ctx context.Context, store *sqlite.
 
 func testHubOptions(participants, documents []string) live.HubOptions {
 	options := live.DefaultHubOptions()
-	if len(participants) > 0 {
-		options.ParticipantID = sequenceGenerator(participants)
-	}
+	_ = participants // Participant IDs are derived from the room credential.
 	if len(documents) > 0 {
 		options.DocumentID = sequenceGenerator(documents)
 	}

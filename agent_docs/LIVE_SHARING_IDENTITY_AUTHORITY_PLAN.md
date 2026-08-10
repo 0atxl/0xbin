@@ -2,7 +2,7 @@
 
 ## Status
 
-**Phases 0–1 complete (2026-08-10). Phase 2 is next and has not started.**
+**Phases 0–3 complete (2026-08-10). Phase 4 is next and has not started.**
 
 This plan defines the bounded behavioral foundation that must be completed
 before the live-workspace visual pass, final verification, and merge. It does
@@ -355,6 +355,25 @@ changing participant behavior yet.
 - Wire decoder and HTTP/WebSocket compatibility tests pass without changing
   document-edit semantics.
 
+### Completion record — 2026-08-10
+
+- Added bounded browser participant credentials, connection IDs, operation
+  client IDs, and optional preferred-name validation while retaining the old
+  join shape and its one-connection behavior.
+- Public participant IDs are now deterministic, room-scoped, domain-separated
+  hashes. Raw participant credentials are neither returned nor persisted.
+- Join and roster payloads expose stable access class, effective editability,
+  and connection count while retaining the derived legacy role. Presence
+  payloads identify the originating connection.
+- Malformed identifiers, mismatched operation client IDs, and unsupported
+  operations receive stable validation errors without changing document state.
+- Identity, Hub, wire-decoder, HTTP/WebSocket compatibility, full Go, focused
+  race, Go vet, frontend unit, and production-build checks pass. The existing
+  document-edit behavior and old-client fallback remain intact.
+- The Phase 2 gate passes. Phase 3 remains intentionally unstarted; a repeated
+  participant credential still permits only one active connection until that
+  phase changes the Hub model.
+
 ## Phase 3 — Refactor the Hub for multiple connections
 
 **Objective:** Count and display one participant per browser while supporting
@@ -392,6 +411,32 @@ several simultaneous tabs.
 
 - Hub and transport concurrency matrices pass with no participant, cursor,
   capacity, or goroutine leak.
+
+### Completion record — 2026-08-10
+
+- Replaced the participant-wide connection generation with a bounded map of
+  up to eight mounted-page connections. Duplicate connection IDs and a ninth
+  connection fail without replacing or invalidating an existing connection.
+- Heartbeat, operation client, current tab, cursor/selection, last activity,
+  and generation are connection-scoped. Roster status, connection count,
+  latest active tab, nickname, colour, access class, and capacity remain
+  participant-scoped.
+- Closing or timing out one connection removes only that connection and its
+  cursor. Reconnect grace and participant-capacity release begin only after the
+  final connection is gone; stale generations cannot affect a replacement or
+  another healthy connection.
+- WebSocket presence joins, updates, and leaves carry the originating
+  connection ID and authoritative aggregate participant state. Responses
+  expose the bounded connection-specific cursor list while retaining the
+  transitional single-cursor field.
+- Sequential, maximum-bound, concurrent admission/disconnect, capacity,
+  per-connection timeout, reload overlap, restart reconstruction, expiry, and
+  shutdown cases pass. The focused race matrix passes repeatedly, and the full
+  repository race, frontend unit, lint, format, and production-build gates
+  pass.
+- The Phase 3 gate passes. Phase 4 remains intentionally unstarted; creator
+  editability and reversible collaborator locking still use the pre-Phase-4
+  role behavior.
 
 ## Phase 4 — Separate access class and lock state
 

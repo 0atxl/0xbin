@@ -8,7 +8,8 @@ release hardening, and independent audit are complete. A bounded
 browser-identity and creator-authority evolution is planned in
 [`LIVE_SHARING_IDENTITY_AUTHORITY_PLAN.md`](LIVE_SHARING_IDENTITY_AUTHORITY_PLAN.md)
 before the live-workspace visual pass and final merge. Its contract and durable
-storage Phases 0–1 are complete; Phase 2 is next and has not started.
+storage, additive-identity, and grouped-connection Phases 0–3 are complete;
+Phase 4 is next and has not started.
 
 ## Phase 0 — Foundation
 

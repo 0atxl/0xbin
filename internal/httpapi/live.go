@@ -165,16 +165,25 @@ type liveCursorResponse struct {
 	Head       int    `json:"head"`
 }
 
+type liveConnectionCursorResponse struct {
+	ConnectionID string `json:"connection_id"`
+	liveCursorResponse
+}
+
 type liveParticipantResponse struct {
-	ID         string                 `json:"id"`
-	Nickname   string                 `json:"nickname"`
-	JoinedAt   time.Time              `json:"joined_at"`
-	Color      string                 `json:"color"`
-	CurrentTab string                 `json:"current_tab"`
-	Cursor     *liveCursorResponse    `json:"cursor,omitempty"`
-	Status     live.ParticipantStatus `json:"status"`
-	Role       live.ParticipantRole   `json:"role"`
-	LastSeenAt time.Time              `json:"last_seen_at"`
+	ID              string                         `json:"id"`
+	Nickname        string                         `json:"nickname"`
+	JoinedAt        time.Time                      `json:"joined_at"`
+	Color           string                         `json:"color"`
+	CurrentTab      string                         `json:"current_tab"`
+	Cursor          *liveCursorResponse            `json:"cursor,omitempty"`
+	Cursors         []liveConnectionCursorResponse `json:"cursors,omitempty"`
+	Status          live.ParticipantStatus         `json:"status"`
+	AccessClass     live.ParticipantAccessClass    `json:"access_class"`
+	CanEdit         bool                           `json:"can_edit"`
+	ConnectionCount int                            `json:"connection_count"`
+	Role            live.ParticipantRole           `json:"role"`
+	LastSeenAt      time.Time                      `json:"last_seen_at"`
 }
 
 func (api *liveAPI) create(w http.ResponseWriter, r *http.Request) {
@@ -497,9 +506,38 @@ func responseForLiveState(state live.RoomState) liveRoomResponse {
 }
 
 func responseForLiveParticipant(participant live.ParticipantSnapshot) liveParticipantResponse {
-	response := liveParticipantResponse{ID: participant.ID, Nickname: participant.Nickname, JoinedAt: participant.JoinedAt, Color: participant.Color, CurrentTab: participant.CurrentTab, Status: participant.Status, Role: participant.Role, LastSeenAt: participant.LastSeenAt}
+	accessClass := participant.AccessClass
+	canEdit := participant.CanEdit
+	connectionCount := participant.ConnectionCount
+	legacySnapshot := accessClass == ""
+	if accessClass == "" {
+		if participant.Role == live.ParticipantWriter {
+			accessClass, canEdit = live.ParticipantCollaborator, true
+		} else {
+			accessClass = live.ParticipantViewer
+		}
+	}
+	if legacySnapshot && connectionCount < 1 {
+		connectionCount = 1
+	}
+	legacyRole := live.ParticipantWatchOnly
+	if canEdit {
+		legacyRole = live.ParticipantWriter
+	}
+	response := liveParticipantResponse{
+		ID: participant.ID, Nickname: participant.Nickname, JoinedAt: participant.JoinedAt,
+		Color: participant.Color, CurrentTab: participant.CurrentTab, Status: participant.Status,
+		AccessClass: accessClass, CanEdit: canEdit,
+		ConnectionCount: connectionCount, Role: legacyRole, LastSeenAt: participant.LastSeenAt,
+	}
 	if participant.Cursor != nil {
 		response.Cursor = &liveCursorResponse{DocumentID: participant.Cursor.DocumentID, Revision: participant.Cursor.Revision, Anchor: participant.Cursor.Anchor, Head: participant.Cursor.Head}
+	}
+	for _, cursor := range participant.Cursors {
+		response.Cursors = append(response.Cursors, liveConnectionCursorResponse{
+			ConnectionID:       cursor.ConnectionID,
+			liveCursorResponse: liveCursorResponse{DocumentID: cursor.DocumentID, Revision: cursor.Revision, Anchor: cursor.Anchor, Head: cursor.Head},
+		})
 	}
 	return response
 }
@@ -697,6 +735,7 @@ type livePeer struct {
 	clientID       string
 	rateIdentity   string
 	participantID  string
+	connectionID   string
 	out            chan livePeerFrame
 	control        chan livePeerFrame
 	done           chan struct{}
@@ -934,9 +973,9 @@ func (api *liveAPI) websocket(w http.ResponseWriter, r *http.Request) {
 		_ = conn.Close(websocket.StatusProtocolError, "join required")
 		return
 	}
-	sessionID := join.SessionID
-	if sessionID == "" {
-		_ = conn.Close(websocket.StatusPolicyViolation, "session ID required")
+	joinIdentity, err := liveJoinIdentity(join)
+	if err != nil {
+		api.closeHandshakeError(conn, err)
 		return
 	}
 	known, ok := knownLiveRevisions(join)
@@ -945,7 +984,7 @@ func (api *liveAPI) websocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	unlockPublication := api.publications.lock(slugValue)
-	joined, err := api.hub.JoinWithCreator(ctx, slugValue, sessionID, creator, time.Now().UTC())
+	joined, err := api.hub.JoinWithIdentity(ctx, slugValue, joinIdentity, creator, time.Now().UTC())
 	if err != nil {
 		unlockPublication()
 		api.closeHandshakeError(conn, err)
@@ -957,11 +996,12 @@ func (api *liveAPI) websocket(w http.ResponseWriter, r *http.Request) {
 		api.closeHandshakeError(conn, err)
 		return
 	}
-	clientID := join.ClientID
-	if clientID == "" {
-		clientID = sessionID
+	peer := &livePeer{
+		api: api, conn: conn, slug: slugValue, session: joined.Session,
+		clientID: joinIdentity.ClientID, connectionID: joinIdentity.ConnectionID,
+		rateIdentity: identity, participantID: joined.Participant.ID,
+		out: make(chan livePeerFrame, livePeerQueueSize), control: make(chan livePeerFrame, 1), done: make(chan struct{}),
 	}
-	peer := &livePeer{api: api, conn: conn, slug: slugValue, session: joined.Session, clientID: clientID, rateIdentity: identity, participantID: joined.Participant.ID, out: make(chan livePeerFrame, livePeerQueueSize), control: make(chan livePeerFrame, 1), done: make(chan struct{})}
 	go peer.writer(ctx)
 	go peer.presenceLoop(ctx)
 	api.peers.add(peer)
@@ -972,6 +1012,7 @@ func (api *liveAPI) websocket(w http.ResponseWriter, r *http.Request) {
 		DocumentRevisions: liveDocumentRevisions(joined.State),
 		Participants:      state.Participants, Participant: responseForLiveParticipant(joined.Participant),
 		Creator: joined.Session.IsCreator(), WatchOnly: joined.State.WatchOnly,
+		Locked: joined.State.WatchOnly, ConnectionID: joinIdentity.ConnectionID,
 		Reconnected: joined.Reconnected,
 	}))
 	if bridge.Resync {
@@ -985,14 +1026,24 @@ func (api *liveAPI) websocket(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	api.broadcast(slugValue, encodeLiveWireEvent(struct {
-		Type        string                  `json:"type"`
-		Participant liveParticipantResponse `json:"participant"`
-	}{Type: "presence_joined", Participant: responseForLiveParticipant(joined.Participant)}), peer)
+		Type         string                  `json:"type"`
+		ConnectionID string                  `json:"connection_id"`
+		Participant  liveParticipantResponse `json:"participant"`
+	}{Type: "presence_joined", ConnectionID: joinIdentity.ConnectionID, Participant: responseForLiveParticipant(joined.Participant)}), peer)
 	unlockPublication()
 	defer func() {
 		api.peers.remove(peer)
 		_ = joined.Session.Disconnect(time.Now().UTC())
-		api.broadcast(slugValue, liveEvent("presence_left", map[string]any{"participant_id": joined.Participant.ID}), peer)
+		payload := map[string]any{"participant_id": joined.Participant.ID, "connection_id": joinIdentity.ConnectionID}
+		if state, stateErr := api.hub.State(slugValue); stateErr == nil {
+			for _, participant := range state.Participants {
+				if participant.ID == joined.Participant.ID {
+					payload["participant"] = responseForLiveParticipant(participant)
+					break
+				}
+			}
+		}
+		api.broadcast(slugValue, liveEvent("presence_left", payload), peer)
 		peer.stop(websocket.StatusNormalClosure, "")
 	}()
 	pingDone := make(chan struct{})
@@ -1013,7 +1064,11 @@ func (api *liveAPI) websocket(w http.ResponseWriter, r *http.Request) {
 		}
 		message, err := decodeLiveWireMessage(data)
 		if err != nil {
-			peer.enqueue(liveEvent("error", map[string]any{"code": "invalid_request", "message": "Invalid live message"}))
+			if errors.Is(err, errLiveUnsupportedOperation) {
+				peer.enqueue(liveEvent("error", map[string]any{"code": "unsupported_operation", "status": "validation", "message": "Unsupported live operation"}))
+			} else {
+				peer.enqueue(liveEvent("error", map[string]any{"code": "invalid_request", "status": "validation", "message": "Invalid live message"}))
+			}
 			continue
 		}
 		if message.Type == "presence" {
@@ -1100,6 +1155,9 @@ func (api *liveAPI) allowMessage(peer *livePeer) bool {
 
 func (api *liveAPI) handleWireMessage(ctx context.Context, peer *livePeer, message liveWireMessage) error {
 	now := time.Now().UTC()
+	if message.ClientID != nil && *message.ClientID != peer.clientID {
+		return live.ErrInvalidClientID
+	}
 	switch message.Type {
 	case "heartbeat":
 		return peer.session.Heartbeat(now)
@@ -1146,7 +1204,7 @@ func (api *liveAPI) handleWireMessage(ctx context.Context, peer *livePeer, messa
 			return err
 		}
 		api.broadcast(peer.slug, encodeLiveWireEvent(liveRoomModeEvent{
-			Type: "room_mode_changed", WatchOnly: state.WatchOnly,
+			Type: "room_mode_changed", WatchOnly: state.WatchOnly, Locked: state.WatchOnly,
 			Participants: responseForLiveState(state).Participants,
 		}), nil)
 		return nil
@@ -1170,14 +1228,14 @@ func (api *liveAPI) handleWireMessage(ctx context.Context, peer *livePeer, messa
 		if err != nil {
 			return err
 		}
-		api.broadcast(peer.slug, liveEvent("presence_updated", map[string]any{"participant": responseForLiveParticipant(participant)}), nil)
+		api.broadcast(peer.slug, liveEvent("presence_updated", map[string]any{"connection_id": peer.connectionID, "participant": responseForLiveParticipant(participant)}), nil)
 		return nil
 	case "participant_rename":
 		participant, err := peer.session.Rename(message.Name, now)
 		if err != nil {
 			return err
 		}
-		api.broadcast(peer.slug, liveEvent("participant_renamed", map[string]any{"participant": responseForLiveParticipant(participant)}), nil)
+		api.broadcast(peer.slug, liveEvent("participant_renamed", map[string]any{"connection_id": peer.connectionID, "participant": responseForLiveParticipant(participant)}), nil)
 		return nil
 	default:
 		return live.ErrOperationConflict
@@ -1208,11 +1266,11 @@ func classifyLiveOperationError(err error) (code, status string) {
 		return "message_too_large", "validation"
 	case errors.Is(err, live.ErrParticipantInactive), errors.Is(err, live.ErrParticipantNotFound), errors.Is(err, live.ErrSessionRemoved), errors.Is(err, live.ErrCreatorRequired), errors.Is(err, live.ErrWatchOnly):
 		return "unauthorized", "auth_required"
-	case errors.Is(err, live.ErrParticipantLimit):
+	case errors.Is(err, live.ErrParticipantLimit), errors.Is(err, live.ErrConnectionLimit):
 		return "room_limit_reached", "overloaded"
 	case errors.Is(err, live.ErrNameTaken):
 		return "name_taken", "validation"
-	case errors.Is(err, live.ErrDocumentNotFound), errors.Is(err, live.ErrDocumentDeleted), errors.Is(err, live.ErrLastDocument), errors.Is(err, live.ErrOperationConflict), errors.Is(err, live.ErrInvalidPresence), errors.Is(err, livecollab.ErrInvalidChangeSet), errors.Is(err, livecollab.ErrDuplicateOperation):
+	case errors.Is(err, live.ErrInvalidParticipantCredential), errors.Is(err, live.ErrInvalidConnectionID), errors.Is(err, live.ErrInvalidClientID), errors.Is(err, live.ErrInvalidNickname), errors.Is(err, live.ErrDocumentNotFound), errors.Is(err, live.ErrDocumentDeleted), errors.Is(err, live.ErrLastDocument), errors.Is(err, live.ErrOperationConflict), errors.Is(err, live.ErrInvalidPresence), errors.Is(err, livecollab.ErrInvalidChangeSet), errors.Is(err, livecollab.ErrDuplicateOperation):
 		return "invalid_request", "validation"
 	default:
 		return "service_unavailable", "retryable"
@@ -1222,10 +1280,20 @@ func classifyLiveOperationError(err error) (code, status string) {
 func (api *liveAPI) closeHandshakeError(conn *websocket.Conn, err error) {
 	code := websocket.StatusPolicyViolation
 	reason := "join failed"
-	if errors.Is(err, live.ErrRoomExpired) || errors.Is(err, live.ErrRoomNotFound) {
+	if errors.Is(err, live.ErrInvalidParticipantCredential) {
+		reason = "invalid participant credential"
+	} else if errors.Is(err, live.ErrInvalidConnectionID) {
+		reason = "invalid connection ID"
+	} else if errors.Is(err, live.ErrInvalidClientID) {
+		reason = "invalid client ID"
+	} else if errors.Is(err, live.ErrInvalidNickname) {
+		reason = "invalid preferred name"
+	} else if errors.Is(err, live.ErrRoomExpired) || errors.Is(err, live.ErrRoomNotFound) {
 		code, reason = websocket.StatusTryAgainLater, "room expired"
 	} else if errors.Is(err, live.ErrParticipantLimit) {
 		code, reason = websocket.StatusTryAgainLater, "room limit reached"
+	} else if errors.Is(err, live.ErrConnectionLimit) {
+		code, reason = websocket.StatusTryAgainLater, "connection limit reached"
 	}
 	_ = conn.Close(code, reason)
 }

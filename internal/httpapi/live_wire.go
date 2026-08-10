@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"time"
@@ -12,12 +13,16 @@ import (
 	"github.com/0atxl/0xbin/internal/livecollab"
 )
 
+var errLiveUnsupportedOperation = errors.New("unsupported live operation")
+
 // liveWireMessage is the canonical snake_case client-to-server envelope. The
 // type field selects which other fields are meaningful.
 type liveWireMessage struct {
 	Type              string                     `json:"type"`
 	SessionID         string                     `json:"session_id,omitempty"`
-	ClientID          string                     `json:"client_id,omitempty"`
+	ConnectionID      *string                    `json:"connection_id,omitempty"`
+	ClientID          *string                    `json:"client_id,omitempty"`
+	PreferredName     *string                    `json:"preferred_name,omitempty"`
 	OperationID       string                     `json:"operation_id,omitempty"`
 	DocumentID        string                     `json:"document_id,omitempty"`
 	BaseVersion       int                        `json:"base_version,omitempty"`
@@ -50,12 +55,15 @@ type liveJoinedEvent struct {
 	Participant       liveParticipantResponse    `json:"participant"`
 	Creator           bool                       `json:"creator"`
 	WatchOnly         bool                       `json:"watch_only"`
+	Locked            bool                       `json:"locked"`
+	ConnectionID      string                     `json:"connection_id"`
 	Reconnected       bool                       `json:"reconnected"`
 }
 
 type liveRoomModeEvent struct {
 	Type         string                    `json:"type"`
 	WatchOnly    bool                      `json:"watch_only"`
+	Locked       bool                      `json:"locked"`
 	Participants []liveParticipantResponse `json:"participants"`
 }
 
@@ -109,7 +117,7 @@ func decodeLiveWireMessage(data []byte) (liveWireMessage, error) {
 	switch message.Type {
 	case "join", "heartbeat", "ack", "push_changes", "document_create", "document_update", "document_delete", "document_reorder", "room_watch_only", "participant_remove", "presence", "participant_rename":
 	default:
-		return liveWireMessage{}, errors.New("unknown live wire message")
+		return liveWireMessage{}, fmt.Errorf("%w: %s", errLiveUnsupportedOperation, message.Type)
 	}
 	return message, nil
 }
@@ -129,6 +137,29 @@ func knownLiveRevisions(message liveWireMessage) (live.KnownRevisions, bool) {
 		known.Documents[document.DocumentID] = document.Revision
 	}
 	return known, true
+}
+
+func liveJoinIdentity(message liveWireMessage) (live.JoinIdentity, error) {
+	identity := live.JoinIdentity{
+		ParticipantCredential: message.SessionID,
+		ConnectionID:          message.SessionID,
+		ClientID:              message.SessionID,
+	}
+	if message.ConnectionID != nil {
+		identity.ConnectionID = *message.ConnectionID
+		identity.ClientID = *message.ConnectionID
+	}
+	if message.ClientID != nil {
+		identity.ClientID = *message.ClientID
+	}
+	if message.PreferredName != nil {
+		identity.PreferredName = *message.PreferredName
+		identity.PreferredNameSet = true
+	}
+	if err := identity.Validate(); err != nil {
+		return live.JoinIdentity{}, err
+	}
+	return identity, nil
 }
 
 func liveDocumentRevisions(state live.RoomState) []liveWireDocumentRevision {

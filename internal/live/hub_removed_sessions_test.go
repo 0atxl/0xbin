@@ -13,9 +13,11 @@ func TestRemovedSessionBookkeepingStaysBoundedAcrossRepeatedKicks(t *testing.T) 
 		snapshot: RoomSnapshot{ExpiresAt: now.Add(24 * time.Hour)},
 		participants: map[string]*participantState{
 			"creator": {
-				sessionID:  "creator-session",
-				generation: 1,
-				snapshot:   ParticipantSnapshot{ID: "creator", Nickname: "Creator", Status: ParticipantConnected, LastSeenAt: now},
+				sessionID: "creator-session",
+				connections: map[string]*connectionState{
+					"creator-connection": {id: "creator-connection", generation: 1, lastSeenAt: now},
+				},
+				snapshot: ParticipantSnapshot{ID: "creator", Nickname: "Creator", Status: ParticipantConnected, LastSeenAt: now},
 			},
 		},
 		sessions:        map[string]string{"creator-session": "creator"},
@@ -27,13 +29,15 @@ func TestRemovedSessionBookkeepingStaysBoundedAcrossRepeatedKicks(t *testing.T) 
 		participantID := fmt.Sprintf("participant-%04d", index)
 		sessionID := fmt.Sprintf("session-%04d", index)
 		room.participants[participantID] = &participantState{
-			sessionID:  sessionID,
-			generation: 1,
-			snapshot:   ParticipantSnapshot{ID: participantID, Nickname: participantID, Status: ParticipantConnected, LastSeenAt: now},
+			sessionID: sessionID,
+			connections: map[string]*connectionState{
+				participantID: {id: participantID, generation: 1, lastSeenAt: now},
+			},
+			snapshot: ParticipantSnapshot{ID: participantID, Nickname: participantID, Status: ParticipantConnected, LastSeenAt: now},
 		}
 		room.sessions[sessionID] = participantID
 		room.names[NameKey(participantID)] = participantID
-		if err := room.removeParticipant("creator", 1, true, participantID, now); err != nil {
+		if err := room.removeParticipant("creator", "creator-connection", 1, true, participantID, now); err != nil {
 			t.Fatalf("kick %d: %v", index, err)
 		}
 	}

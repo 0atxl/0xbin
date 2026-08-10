@@ -270,7 +270,7 @@ components:
         nickname: { type: string }
         access_class: { type: string, enum: [creator, collaborator, viewer] }
         can_edit: { type: boolean, description: Effective server-authoritative edit permission after applying the durable room lock. }
-        connection_count: { type: integer, minimum: 1, maximum: 8 }
+        connection_count: { type: integer, minimum: 0, maximum: 8 }
         role: { type: string, enum: [writer, watch_only], deprecated: true, description: Transitional derived alias retained for older clients. }
         joined_at: { type: string, format: date-time }
         color: { type: string }
