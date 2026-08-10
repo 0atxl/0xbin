@@ -4,9 +4,9 @@
 
 **Phases 0–3 complete (2026-08-10). Phase 4 is next and has not started.**
 
-This plan defines the bounded behavioral foundation that must be completed
-before the live-workspace visual pass, final verification, and merge. It does
-not reopen the general LiveBin feature scope.
+This plan defines the bounded behavioral foundation, one user-approved final
+live-workspace design pass, and the release gates that must be completed before
+merge. It does not reopen the general LiveBin feature scope.
 
 The existing live-sharing implementation and release-hardening work are
 complete. Phase 0 reconciled the former process-local creator authority,
@@ -47,6 +47,8 @@ Provide predictable browser identity and creator controls without accounts:
 - Stable access class separated from effective editing ability
 - Backward-compatible WebSocket rollout for already-open frontend tabs
 - Minimal frontend wiring needed to exercise the new behavior
+- One user-approved final live-workspace design pass after the Phase 6
+  behavioral gate
 - Removal of creator kick controls and participant-removal transport handling
 - Documentation, negative tests, concurrency tests, and release verification
 
@@ -58,8 +60,8 @@ Provide predictable browser identity and creator controls without accounts:
 - Durable cursor, heartbeat, connection, active-tab, or online/offline state
 - Cross-device identity synchronization
 - Shared active tab or shared scroll position
-- Cosmetic workspace restructuring; that begins only after this plan passes its
-  behavioral review gate
+- New product behavior, backend semantics, or protocol changes introduced under
+  cover of the visual design pass
 - Changes to paste routes, encryption, burn-after-read, expiry choices, slugs,
   or the companion CLI's existing paste contract
 
@@ -234,10 +236,12 @@ until the user requests a reset.
    cookies, or password material.
 8. Add tests with each backend phase and run focused Go and race verification.
 9. Add and run focused frontend tests with foundational frontend behavior. Run
-   the complete frontend/browser gate in Phase 8. The later cosmetic-work rule
-   about user-requested tests does not apply to this behavioral plan.
-10. Do not commit, push, merge, or begin cosmetic workspace work unless
-    explicitly requested.
+   the Phase 6 behavioral browser gate once before visual work and the complete
+   frontend/browser release gate in Phase 8.
+10. Do not begin Phase 6A until the user supplies or approves the final design
+    list. Batch its visual verification at the end instead of interrupting each
+    cosmetic edit with a full test run.
+11. Do not commit, push, merge, or deploy unless explicitly requested.
 
 ## 7. Implementation Phases
 
@@ -525,6 +529,50 @@ workspace redesign.
 - Code review shows no secret in local or session storage.
 - Manual inspection confirms no cosmetic scope expansion.
 - Focused frontend type, format, unit, and production-build checks pass.
+- A same-profile two-tab browser journey produces one participant with two
+  independent connections and cursors; closing one tab leaves the other active.
+- Reload and close/reopen preserve participant ID and nickname, while a separate
+  browser context produces a distinct participant.
+- Creator, collaborator, and viewer behavior matches the lock truth table;
+  reconnect grace begins only after the final connection closes.
+- This is the behavioral integration gate before visual work, not the final
+  release audit. Any failure is fixed before Phase 6A begins.
+
+## Phase 6A — Final live-workspace design pass
+
+**Objective:** Apply the user's final visual and interaction design to the
+already-correct workspace without changing authority, identity, or wire
+semantics.
+
+### Work
+
+- Freeze the passing Phase 6 behavioral baseline and implement only the
+  user-approved workspace design list.
+- Preserve the established minimal, editor-first philosophy and reuse existing
+  paste-page patterns where they improve consistency.
+- Refine layout, spacing, typography, responsive behavior, transitions, and
+  compact controls without adding explanatory clutter or hidden product
+  behavior.
+- Preserve semantic HTML, keyboard-complete operation, focus visibility,
+  screen-reader labels, reduced-motion behavior, and usable touch targets.
+- Keep errors in the shared toast treatment and keep participant, lock,
+  connection, and editor state server-authoritative.
+- Do not change the public API, WebSocket contract, storage model, role model,
+  reconnect semantics, or capacity rules as part of visual work.
+- Batch focused visual, responsive, accessibility, and browser checks after the
+  approved design list is complete rather than rerunning the full suite after
+  every cosmetic edit.
+
+### Gate
+
+- The user confirms the approved design list is represented accurately.
+- Desktop and narrow-viewport journeys remain usable in supported themes and
+  reduced-motion mode.
+- Keyboard, focus, toast, participant-roster, lock, tab, and editor interactions
+  pass focused browser review.
+- The Phase 6 identity, multi-tab, reconnect, cursor, capacity, and lock journeys
+  still pass with no backend or protocol change.
+- No unapproved feature or user-facing explanatory clutter was introduced.
 
 ## Phase 7 — Compatibility and documentation closure
 
@@ -603,8 +651,8 @@ audit cycle.
 
 ## Phase 8 — Final independent release audit and behavioral review
 
-**Objective:** Independently prove the finished foundation once, issue a release
-recommendation, and then stop before cosmetic work.
+**Objective:** Independently prove the exact finished release candidate once,
+issue a release recommendation, and then stop before merge or deployment.
 
 ### Audit method
 
@@ -651,7 +699,7 @@ recommendation, and then stop before cosmetic work.
 - No unresolved release blocker remains.
 - The independent audit reports its evidence and explicit release
   recommendation; a green result requires no further audit.
-- Stop and obtain user approval before beginning cosmetic workspace changes.
+- Stop and obtain user approval before merge or deployment.
 
 ## 8. Recommended Checkpoint Sequence
 
@@ -663,8 +711,9 @@ Commits are created only when explicitly requested. Recommended boundaries:
 4. `fix: make live room locking reversible`
 5. `refactor: remove participant removal controls`
 6. `feat: restore live browser identity`
-7. `refactor: simplify live identity and connection code`
-8. `test: cover live identity and authority boundaries`
+7. `style: finish live workspace design`
+8. `refactor: simplify live identity and connection code`
+9. `test: cover live identity and authority boundaries`
 
 Push only the feature branch. Before merge, require a green pull-request
 `verify` check on the final head and review the complete branch diff.
@@ -705,5 +754,4 @@ This plan is complete only when:
 - Paste, encryption, burn, slug, expiry, CLI, and one-service deployment
   contracts remain unchanged.
 - Backend, frontend, and browser gates pass.
-- The user approves the behavioral review and explicitly starts the cosmetic
-  live-workspace pass.
+- The user approves the final audit recommendation before merge or deployment.
