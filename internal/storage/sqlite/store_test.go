@@ -2,13 +2,16 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
 	"errors"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/0atxl/0xbin/db/migrations"
 	"github.com/0atxl/0xbin/internal/live"
 	"github.com/0atxl/0xbin/internal/paste"
 )
@@ -39,6 +42,72 @@ func TestOpenMigratesAndReopens(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
+}
+
+func TestOpenMigratesExistingPasteDatabaseWithoutDataLoss(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	dir := t.TempDir()
+	db, err := sql.Open("sqlite", filepath.Join(dir, "0xbin.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	initialSchema, err := migrations.Files.ReadFile("001_initial.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL) STRICT"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, string(initialSchema)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO schema_migrations(version, applied_at) VALUES (1, 0)"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO pastes (
+			slug, payload, is_encrypted, crypto_version, burn_after_read,
+			content_size, expires_at, created_at
+		) VALUES (?, ?, 0, NULL, 0, ?, ?, ?)`,
+		"calmbrightotter",
+		`{"version":1,"title":"kept","language":"text","content":"preserved"}`,
+		len("preserved"),
+		time.Date(2030, time.January, 1, 0, 0, 0, 0, time.UTC).Unix(),
+		time.Date(2026, time.August, 11, 0, 0, 0, 0, time.UTC).Unix(),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := Open(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	got, err := store.GetActive(ctx, "calmbrightotter", time.Date(2026, time.August, 12, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Payload.Title != "kept" || got.Payload.Content != "preserved" {
+		t.Fatalf("migrated paste payload = %#v", got.Payload)
+	}
+	var migrationsApplied, liveTables int
+	if err := store.DB().QueryRowContext(ctx, "SELECT count(*) FROM schema_migrations").Scan(&migrationsApplied); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DB().QueryRowContext(ctx, `
+		SELECT count(*) FROM sqlite_master
+		WHERE type = 'table' AND name IN ('live_rooms', 'live_documents', 'live_changes', 'live_operations')`,
+	).Scan(&liveTables); err != nil {
+		t.Fatal(err)
+	}
+	if migrationsApplied != 3 || liveTables != 4 {
+		t.Fatalf("migrated schema = %d migrations, %d live tables", migrationsApplied, liveTables)
+	}
 }
 
 func TestOpenRejectsNewerSchema(t *testing.T) {

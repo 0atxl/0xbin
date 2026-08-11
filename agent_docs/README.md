@@ -6,9 +6,10 @@ maintainers working on the project.
 
 The live-sharing extension is implemented through Steps 0A–13 of its
 implementation plan, and release-hardening Phases 0–10 are complete. Phases
-0–7A of the bounded browser-identity and creator-authority evolution are
-complete, including final design, compatibility closure, and bounded
-code-quality work. Phase 8, the final independent release audit, is next.
+0–8 of the bounded browser-identity and creator-authority evolution are
+complete, including final design, compatibility closure, bounded code-quality
+work, and the independent release audit. Final-head pull-request verification
+and user approval remain required before merge or deployment.
 
 The repository-level instructions remain in [`AGENTS.md`](../AGENTS.md) at
 the repository root because agent tools discover that filename there.

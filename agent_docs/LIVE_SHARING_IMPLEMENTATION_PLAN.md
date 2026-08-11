@@ -11,8 +11,9 @@ planned separately in
 and its contract, durable-storage, additive-identity, grouped-connection,
 lock-authority, kick-removal, minimal frontend-wiring, final design,
 compatibility/documentation, and bounded code-quality Phases 0–7A are
-complete. Phase 8, the final independent release audit, is next and has not
-started.
+complete. Phase 8, the final independent release audit and focused release-gate
+closure, is complete. Final-head pull-request verification and user approval
+remain required before merge or deployment.
 
 **Related:** [`spec.md`](../spec.md), [`docs/PRD.md`](../docs/PRD.md),
 [`agent_docs/TECHNICAL_DESIGN.md`](TECHNICAL_DESIGN.md),

@@ -2,7 +2,8 @@
 
 ## Status
 
-**Phases 0–7A complete (2026-08-11). Phase 8 is next and has not started.**
+**Phases 0–8 complete (2026-08-11). Awaiting final-head pull-request
+verification and user approval before merge or deployment.**
 
 This plan defines the bounded behavioral foundation, one user-approved final
 live-workspace design pass, and the release gates that must be completed before
@@ -816,12 +817,12 @@ audit cycle.
   lockfile-only update proposed by `npm audit fix --dry-run`. No framework,
   datastore, service, or runtime dependency was added in this pass.
 - Kept the visible Vite advisory as an accepted size risk rather than hiding
-  it. The live page is already a separate 65.64 kB minified chunk; the shared
-  entry is 547.71 kB minified / 175.21 kB gzip and contains the core paste
+  it. The live page is already a separate 66.25 kB minified / 19.90 kB gzip
+  chunk; the shared entry is 547.75 kB minified / 175.23 kB gzip and contains the core paste
   editor/viewer dependencies. Revisit only if measured initial-load performance
   fails its release target or another feature grows the shared entry.
 - `make format`, `make lint`, `make test`, `make test-race`, `make test-e2e`,
-  and `make build` pass. This includes 124 frontend tests, the full Go race
+  and `make build` pass. This includes 125 frontend tests, the full Go race
   suite, unchanged collaboration fixtures, the complete browser journey, and
   the embedded Go binary. The browser gate now waits for the asynchronously
   loaded LiveBin byte limit before asserting its value, removing a reproduced
@@ -879,6 +880,34 @@ issue a release recommendation, and then stop before merge or deployment.
 - The independent audit reports its evidence and explicit release
   recommendation; a green result requires no further audit.
 - Stop and obtain user approval before merge or deployment.
+
+### Completion record — 2026-08-11
+
+- The independent read-only audit found no critical or high-severity LiveBin
+  code defect. It identified one intermittent browser assertion and bounded
+  release-evidence gaps for simultaneous first use, several same-browser tabs,
+  restart recovery, capacity release, and upgrade migration.
+- The intermittent assertion was isolated to Playwright's bulk `fill()`
+  interaction with CodeMirror after collaborative cursor activity. The browser
+  journey now uses keyboard-equivalent editing and separately proves local
+  editor state, authoritative SQLite-backed HTTP state, and remote convergence.
+- The browser gate now covers two simultaneous first-open tabs with no stored
+  identity, three connections grouped under one browser participant, protected
+  creator authority and durable lock state across service restart, password
+  reauthentication after restart, viewer overflow, and capacity release after
+  reconnect grace.
+- SQLite integration coverage now starts from a populated version-1 paste
+  database, applies the live migrations, proves the paste is unchanged, and
+  verifies all live tables. The existing fresh-database and reopen checks remain.
+- The expanded browser gate passed twice consecutively before the final
+  repository gate. Focused multi-connection, final-disconnect, creator/lock,
+  persistence, and shutdown race matrices passed ten consecutive race-enabled
+  runs during the audit.
+- The final recommendation is `release with accepted risks` once the required
+  final-head pull-request `verify` job is green. Accepted risks remain the
+  documented Vite shared-chunk advisory and two development-only dependency
+  advisories; the shipped dependency audit is clean. No further general audit
+  is required without a concrete regression or scope change.
 
 ## 8. Recommended Checkpoint Sequence
 

@@ -146,28 +146,39 @@ async function installLiveSocketControl(page) {
 
 const dataDir = await mkdtemp(join(tmpdir(), "0xbin-e2e-"));
 const binaryPath = join(dataDir, "0xbin");
+const backendEnvironment = {
+  OXBIN_LISTEN_ADDR: `127.0.0.1:${apiPort}`,
+  OXBIN_BASE_URL: webOrigin,
+  OXBIN_DATA_DIR: dataDir,
+  OXBIN_LIVE_MAX_WRITERS: "2",
+  OXBIN_LIVE_MAX_VIEWERS: "1",
+  OXBIN_LIVE_MAX_PARTICIPANTS: "3",
+  OXBIN_LIVE_CREATE_RATE: "100/1h",
+  OXBIN_LIVE_CONNECTION_RATE: "600/1m",
+  OXBIN_LIVE_HEARTBEAT_INTERVAL: "5s",
+  OXBIN_LIVE_RECONNECT_GRACE: "5s",
+  OXBIN_LIVE_PARTICIPANT_TIMEOUT: "10s",
+};
+let backendProcess;
 let browser;
+
+async function startBackend() {
+  backendProcess = start(binaryPath, [], { env: backendEnvironment });
+  await waitFor(`${apiOrigin}/health/ready`);
+}
+
+async function restartBackend() {
+  assert.ok(backendProcess, "expected a running E2E backend");
+  await stopProcess(backendProcess);
+  await startBackend();
+}
+
 try {
   progress("building Go server");
   await execFileAsync("go", ["build", "-o", binaryPath, "./cmd/0xbin"], {
     cwd: root,
   });
-  start(binaryPath, [], {
-    env: {
-      OXBIN_LISTEN_ADDR: `127.0.0.1:${apiPort}`,
-      OXBIN_BASE_URL: webOrigin,
-      OXBIN_DATA_DIR: dataDir,
-      OXBIN_LIVE_MAX_WRITERS: "2",
-      OXBIN_LIVE_MAX_VIEWERS: "1",
-      OXBIN_LIVE_MAX_PARTICIPANTS: "3",
-      OXBIN_LIVE_CREATE_RATE: "100/1h",
-      OXBIN_LIVE_CONNECTION_RATE: "600/1m",
-      OXBIN_LIVE_HEARTBEAT_INTERVAL: "5s",
-      OXBIN_LIVE_RECONNECT_GRACE: "5s",
-      OXBIN_LIVE_PARTICIPANT_TIMEOUT: "10s",
-    },
-  });
-  await waitFor(`${apiOrigin}/health/ready`);
+  await startBackend();
   progress("backend ready");
   start(
     process.execPath,
@@ -654,8 +665,15 @@ try {
 
   const collaboratorContext = await browser.newContext();
   const collaborator = await collaboratorContext.newPage();
-  await collaborator.goto(liveRoomURL);
-  await expectLiveConnected(collaborator);
+  const simultaneousCollaboratorTab = await collaboratorContext.newPage();
+  await Promise.all([
+    collaborator.goto(liveRoomURL),
+    simultaneousCollaboratorTab.goto(liveRoomURL),
+  ]);
+  await Promise.all([
+    expectLiveConnected(collaborator),
+    expectLiveConnected(simultaneousCollaboratorTab),
+  ]);
   await page.waitForFunction(
     () => document.querySelectorAll(".live-participant-row").length === 2,
   );
@@ -668,6 +686,40 @@ try {
     new Set(participantIDs).size,
     2,
     "a separate browser context must receive a distinct participant",
+  );
+  await page.waitForFunction(() =>
+    [...document.querySelectorAll(".live-participant-row")].some(
+      (row) => row.getAttribute("data-connection-count") === "2",
+    ),
+  );
+  const simultaneousCredentials = await Promise.all([
+    collaborator.evaluate(() => {
+      const key = Object.keys(localStorage).find((candidate) =>
+        candidate.startsWith("0xbin.live.identity.v1:"),
+      );
+      return key ? JSON.parse(localStorage.getItem(key)).credential : undefined;
+    }),
+    simultaneousCollaboratorTab.evaluate(() => {
+      const key = Object.keys(localStorage).find((candidate) =>
+        candidate.startsWith("0xbin.live.identity.v1:"),
+      );
+      return key ? JSON.parse(localStorage.getItem(key)).credential : undefined;
+    }),
+  ]);
+  assert.ok(
+    simultaneousCredentials[0],
+    "simultaneous first-open tabs should persist a browser credential",
+  );
+  assert.equal(
+    simultaneousCredentials[0],
+    simultaneousCredentials[1],
+    "simultaneous first-open tabs must resolve to one browser participant",
+  );
+  await simultaneousCollaboratorTab.close();
+  await page.waitForFunction(() =>
+    [...document.querySelectorAll(".live-participant-row")].some(
+      (row) => row.getAttribute("data-connection-count") === "1",
+    ),
   );
   let rapidText = "shared rapid α🙂 edits";
   const collaboratorEditor = collaborator.locator(
@@ -766,7 +818,23 @@ try {
 
   const ownerEditor = page.locator(".live-code-editor .cm-content");
   const multilineText = `top\n${rapidText}`;
-  await ownerEditor.fill(multilineText);
+  await ownerEditor.click();
+  await ownerEditor.press("ControlOrMeta+A");
+  await ownerEditor.pressSequentially("top");
+  await ownerEditor.press("Enter");
+  await ownerEditor.pressSequentially(rapidText);
+  await assert.equal(
+    (await ownerEditor.locator(".cm-line").allTextContents()).join("\n"),
+    multilineText,
+    "the owner editor should apply the complete local multiline edit",
+  );
+  await page.waitForFunction(async (expected) => {
+    const slug = location.pathname.split("/").pop();
+    const response = await fetch(`/api/v1/live/${slug}`);
+    if (!response.ok) return false;
+    const snapshot = await response.json();
+    return snapshot.documents.some((document) => document.content === expected);
+  }, multilineText);
   await collaborator.waitForFunction((expected) => {
     const content = document.querySelector(".live-code-editor .cm-content");
     return (
@@ -858,6 +926,17 @@ try {
     coincidentLabelBounds[0].right <= coincidentLabelBounds[1].left,
     "coincident cursor labels should be laid out side by side",
   );
+  const thirdCollaboratorConnection = await collaboratorContext.newPage();
+  await thirdCollaboratorConnection.goto(liveRoomURL);
+  await expectLiveConnected(thirdCollaboratorConnection);
+  await page.locator(".live-connection-status").click();
+  await page.waitForFunction(() =>
+    [...document.querySelectorAll(".live-participant-row")].some(
+      (row) => row.getAttribute("data-connection-count") === "3",
+    ),
+  );
+  await page.locator(".live-connection-status").click();
+  await thirdCollaboratorConnection.close();
   await secondCollaboratorConnection.close();
   await page.locator(".live-connection-status").click();
   await expectVisible(page, "main");
@@ -1950,6 +2029,22 @@ try {
     true,
     "password renewal must preserve the creator capability cookie",
   );
+  await page.getByRole("button", { name: "Lock", exact: true }).click();
+  await expectVisible(page, "Unlock");
+  await page.locator(".live-connection-status").click();
+
+  progress(
+    "checking protected creator and lock recovery after service restart",
+  );
+  await restartBackend();
+  await expectVisible(page, "Room password");
+  await page.getByLabel("Room password").fill("correct horse");
+  await page.getByRole("button", { name: "Unlock" }).click();
+  await expectLiveConnected(page);
+  await page.locator(".live-connection-status").click();
+  await expectVisible(page, "Unlock");
+  await page.getByRole("button", { name: "Unlock", exact: true }).click();
+  await expectVisible(page, "Lock");
   await page.locator(".live-connection-status").click();
   progress("checking protected LiveBin password gate");
   const protectedContext = await browser.newContext();
@@ -2157,9 +2252,23 @@ try {
       !document.querySelector(".live-add-tab").disabled,
   );
 
+  progress("checking LiveBin viewer capacity release");
+  await viewerContext.close();
+  await owner.waitForFunction(
+    () =>
+      document
+        .querySelector(".live-connection-status")
+        ?.getAttribute("aria-label")
+        ?.includes("2 participants"),
+    undefined,
+    { timeout: 15_000 },
+  );
+  await overflow.reload();
+  await expectLiveConnected(overflow);
+  await expectVisible(overflow, "View only");
+
   await ownerContext.close();
   await writerContext.close();
-  await viewerContext.close();
   await overflowContext.close();
 
   progress("checking plaintext paste and search");
