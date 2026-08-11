@@ -1675,13 +1675,24 @@ svg {
   border-bottom: 0;
 }
 
+.live-room-bottom-status {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+
 .live-room-connection-copy {
   min-width: 74px;
   text-align: right;
 }
 
 .live-queue-warning {
+  max-width: min(260px, 32vw);
+  padding: 4px 7px;
   overflow: hidden;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface));
   color: var(--danger);
   font-size: 11px;
   text-overflow: ellipsis;
@@ -2293,6 +2304,14 @@ svg {
 
   .live-room-bottom-toolbar .toolbar-spacer {
     display: block;
+  }
+
+  .live-room-bottom-status {
+    gap: 6px;
+  }
+
+  .live-queue-warning {
+    max-width: min(170px, 42vw);
   }
 
   .live-room-bottom-toolbar .live-export-control,

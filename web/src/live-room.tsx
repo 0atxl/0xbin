@@ -1953,37 +1953,39 @@ export function LiveRoomWorkspace({
       </section>
 
       <footer className="live-room-toolbar live-room-bottom-toolbar">
-        {recovery ? (
-          <span className="live-queue-warning" role="alert">
-            {recovery.message}{" "}
-            <button
-              className="live-text-button"
-              type="button"
-              onClick={() => void copyRecoveryText()}
-            >
-              Copy recovery text
-            </button>
-          </span>
-        ) : queueFull ? (
-          <span className="live-queue-warning" role="status">
-            Editor paused while queued changes replay
-          </span>
-        ) : roomFull ? (
-          <span className="live-queue-warning" role="status">
-            Room is full
-          </span>
-        ) : !localCanEdit ? (
-          <span className="live-queue-warning" role="status">
-            {localAccessClass === "collaborator" && roomWatchOnly
-              ? "Room locked"
-              : "View only"}
-          </span>
-        ) : null}
         <div className="toolbar-spacer" />
-        <span className="byte-count">
-          {formatLiveBytes(roomBytes)} /{" "}
-          {formatLiveMebibytes(initialRoom.maxBytes)}
-        </span>
+        <div className="live-room-bottom-status">
+          {recovery ? (
+            <span className="live-queue-warning" role="alert">
+              {recovery.message}{" "}
+              <button
+                className="live-text-button"
+                type="button"
+                onClick={() => void copyRecoveryText()}
+              >
+                Copy recovery text
+              </button>
+            </span>
+          ) : queueFull ? (
+            <span className="live-queue-warning" role="status">
+              Editor paused while queued changes replay
+            </span>
+          ) : roomFull ? (
+            <span className="live-queue-warning" role="status">
+              Room is full
+            </span>
+          ) : !localCanEdit ? (
+            <span className="live-queue-warning" role="status">
+              {localAccessClass === "collaborator" && roomWatchOnly
+                ? "Room locked"
+                : "View only"}
+            </span>
+          ) : null}
+          <span className="byte-count">
+            {formatLiveBytes(roomBytes)} /{" "}
+            {formatLiveMebibytes(initialRoom.maxBytes)}
+          </span>
+        </div>
         <div className="live-export-control">
           <button
             className="primary-action"
