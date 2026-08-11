@@ -414,9 +414,87 @@ try {
   await participantPopover.waitFor({ state: "visible" });
   await page.locator(".live-code-editor .cm-content").click();
   await participantPopover.waitFor({ state: "hidden" });
-  const collaborator = await context.newPage();
+
+  progress("checking stable browser identity across tabs and reload");
+  await participantTrigger.click();
+  await participantPopover
+    .getByRole("button", { name: "Rename", exact: true })
+    .click();
+  await page.getByLabel("Temporary participant name").fill("Persistent Otter");
+  await page.getByLabel("Temporary participant name").press("Enter");
+  await expectVisible(page, "Persistent Otter");
+  const stableParticipantRow = page
+    .locator(".live-participant-row")
+    .filter({ hasText: "Persistent Otter" });
+  const stableParticipantID = await stableParticipantRow.getAttribute(
+    "data-participant-id",
+  );
+  assert.ok(stableParticipantID, "renamed participant should be authoritative");
+
+  const sameBrowserTab = await context.newPage();
+  await sameBrowserTab.goto(liveRoomURL);
+  await expectVisible(sameBrowserTab, "Connected");
+  await stableParticipantRow.waitFor({ state: "visible" });
+  await assert.equal(
+    await page.locator(".live-participant-row").count(),
+    1,
+    "normal tabs in one browser must share one participant row",
+  );
+  const primaryIdentityEditor = page.locator(".live-code-editor .cm-content");
+  const secondaryIdentityEditor = sameBrowserTab.locator(
+    ".live-code-editor .cm-content",
+  );
+  await primaryIdentityEditor.click();
+  await primaryIdentityEditor.press("End");
+  await secondaryIdentityEditor.click();
+  await secondaryIdentityEditor.press("End");
+  await secondaryIdentityEditor.press("ArrowLeft");
+  await page.locator(".live-connection-status").click();
+  await page.waitForFunction(() => {
+    const row = document.querySelector(".live-participant-row");
+    return (
+      row?.getAttribute("data-connection-count") === "2" &&
+      row?.getAttribute("data-cursor-count") === "2"
+    );
+  });
+  await sameBrowserTab.close();
+  await page.waitForFunction(() => {
+    const row = document.querySelector(".live-participant-row");
+    return (
+      row?.getAttribute("data-connection-count") === "1" &&
+      row.textContent?.includes("connected")
+    );
+  });
+  await page.reload();
+  await expectVisible(page, "Connected");
+  await page.locator(".live-connection-status").click();
+  const reloadedParticipantRow = page
+    .locator(".live-participant-row")
+    .filter({ hasText: "Persistent Otter" });
+  await reloadedParticipantRow.waitFor({ state: "visible" });
+  assert.equal(
+    await reloadedParticipantRow.getAttribute("data-participant-id"),
+    stableParticipantID,
+    "reload must preserve participant ID and authoritative nickname",
+  );
+
+  const collaboratorContext = await browser.newContext();
+  const collaborator = await collaboratorContext.newPage();
   await collaborator.goto(liveRoomURL);
   await expectVisible(collaborator, "Connected");
+  await page.waitForFunction(
+    () => document.querySelectorAll(".live-participant-row").length === 2,
+  );
+  const participantIDs = await page
+    .locator(".live-participant-row")
+    .evaluateAll((rows) =>
+      rows.map((row) => row.getAttribute("data-participant-id")),
+    );
+  assert.equal(
+    new Set(participantIDs).size,
+    2,
+    "a separate browser context must receive a distinct participant",
+  );
   const rapidText = "shared rapid α🙂 edits";
   const collaboratorEditor = collaborator.locator(
     ".live-code-editor .cm-content",
@@ -459,7 +537,7 @@ try {
     true,
     "rapid local and remote edits should match the authoritative HTTP snapshot",
   );
-  await context.setOffline(true);
+  await collaboratorContext.setOffline(true);
   const offlineText = `${rapidText} offline replay`;
   await collaboratorEditor.pressSequentially(" offline replay");
   await assert.equal(
@@ -467,12 +545,12 @@ try {
     offlineText,
     "offline text should remain available in the local editor",
   );
-  await page.waitForFunction(
+  await collaborator.waitForFunction(
     () =>
       document.querySelector(".live-add-tab") instanceof HTMLButtonElement &&
       document.querySelector(".live-add-tab").disabled,
   );
-  await context.setOffline(false);
+  await collaboratorContext.setOffline(false);
   await page.waitForFunction((expected) => {
     const content = document.querySelector(".live-code-editor .cm-content");
     if (!content) return false;
@@ -496,6 +574,7 @@ try {
     "offline edits should converge after reconnect without structural changes",
   );
   await collaborator.close();
+  await collaboratorContext.close();
   await page.waitForFunction(
     () =>
       document.querySelector(".live-participant-count")?.textContent?.trim() ===
@@ -1420,7 +1499,7 @@ try {
   await writer.locator(".live-connection-status").click();
   const writerName = await writer
     .locator(".live-participant-row")
-    .filter({ hasText: "You · writer" })
+    .filter({ hasText: "You · collaborator" })
     .locator("strong")
     .textContent();
   assert.ok(writerName, "writer should have a participant identity");
@@ -1428,7 +1507,7 @@ try {
 
   const viewer = await viewerContext.newPage();
   await viewer.goto(accessRoomURL);
-  await expectVisible(viewer, "You’re watching this room");
+  await expectVisible(viewer, "You’re viewing this room.");
   await viewer.waitForFunction(
     () =>
       document.querySelector(".live-add-tab") instanceof HTMLButtonElement &&
@@ -1445,14 +1524,17 @@ try {
   await expectVisible(overflow, "Room is full. Ask someone to leave");
 
   await owner.locator(".live-connection-status").click();
-  await owner
-    .getByRole("button", { name: "Make room watch-only", exact: true })
-    .click();
-  await expectVisible(writer, "You’re watching this room");
+  await owner.getByRole("button", { name: "Lock", exact: true }).click();
+  await expectVisible(writer, "This room is locked.");
   await writer.waitForFunction(
     () =>
       document.querySelector(".live-add-tab") instanceof HTMLButtonElement &&
       document.querySelector(".live-add-tab").disabled,
+  );
+  await owner.waitForFunction(
+    () =>
+      document.querySelector(".live-add-tab") instanceof HTMLButtonElement &&
+      !document.querySelector(".live-add-tab").disabled,
   );
   assert.equal(
     await owner
@@ -1461,7 +1543,14 @@ try {
     0,
     "live rooms must not expose participant-removal controls",
   );
-  await expectVisible(writer, "You’re watching this room");
+  await owner.getByRole("button", { name: "Unlock", exact: true }).click();
+  await expectVisible(writer, "You can edit this room.");
+  await expectVisible(viewer, "You’re viewing this room.");
+  await writer.waitForFunction(
+    () =>
+      document.querySelector(".live-add-tab") instanceof HTMLButtonElement &&
+      !document.querySelector(".live-add-tab").disabled,
+  );
 
   await ownerContext.close();
   await writerContext.close();

@@ -55,6 +55,7 @@ import {
 } from "./live-connection";
 import { LiveResyncController } from "./live-resync";
 import { beginLoading } from "./loading";
+import { saveLiveBrowserNickname } from "./live-identity";
 import {
   LiveCollaborativeEditor as WorkspaceEditor,
   makeLiveEditorState,
@@ -72,7 +73,9 @@ type LiveConnection = LiveConnectionState;
 export function LiveRoomWorkspace({
   initialRoom,
   clientID,
+  connectionID,
   sessionID,
+  preferredName,
   onStatus,
   onSaveAsPaste,
   onReauthenticate,
@@ -81,7 +84,9 @@ export function LiveRoomWorkspace({
 }: {
   initialRoom: LiveRoomSnapshot;
   clientID: string;
+  connectionID: string;
   sessionID: string;
+  preferredName?: string;
   onStatus: (message: string) => void;
   onSaveAsPaste: (draft: {
     title: string;
@@ -104,7 +109,9 @@ export function LiveRoomWorkspace({
   const activeDocumentRef = useRef(activeDocumentID);
   const [participants, setParticipants] = useState<LiveParticipant[]>([]);
   const [localParticipantID, setLocalParticipantID] = useState("");
-  const [localRole, setLocalRole] = useState<LiveParticipant["role"]>("writer");
+  const [localCanEdit, setLocalCanEdit] = useState(true);
+  const [localAccessClass, setLocalAccessClass] =
+    useState<LiveParticipant["accessClass"]>("collaborator");
   const [creator, setCreator] = useState(false);
   const [roomWatchOnly, setRoomWatchOnly] = useState(false);
   const [roomFull, setRoomFull] = useState(false);
@@ -155,7 +162,7 @@ export function LiveRoomWorkspace({
   const recoveryRef = useRef(false);
   const metadataOperationRef = useRef("");
   const localParticipantIDRef = useRef("");
-  const localRoleRef = useRef<LiveParticipant["role"]>("writer");
+  const localCanEditRef = useRef(true);
   const queueFullRef = useRef(false);
   const reauthenticationGenerationRef = useRef(reauthenticationGeneration);
   const statusRef = useRef(onStatus);
@@ -190,9 +197,10 @@ export function LiveRoomWorkspace({
     return connectionControllerRef.current?.send(message) ?? false;
   }
 
-  function setLocalParticipantRole(role: LiveParticipant["role"]) {
-    localRoleRef.current = role;
-    setLocalRole(role);
+  function setLocalParticipantAuthority(participant: LiveParticipant) {
+    localCanEditRef.current = participant.canEdit;
+    setLocalCanEdit(participant.canEdit);
+    setLocalAccessClass(participant.accessClass);
   }
 
   function setQueueBlocked(blocked: boolean) {
@@ -610,7 +618,12 @@ export function LiveRoomWorkspace({
         setParticipants(event.participants);
         localParticipantIDRef.current = event.participant.id;
         setLocalParticipantID(event.participant.id);
-        setLocalParticipantRole(event.participant.role);
+        setLocalParticipantAuthority(event.participant);
+        saveLiveBrowserNickname(
+          initialRoom.slug,
+          sessionID,
+          event.participant.nickname,
+        );
         setCreator(event.creator);
         setRoomWatchOnly(event.watchOnly);
         setRoomFull(false);
@@ -643,23 +656,45 @@ export function LiveRoomWorkspace({
           next.push(event.participant);
           return next;
         });
+        if (
+          event.type === "participant_renamed" &&
+          event.participant.id === localParticipantIDRef.current
+        ) {
+          saveLiveBrowserNickname(
+            initialRoom.slug,
+            sessionID,
+            event.participant.nickname,
+          );
+        }
         return;
-      case "presence_left":
-        setParticipants((current) =>
-          current.map((participant) =>
+      case "presence_left": {
+        const remainingParticipant = event.participant;
+        setParticipants((current) => {
+          if (remainingParticipant) {
+            return current.map((participant) =>
+              participant.id === event.participantID
+                ? remainingParticipant
+                : participant,
+            );
+          }
+          return current.map((participant) =>
             participant.id === event.participantID
               ? { ...participant, status: "connection_lost" }
               : participant,
-          ),
-        );
+          );
+        });
+        if (remainingParticipant?.id === localParticipantIDRef.current) {
+          setLocalParticipantAuthority(remainingParticipant);
+        }
         return;
+      }
       case "room_mode_changed": {
         setParticipants(event.participants);
         setRoomWatchOnly(event.watchOnly);
         const local = event.participants.find(
           (participant) => participant.id === localParticipantIDRef.current,
         );
-        if (local) setLocalParticipantRole(local.role);
+        if (local) setLocalParticipantAuthority(local);
         return;
       }
       case "participant_removed":
@@ -711,7 +746,7 @@ export function LiveRoomWorkspace({
       connectionRef.current !== "connected" ||
       resyncingRef.current ||
       recoveryRef.current ||
-      localRoleRef.current !== "writer"
+      !localCanEditRef.current
     )
       return;
     const generation = connectionGenerationRef.current;
@@ -787,7 +822,7 @@ export function LiveRoomWorkspace({
       connection !== "connected" ||
       metadataBusy ||
       recoveryRef.current ||
-      localRoleRef.current !== "writer"
+      !localCanEditRef.current
     )
       return;
     const operationID = randomLiveID("meta-");
@@ -1149,9 +1184,11 @@ export function LiveRoomWorkspace({
       join: () =>
         liveJoinMessage(
           sessionID,
+          connectionID,
           clientID,
           metadataRevisionRef.current,
           documentsRef.current,
+          preferredName,
         ),
       onMessage: (data) => {
         try {
@@ -1278,7 +1315,7 @@ export function LiveRoomWorkspace({
   const readOnly =
     authenticationRequired ||
     queueFull ||
-    localRole !== "writer" ||
+    !localCanEdit ||
     roomFull ||
     !!recovery;
   const structuralDisabled =
@@ -1286,7 +1323,7 @@ export function LiveRoomWorkspace({
     connection !== "connected" ||
     metadataBusy ||
     resyncing ||
-    localRole !== "writer" ||
+    !localCanEdit ||
     roomFull ||
     !!recovery;
   const currentIndex = activeDocument
@@ -1361,7 +1398,13 @@ export function LiveRoomWorkspace({
                   <p>No other participants</p>
                 ) : (
                   participants.map((participant) => (
-                    <div className="live-participant-row" key={participant.id}>
+                    <div
+                      className="live-participant-row"
+                      key={participant.id}
+                      data-participant-id={participant.id}
+                      data-connection-count={participant.connectionCount}
+                      data-cursor-count={participant.cursors.length}
+                    >
                       <span
                         className="live-participant-colour"
                         style={{
@@ -1377,10 +1420,12 @@ export function LiveRoomWorkspace({
                           {participant.id === localParticipantID
                             ? "You · "
                             : ""}
-                          {participant.role === "watch_only"
-                            ? "watch-only · "
-                            : "writer · "}
-                          {participant.status.replace("_", " ")} ·{" "}
+                          {participant.accessClass} ·{" "}
+                          {participant.canEdit ? "can edit" : "view only"} ·{" "}
+                          {participant.connectionCount === 1
+                            ? "1 tab"
+                            : `${participant.connectionCount} tabs`}{" "}
+                          · {participant.status.replace("_", " ")} ·{" "}
                           {documents.find(
                             (document) =>
                               document.id === participant.currentTab,
@@ -1400,19 +1445,18 @@ export function LiveRoomWorkspace({
                       {initialRoom.maxViewers} viewers (
                       {initialRoom.maxParticipants} total)
                     </small>
-                    {roomWatchOnly ? (
-                      <small>All current participants are watch-only.</small>
-                    ) : (
-                      <button
-                        className="live-text-button"
-                        type="button"
-                        onClick={() =>
-                          send({ type: "room_watch_only", watch_only: true })
-                        }
-                      >
-                        Make room watch-only
-                      </button>
-                    )}
+                    <button
+                      className="live-text-button"
+                      type="button"
+                      onClick={() =>
+                        send({
+                          type: "room_watch_only",
+                          watch_only: !roomWatchOnly,
+                        })
+                      }
+                    >
+                      {roomWatchOnly ? "Unlock" : "Lock"}
+                    </button>
                   </div>
                 ) : null}
                 {localParticipantID ? (
@@ -1587,9 +1631,11 @@ export function LiveRoomWorkspace({
           <span className="live-queue-warning" role="status">
             Room is full. Ask someone to leave and reopen the link.
           </span>
-        ) : localRole === "watch_only" ? (
+        ) : !localCanEdit ? (
           <span className="live-queue-warning" role="status">
-            You’re watching this room. Ask the creator for a writable session.
+            {localAccessClass === "collaborator" && roomWatchOnly
+              ? "This room is locked. You can view changes until it is unlocked."
+              : "You’re viewing this room."}
           </span>
         ) : (
           <span className="live-room-connection-copy" role="status">

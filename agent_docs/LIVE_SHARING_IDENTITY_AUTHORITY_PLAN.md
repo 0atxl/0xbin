@@ -2,7 +2,7 @@
 
 ## Status
 
-**Phases 0–5 complete (2026-08-11). Phase 6 is next and has not started.**
+**Phases 0–6 complete (2026-08-11). Phase 6A is next and has not started.**
 
 This plan defines the bounded behavioral foundation, one user-approved final
 live-workspace design pass, and the release gates that must be completed before
@@ -581,6 +581,31 @@ workspace redesign.
   reconnect grace begins only after the final connection closes.
 - This is the behavioral integration gate before visual work, not the final
   release audit. Any failure is fixed before Phase 6A begins.
+
+### Completion record — 2026-08-11
+
+- Added a versioned, room-scoped browser identity stored in `localStorage`,
+  with per-page connection and operation IDs. Concurrent first-use tabs are
+  serialized with the browser lock manager; storage denial or corruption falls
+  back silently to an in-memory identity.
+- Persisted only the opaque browser credential and the last authoritative
+  nickname. Browser coverage confirms creator/session capabilities remain in
+  room-scoped HttpOnly cookies and do not enter local or session storage.
+- Wired the grouped participant roster to show creator, collaborator, or viewer
+  access plus connection-aware cursor state. Closing one of two same-profile
+  tabs now applies the authoritative aggregate participant snapshot instead of
+  incorrectly marking the remaining connection lost.
+- Replaced the one-way workspace mode action with Lock/Unlock. The creator
+  remains editable while locked, collaborators become read-only until unlock,
+  and viewers remain read-only. No participant-removal control is present.
+- Added focused identity, wire-decoding, cursor, and connection cases. The
+  browser gate covers same-profile grouping, independent per-tab cursors,
+  reload/reopen identity and nickname persistence, distinct browser contexts,
+  final-connection lifecycle behavior, and the creator/collaborator/viewer lock
+  truth table.
+- `make format`, `make lint`, `make test-race`, `make build`, and
+  `make test-e2e` pass. Phase 6A remains intentionally unstarted pending the
+  final live-workspace design pass.
 
 ## Phase 6A — Final live-workspace design pass
 

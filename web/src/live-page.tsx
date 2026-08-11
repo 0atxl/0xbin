@@ -22,6 +22,10 @@ import { beginLoading } from "./loading";
 import { utf8Bytes } from "./create";
 import { LiveRoomWorkspace } from "./live-room";
 import { randomLiveID } from "./live-collab";
+import {
+  resolveLiveBrowserIdentity,
+  type LiveBrowserIdentity,
+} from "./live-identity";
 
 const fallbackLiveServiceConfig: LiveServiceConfig = {
   maxBytes: fallbackLiveRoomBytes,
@@ -323,7 +327,19 @@ function LiveRoomPage({
   const [reauthenticationGeneration, setReauthenticationGeneration] =
     useState(0);
   const clientID = useRef(randomLiveID("client-")).current;
-  const sessionID = useRef(randomLiveID("session-")).current;
+  const connectionID = useRef(randomLiveID("connection-")).current;
+  const [browserIdentity, setBrowserIdentity] = useState<LiveBrowserIdentity>();
+
+  useEffect(() => {
+    let active = true;
+    setBrowserIdentity(undefined);
+    void resolveLiveBrowserIdentity(slug).then((identity) => {
+      if (active) setBrowserIdentity(identity);
+    });
+    return () => {
+      active = false;
+    };
+  }, [slug]);
 
   useEffect(() => {
     onSecurityGateChange(state === "password");
@@ -468,6 +484,9 @@ function LiveRoomPage({
     ) : null;
 
   if (!room) return passwordGate;
+  if (!browserIdentity) {
+    return <LoadingAnnouncement label="Loading live identity…" />;
+  }
 
   return (
     <>
@@ -475,7 +494,9 @@ function LiveRoomPage({
         <LiveRoomWorkspace
           initialRoom={room}
           clientID={clientID}
-          sessionID={sessionID}
+          connectionID={connectionID}
+          sessionID={browserIdentity.credential}
+          preferredName={browserIdentity.nickname}
           onStatus={onStatus}
           onSaveAsPaste={onSaveAsPaste}
           authenticationRequired={state === "password"}

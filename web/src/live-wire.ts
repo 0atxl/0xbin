@@ -7,14 +7,22 @@ export type LiveCursor = {
   head: number;
 };
 
+export type LiveConnectionCursor = LiveCursor & {
+  connectionID: string;
+};
+
 export type LiveParticipant = {
   id: string;
   nickname: string;
   role: "writer" | "watch_only";
+  accessClass: "creator" | "collaborator" | "viewer";
+  canEdit: boolean;
+  connectionCount: number;
   joinedAt: string;
   color: string;
   currentTab: string;
   cursor?: LiveCursor;
+  cursors: LiveConnectionCursor[];
   status: "connected" | "connection_lost" | "offline";
   lastSeenAt: string;
 };
@@ -79,7 +87,11 @@ export type LiveWireEvent =
       type: "presence_joined" | "presence_updated" | "participant_renamed";
       participant: LiveParticipant;
     }
-  | { type: "presence_left"; participantID: string }
+  | {
+      type: "presence_left";
+      participantID: string;
+      participant?: LiveParticipant;
+    }
   | {
       type: "room_mode_changed";
       watchOnly: boolean;
@@ -101,14 +113,18 @@ export type LiveWireEvent =
 
 export function liveJoinMessage(
   sessionID: string,
+  connectionID: string,
   clientID: string,
   metadataRevision: number,
   documents: LiveRoomDocument[],
+  preferredName?: string,
 ) {
   return {
     type: "join" as const,
     session_id: sessionID,
+    connection_id: connectionID,
     client_id: clientID,
+    ...(preferredName ? { preferred_name: preferredName } : {}),
     metadata_revision: metadataRevision,
     document_revisions: documents.map((document) => ({
       document_id: document.id,
@@ -233,10 +249,20 @@ export function decodeLiveWireEvent(value: unknown): LiveWireEvent | undefined {
       const participant = decodeParticipant(event.participant);
       return participant ? { type: event.type, participant } : undefined;
     }
-    case "presence_left":
-      return typeof event.participant_id === "string"
-        ? { type: "presence_left", participantID: event.participant_id }
-        : undefined;
+    case "presence_left": {
+      if (typeof event.participant_id !== "string") return undefined;
+      const participant =
+        event.participant === undefined
+          ? undefined
+          : decodeParticipant(event.participant);
+      return event.participant !== undefined && !participant
+        ? undefined
+        : {
+            type: "presence_left",
+            participantID: event.participant_id,
+            ...(participant ? { participant } : {}),
+          };
+    }
     case "room_mode_changed": {
       const participants = array(event.participants)?.map(decodeParticipant);
       return typeof event.watch_only === "boolean" &&
@@ -338,19 +364,54 @@ function decodeParticipant(value: unknown): LiveParticipant | undefined {
     participant.cursor === undefined
       ? undefined
       : decodeCursor(participant.cursor);
-  if (!joinedAt || !lastSeenAt || (participant.cursor !== undefined && !cursor))
+  const decodedCursors =
+    participant.cursors === undefined
+      ? []
+      : array(participant.cursors)?.map(decodeConnectionCursor);
+  const accessClass = isParticipantAccessClass(participant.access_class)
+    ? participant.access_class
+    : participant.role === "writer"
+      ? "collaborator"
+      : "viewer";
+  const canEdit =
+    typeof participant.can_edit === "boolean"
+      ? participant.can_edit
+      : participant.role === "writer";
+  const connectionCount = nonnegativeInteger(participant.connection_count) ?? 1;
+  if (
+    !joinedAt ||
+    !lastSeenAt ||
+    (participant.cursor !== undefined && !cursor) ||
+    !decodedCursors ||
+    decodedCursors.some((value) => !value) ||
+    connectionCount < 1
+  )
     return undefined;
   return {
     id: participant.id as string,
     nickname: participant.nickname as string,
     role: participant.role,
+    accessClass,
+    canEdit,
+    connectionCount,
     color: participant.color as string,
     currentTab: participant.current_tab as string,
     joinedAt,
     lastSeenAt,
     ...(cursor ? { cursor } : {}),
+    cursors: decodedCursors as LiveConnectionCursor[],
     status: participant.status,
   };
+}
+
+function decodeConnectionCursor(
+  value: unknown,
+): LiveConnectionCursor | undefined {
+  const cursor = record(value);
+  const decoded = decodeCursor(value);
+  return cursor && typeof cursor.connection_id === "string" && decoded
+    ? { connectionID: cursor.connection_id, ...decoded }
+    : undefined;
 }
 
 function decodeCursor(value: unknown): LiveCursor | undefined {
@@ -405,4 +466,10 @@ function isParticipantStatus(
 
 function isParticipantRole(value: unknown): value is LiveParticipant["role"] {
   return value === "writer" || value === "watch_only";
+}
+
+function isParticipantAccessClass(
+  value: unknown,
+): value is LiveParticipant["accessClass"] {
+  return value === "creator" || value === "collaborator" || value === "viewer";
 }

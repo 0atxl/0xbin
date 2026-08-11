@@ -4,20 +4,29 @@ import { decodeLiveWireEvent, liveJoinMessage } from "./live-wire";
 describe("live WebSocket wire decoder", () => {
   it("builds a canonical snake_case join from the HTTP snapshot revisions", () => {
     expect(
-      liveJoinMessage("session-1", "client-1", 3, [
-        {
-          id: "main",
-          name: "main",
-          language: "plaintext",
-          content: "hello",
-          revision: 4,
-          position: 0,
-        },
-      ]),
+      liveJoinMessage(
+        "session-1",
+        "connection-1",
+        "client-1",
+        3,
+        [
+          {
+            id: "main",
+            name: "main",
+            language: "plaintext",
+            content: "hello",
+            revision: 4,
+            position: 0,
+          },
+        ],
+        "Quiet Otter",
+      ),
     ).toEqual({
       type: "join",
       session_id: "session-1",
+      connection_id: "connection-1",
       client_id: "client-1",
+      preferred_name: "Quiet Otter",
       metadata_revision: 3,
       document_revisions: [{ document_id: "main", revision: 4 }],
     });
@@ -38,6 +47,9 @@ describe("live WebSocket wire decoder", () => {
             id: "p-1",
             nickname: "calm otter",
             role: "writer",
+            access_class: "creator",
+            can_edit: true,
+            connection_count: 2,
             color: "#123456",
             current_tab: "main",
             joined_at: "2026-08-08T10:00:00+00:00",
@@ -49,17 +61,30 @@ describe("live WebSocket wire decoder", () => {
               anchor: 1,
               head: 3,
             },
+            cursors: [
+              {
+                connection_id: "tab-one",
+                document_id: "main",
+                revision: 2,
+                anchor: 1,
+                head: 3,
+              },
+            ],
           },
         ],
         participant: {
           id: "p-1",
           nickname: "calm otter",
           role: "writer",
+          access_class: "creator",
+          can_edit: true,
+          connection_count: 2,
           color: "#123456",
           current_tab: "main",
           joined_at: "2026-08-08T10:00:00+00:00",
           last_seen_at: "2026-08-08T10:01:00+00:00",
           status: "connected",
+          cursors: [],
         },
       }),
     ).toMatchObject({
@@ -71,8 +96,20 @@ describe("live WebSocket wire decoder", () => {
       participants: [
         {
           currentTab: "main",
+          accessClass: "creator",
+          canEdit: true,
+          connectionCount: 2,
           joinedAt: "2026-08-08T10:00:00.000Z",
           cursor: { documentID: "main", revision: 2, anchor: 1, head: 3 },
+          cursors: [
+            {
+              connectionID: "tab-one",
+              documentID: "main",
+              revision: 2,
+              anchor: 1,
+              head: 3,
+            },
+          ],
         },
       ],
     });
@@ -109,6 +146,23 @@ describe("live WebSocket wire decoder", () => {
         participants: [{ ...participant, role: "owner" }],
       }),
     ).toBeUndefined();
+    expect(
+      decodeLiveWireEvent({
+        type: "presence_left",
+        participant_id: "p-1",
+        participant: {
+          ...participant,
+          access_class: "collaborator",
+          can_edit: true,
+          connection_count: 1,
+          cursors: [],
+        },
+      }),
+    ).toMatchObject({
+      type: "presence_left",
+      participantID: "p-1",
+      participant: { connectionCount: 1, status: "connected" },
+    });
   });
 
   it("rejects malformed participant, revision, and structural wire fields", () => {

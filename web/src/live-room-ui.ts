@@ -39,19 +39,35 @@ export function liveRemoteCursors(
     .filter(
       (participant) =>
         participant.id !== localParticipantID &&
-        participant.status === "connected" &&
-        participant.currentTab === activeDocumentID &&
-        participant.cursor?.documentID === activeDocumentID &&
-        participant.cursor.revision <= syncedRevision,
+        participant.status === "connected",
     )
-    .map((participant) => ({
-      id: participant.id,
-      nickname: participant.nickname,
-      color: participant.color,
-      anchor: participant.cursor!.anchor,
-      head: participant.cursor!.head,
-      active: now - Date.parse(participant.lastSeenAt) < 5_000,
-    }));
+    .flatMap((participant) => {
+      const cursors =
+        participant.cursors.length > 0
+          ? participant.cursors
+          : participant.cursor && participant.currentTab === activeDocumentID
+            ? [
+                {
+                  connectionID: participant.id,
+                  ...participant.cursor,
+                },
+              ]
+            : [];
+      return cursors
+        .filter(
+          (cursor) =>
+            cursor.documentID === activeDocumentID &&
+            cursor.revision <= syncedRevision,
+        )
+        .map((cursor) => ({
+          id: `${participant.id}:${cursor.connectionID}`,
+          nickname: participant.nickname,
+          color: participant.color,
+          anchor: cursor.anchor,
+          head: cursor.head,
+          active: now - Date.parse(participant.lastSeenAt) < 5_000,
+        }));
+    });
 }
 
 export function nextLiveMenuItemIndex(

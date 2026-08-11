@@ -34,11 +34,23 @@ const participant = (
   nickname: "Other",
   color: "#112233",
   role: "writer",
+  accessClass: "collaborator",
+  canEdit: true,
+  connectionCount: 1,
   status: "connected",
   joinedAt: "2026-08-08T10:00:00Z",
   lastSeenAt: "2026-08-08T10:00:04Z",
   currentTab: "one",
   cursor: { documentID: "one", revision: 1, anchor: 2, head: 3 },
+  cursors: [
+    {
+      connectionID: "connection-other",
+      documentID: "one",
+      revision: 1,
+      anchor: 2,
+      head: 3,
+    },
+  ],
   ...overrides,
 });
 
@@ -50,15 +62,43 @@ describe("live room UI helpers", () => {
     expect(formatLiveRoomLifetime(90 * 60)).toBe("90m");
   });
 
-  it("removes stale and off-tab remote cursors when tabs change", () => {
+  it("renders connection-specific cursors and removes stale or off-tab cursors", () => {
     expect(
       liveRemoteCursors(
         [
           participant(),
-          participant({ id: "wrong-tab", currentTab: "two" }),
+          participant({
+            id: "multi-tab",
+            connectionCount: 2,
+            currentTab: "two",
+            cursors: [
+              {
+                connectionID: "tab-one",
+                documentID: "one",
+                revision: 1,
+                anchor: 4,
+                head: 4,
+              },
+              {
+                connectionID: "tab-two",
+                documentID: "two",
+                revision: 2,
+                anchor: 0,
+                head: 0,
+              },
+            ],
+          }),
           participant({
             id: "stale",
-            cursor: { documentID: "one", revision: 3, anchor: 0, head: 0 },
+            cursors: [
+              {
+                connectionID: "stale-tab",
+                documentID: "one",
+                revision: 3,
+                anchor: 0,
+                head: 0,
+              },
+            ],
           }),
         ],
         "local",
@@ -66,7 +106,10 @@ describe("live room UI helpers", () => {
         1,
         Date.parse("2026-08-08T10:00:06Z"),
       ),
-    ).toEqual([expect.objectContaining({ id: "other", active: true })]);
+    ).toEqual([
+      expect.objectContaining({ id: "other:connection-other", active: true }),
+      expect.objectContaining({ id: "multi-tab:tab-one", active: true }),
+    ]);
   });
 
   it("wraps export menu keyboard navigation and ignores unrelated keys", () => {
