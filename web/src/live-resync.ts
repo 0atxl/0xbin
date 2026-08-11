@@ -1,4 +1,4 @@
-export type LiveResyncReconcileResult = boolean | "terminal";
+type LiveResyncReconcileResult = boolean | "terminal";
 
 export type LiveResyncOptions<Snapshot, Event, Authority> = {
   request: (
@@ -25,7 +25,7 @@ export type LiveResyncOptions<Snapshot, Event, Authority> = {
   clearTimer?: (timer: number) => void;
 };
 
-export const liveResyncBufferLimit = 128;
+const liveResyncBufferLimit = 128;
 
 /**
  * Owns the bounded HTTP authority boundary for one live room. Each new

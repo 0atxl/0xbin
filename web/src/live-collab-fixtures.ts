@@ -1,6 +1,6 @@
 import { ChangeSet, EditorSelection, Text } from "@codemirror/state";
 
-export type ChangeSpec = {
+type ChangeSpec = {
   from: number;
   to?: number;
   insert?: string;
@@ -30,7 +30,7 @@ export type LiveCollabFixture = {
 
 // These cases are deliberately generated with ChangeSet.of rather than hand
 // encoding CodeMirror's JSON. The generated JSON is also replayed by Go tests.
-export const liveCollabFixtureSpecs: LiveCollabFixtureSpec[] = [
+const liveCollabFixtureSpecs: LiveCollabFixtureSpec[] = [
   {
     name: "insert-insert",
     document: "abcd",

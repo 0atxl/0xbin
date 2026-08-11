@@ -18,26 +18,23 @@ var errLiveUnsupportedOperation = errors.New("unsupported live operation")
 // liveWireMessage is the canonical snake_case client-to-server envelope. The
 // type field selects which other fields are meaningful.
 type liveWireMessage struct {
-	Type          string          `json:"type"`
-	SessionID     string          `json:"session_id,omitempty"`
-	ConnectionID  *string         `json:"connection_id,omitempty"`
-	ClientID      *string         `json:"client_id,omitempty"`
-	PreferredName *string         `json:"preferred_name,omitempty"`
-	OperationID   string          `json:"operation_id,omitempty"`
-	DocumentID    string          `json:"document_id,omitempty"`
-	BaseVersion   int             `json:"base_version,omitempty"`
-	Changes       json.RawMessage `json:"changes,omitempty"`
-	Name          string          `json:"name,omitempty"`
-	Language      string          `json:"language,omitempty"`
-	Content       string          `json:"content,omitempty"`
-	Order         []string        `json:"order,omitempty"`
-	CurrentTab    string          `json:"current_tab,omitempty"`
-	Revision      int             `json:"revision,omitempty"`
-	Anchor        int             `json:"anchor,omitempty"`
-	Head          int             `json:"head,omitempty"`
-	// ParticipantID remains only to decode the removed participant_remove
-	// operation during its compatibility window. It has no active authority path.
-	ParticipantID     string                     `json:"participant_id,omitempty"`
+	Type              string                     `json:"type"`
+	SessionID         string                     `json:"session_id,omitempty"`
+	ConnectionID      *string                    `json:"connection_id,omitempty"`
+	ClientID          *string                    `json:"client_id,omitempty"`
+	PreferredName     *string                    `json:"preferred_name,omitempty"`
+	OperationID       string                     `json:"operation_id,omitempty"`
+	DocumentID        string                     `json:"document_id,omitempty"`
+	BaseVersion       int                        `json:"base_version,omitempty"`
+	Changes           json.RawMessage            `json:"changes,omitempty"`
+	Name              string                     `json:"name,omitempty"`
+	Language          string                     `json:"language,omitempty"`
+	Content           string                     `json:"content,omitempty"`
+	Order             []string                   `json:"order,omitempty"`
+	CurrentTab        string                     `json:"current_tab,omitempty"`
+	Revision          int                        `json:"revision,omitempty"`
+	Anchor            int                        `json:"anchor,omitempty"`
+	Head              int                        `json:"head,omitempty"`
 	WatchOnly         bool                       `json:"watch_only,omitempty"`
 	MetadataRevision  int                        `json:"metadata_revision,omitempty"`
 	DocumentRevisions []liveWireDocumentRevision `json:"document_revisions,omitempty"`
@@ -112,7 +109,7 @@ func decodeLiveWireMessage(data []byte) (liveWireMessage, error) {
 		return liveWireMessage{}, errors.New("live wire message type is required")
 	}
 	switch message.Type {
-	case "join", "heartbeat", "ack", "push_changes", "document_create", "document_update", "document_delete", "document_reorder", "room_watch_only", "participant_remove", "presence", "participant_rename":
+	case "join", "heartbeat", "ack", "push_changes", "document_create", "document_update", "document_delete", "document_reorder", "room_watch_only", "presence", "participant_rename":
 	default:
 		return liveWireMessage{}, fmt.Errorf("%w: %s", errLiveUnsupportedOperation, message.Type)
 	}
@@ -137,17 +134,16 @@ func knownLiveRevisions(message liveWireMessage) (live.KnownRevisions, bool) {
 }
 
 func liveJoinIdentity(message liveWireMessage) (live.JoinIdentity, error) {
+	if message.ConnectionID == nil {
+		return live.JoinIdentity{}, live.ErrInvalidConnectionID
+	}
+	if message.ClientID == nil {
+		return live.JoinIdentity{}, live.ErrInvalidClientID
+	}
 	identity := live.JoinIdentity{
 		ParticipantCredential: message.SessionID,
-		ConnectionID:          message.SessionID,
-		ClientID:              message.SessionID,
-	}
-	if message.ConnectionID != nil {
-		identity.ConnectionID = *message.ConnectionID
-		identity.ClientID = *message.ConnectionID
-	}
-	if message.ClientID != nil {
-		identity.ClientID = *message.ClientID
+		ConnectionID:          *message.ConnectionID,
+		ClientID:              *message.ClientID,
 	}
 	if message.PreferredName != nil {
 		identity.PreferredName = *message.PreferredName

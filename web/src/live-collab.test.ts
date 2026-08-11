@@ -21,6 +21,7 @@ import {
   nextLiveOutboundUpdate,
   normalizeLiveDocuments,
   liveQueueState,
+  liveSnapshotUpdates,
   rebaseAfterAcceptedSnapshot,
 } from "./live-collab";
 
@@ -40,6 +41,15 @@ function document(
 }
 
 describe("live room client helpers", () => {
+  it("pads an HTTP snapshot across every skipped collaboration revision", () => {
+    const changes = ChangeSet.of({ from: 0, insert: "hello" }, 0);
+    const updates = liveSnapshotUpdates(changes, 3, 0);
+    expect(updates).toHaveLength(3);
+    expect(updates[0]?.changes.apply(Text.empty).toString()).toBe("hello");
+    expect(updates.slice(1).every((update) => update.changes.empty)).toBe(true);
+    expect(liveSnapshotUpdates(changes, 2, 2)).toEqual([]);
+  });
+
   it("bridges reconnect snapshots without changing equal documents", () => {
     expect(diffLiveDocuments("hello", "hello").empty).toBe(true);
     const changes = diffLiveDocuments("hello world", "hello brave world");

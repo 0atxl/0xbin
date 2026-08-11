@@ -59,6 +59,20 @@ export function formatLiveRoomLifetime(seconds: number): string {
   return `${seconds}s`;
 }
 
+export function liveInlineRenameWidth(value: string): string {
+  return `${Math.min(Math.max(Array.from(value).length, 8), 15)}ch`;
+}
+
+export function formatLiveMebibytes(bytes: number): string {
+  const mebibytes = bytes / (1 << 20);
+  return `${Number.isInteger(mebibytes) ? mebibytes : mebibytes.toFixed(2)} MiB`;
+}
+
+export function formatLiveBytes(bytes: number): string {
+  if (bytes >= 1 << 20) return formatLiveMebibytes(bytes);
+  return bytes < 1024 ? `${bytes} B` : `${(bytes / 1024).toFixed(1)} KiB`;
+}
+
 export function liveRemoteCursors(
   participants: LiveParticipant[],
   localParticipantID: string,

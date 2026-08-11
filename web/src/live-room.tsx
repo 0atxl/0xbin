@@ -28,6 +28,7 @@ import {
   diffLiveDocuments,
   livePasteExport,
   liveQueueState,
+  liveSnapshotUpdates,
   nextLiveOutboundUpdate,
   normalizeLiveDocuments,
   randomLiveID,
@@ -65,6 +66,9 @@ import {
 } from "./live-editor";
 import {
   aggregateLiveRoomBytes,
+  formatLiveBytes,
+  formatLiveMebibytes,
+  liveInlineRenameWidth,
   liveRemoteCursors,
   nextLiveTabName,
   nextLiveMenuItemIndex,
@@ -291,7 +295,7 @@ export function LiveRoomWorkspace({
     }
   }
 
-  function applyToEditor(documentID: string, update: TransactionUpdate) {
+  function applyToEditor(documentID: string, update: Update) {
     const state = editorStatesRef.current.get(documentID);
     if (!state) return;
     const view = editorViewsRef.current.get(documentID);
@@ -618,7 +622,7 @@ export function LiveRoomWorkspace({
       const synced =
         syncedContentsRef.current.get(documentID) ?? state.doc.toString();
       const changes = diffLiveDocuments(synced, nextDocument.content);
-      const updates = snapshotUpdates(
+      const updates = liveSnapshotUpdates(
         changes,
         nextDocument.revision,
         synchronizedVersion,
@@ -1823,7 +1827,7 @@ export function LiveRoomWorkspace({
                       enterKeyHint="done"
                       value={tabRenameValue}
                       maxLength={64}
-                      style={{ width: inlineRenameWidth(tabRenameValue) }}
+                      style={{ width: liveInlineRenameWidth(tabRenameValue) }}
                       onChange={(event) =>
                         setTabRenameValue(event.target.value)
                       }
@@ -1853,7 +1857,9 @@ export function LiveRoomWorkspace({
                       else selectDocument(document.id);
                     }}
                   >
-                    <span style={{ width: inlineRenameWidth(document.name) }}>
+                    <span
+                      style={{ width: liveInlineRenameWidth(document.name) }}
+                    >
                       {document.name}
                     </span>
                   </button>
@@ -2018,31 +2024,6 @@ function LinkIcon() {
   );
 }
 
-function inlineRenameWidth(value: string): string {
-  return `${Math.min(Math.max(Array.from(value).length, 8), 15)}ch`;
-}
-
-type TransactionUpdate = Update;
-
-function snapshotUpdates(
-  changes: ChangeSet,
-  revision: number,
-  currentRevision: number,
-): TransactionUpdate[] {
-  const count = revision - currentRevision;
-  if (count <= 0) return [];
-  const updates: TransactionUpdate[] = [
-    { changes, clientID: "snapshot-resync" },
-  ];
-  for (let index = 1; index < count; index += 1) {
-    updates.push({
-      changes: ChangeSet.empty(changes.newLength),
-      clientID: `snapshot-resync-${index}`,
-    });
-  }
-  return updates;
-}
-
 function connectionLabel(connection: LiveConnection): string {
   switch (connection) {
     case "connected":
@@ -2056,14 +2037,4 @@ function connectionLabel(connection: LiveConnection): string {
     default:
       return "Connecting";
   }
-}
-
-function formatLiveMebibytes(bytes: number): string {
-  const mebibytes = bytes / (1 << 20);
-  return `${Number.isInteger(mebibytes) ? mebibytes : mebibytes.toFixed(2)} MiB`;
-}
-
-function formatLiveBytes(bytes: number): string {
-  if (bytes >= 1 << 20) return formatLiveMebibytes(bytes);
-  return bytes < 1024 ? `${bytes} B` : `${(bytes / 1024).toFixed(1)} KiB`;
 }

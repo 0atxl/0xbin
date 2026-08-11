@@ -188,9 +188,17 @@ process:
 
 - Live HTTP handlers own room creation, bootstrap, unlock, and WebSocket
   upgrade boundaries; handlers remain thin.
+- Live transport support keeps snake-case codecs, shared response mapping,
+  publication serialization, and process-local password sessions in focused
+  files around the transport coordinator. The session store is not a durable
+  authority boundary.
 - The live room hub serializes room operations and orders document changes,
   tab metadata changes, presence, cursor/selection updates, reconnects, and
   expiry transitions.
+- Public Hub limits, snapshots, operations, and errors are separated from the
+  mutable serialized authority implementation. The authority remains cohesive
+  where document, metadata, presence, rollback, and reconnect paths share the
+  room mutex and persist-before-publish invariant.
 - The process-local `live.Hub` lazily loads rooms, exposes session-scoped
   document and metadata operations, and keeps bounded rebase history. Each
   accepted operation identity/result, retained change, and current snapshot are
@@ -592,6 +600,13 @@ In-memory limiting resets on restart and can be bypassed using distributed IPs. 
 - Not-found/error state without revealing lifecycle reason
 
 API routes remain under `/api/v1`; health routes are reserved.
+
+The embedded HTML shell uses `Cache-Control: no-store` and points only to the
+content-hashed JavaScript and CSS emitted by Vite. Those hashed assets use a
+long immutable cache lifetime. The binary and embedded frontend are one release
+unit, so a reload selects a mutually compatible shell and asset set. A reverse
+proxy must not override the shell or live API cache policy and must preserve
+live `Set-Cookie` headers.
 
 Search discovery is route-aware at the Go HTTP boundary. The configured public
 base URL supplies canonical URLs. Self-hosted instances advertise only their

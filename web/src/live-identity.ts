@@ -1,7 +1,7 @@
 import { randomLiveID } from "./live-collab";
 
-export const liveIdentityVersion = 1 as const;
-export const liveIdentityStoragePrefix = "0xbin.live.identity.v1:";
+const liveIdentityVersion = 1 as const;
+const liveIdentityStoragePrefix = "0xbin.live.identity.v1:";
 
 export type LiveBrowserIdentity = {
   version: typeof liveIdentityVersion;

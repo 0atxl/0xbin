@@ -37,13 +37,6 @@ type ChangeSet struct {
 	Sections []Section
 }
 
-func EmptyChangeSet(document string) ChangeSet {
-	if length := UTF16Len(document); length > 0 {
-		return ChangeSet{Sections: []Section{{OldLen: length, NewLen: -1}}}
-	}
-	return ChangeSet{}
-}
-
 func (set ChangeSet) OldLen() int {
 	length := 0
 	for _, section := range set.Sections {
@@ -425,103 +418,6 @@ func max(left, right int) int {
 		return left
 	}
 	return right
-}
-
-// Operation is the authority-facing portion of a CodeMirror update.
-type Operation struct {
-	OperationID string
-	ClientID    string
-	BaseVersion int
-	Changes     ChangeSet
-}
-
-type AcceptedUpdate struct {
-	OperationID string
-	ClientID    string
-	BaseVersion int
-	Version     int
-	Changes     ChangeSet
-	Document    string
-	Duplicate   bool
-	submitted   ChangeSet
-}
-
-type Authority struct {
-	document       string
-	version        int
-	history        []AcceptedUpdate
-	versionLengths []int
-	acceptedByID   map[string]AcceptedUpdate
-}
-
-func sameChangeSet(left, right ChangeSet) bool {
-	if len(left.Sections) != len(right.Sections) {
-		return false
-	}
-	for index := range left.Sections {
-		if left.Sections[index] != right.Sections[index] {
-			return false
-		}
-	}
-	return true
-}
-
-func NewAuthority(document string) *Authority {
-	return &Authority{
-		document:       document,
-		versionLengths: []int{UTF16Len(document)},
-		acceptedByID:   make(map[string]AcceptedUpdate),
-	}
-}
-
-func (authority *Authority) Document() string { return authority.document }
-func (authority *Authority) Version() int     { return authority.version }
-
-func (authority *Authority) Submit(operation Operation) (AcceptedUpdate, error) {
-	if operation.OperationID == "" || operation.ClientID == "" {
-		return AcceptedUpdate{}, fmt.Errorf("%w: operation and client IDs are required", ErrInvalidChangeSet)
-	}
-	if previous, ok := authority.acceptedByID[operation.OperationID]; ok {
-		if previous.ClientID != operation.ClientID || previous.BaseVersion != operation.BaseVersion || !sameChangeSet(previous.submitted, operation.Changes) {
-			return AcceptedUpdate{}, fmt.Errorf("%w: operation ID was reused", ErrDuplicateOperation)
-		}
-		previous.Duplicate = true
-		return previous, nil
-	}
-	if operation.BaseVersion < 0 || operation.BaseVersion > authority.version {
-		return AcceptedUpdate{}, fmt.Errorf("%w: base version %d, current version %d", ErrRevisionConflict, operation.BaseVersion, authority.version)
-	}
-	if operation.Changes.OldLen() != authority.versionLengths[operation.BaseVersion] {
-		return AcceptedUpdate{}, fmt.Errorf("%w: changeset length %d does not match base version %d length %d", ErrRevisionConflict, operation.Changes.OldLen(), operation.BaseVersion, authority.versionLengths[operation.BaseVersion])
-	}
-
-	changes := operation.Changes
-	for _, accepted := range authority.history[operation.BaseVersion:] {
-		var err error
-		changes, err = changes.Map(accepted.Changes, false)
-		if err != nil {
-			return AcceptedUpdate{}, fmt.Errorf("%w: rebase: %v", ErrRevisionConflict, err)
-		}
-	}
-	document, err := changes.Apply(authority.document)
-	if err != nil {
-		return AcceptedUpdate{}, fmt.Errorf("%w: apply: %v", ErrInvalidChangeSet, err)
-	}
-	authority.version++
-	accepted := AcceptedUpdate{
-		OperationID: operation.OperationID,
-		ClientID:    operation.ClientID,
-		BaseVersion: operation.BaseVersion,
-		Version:     authority.version,
-		Changes:     changes,
-		Document:    document,
-		submitted:   operation.Changes,
-	}
-	authority.document = document
-	authority.history = append(authority.history, accepted)
-	authority.versionLengths = append(authority.versionLengths, UTF16Len(document))
-	authority.acceptedByID[operation.OperationID] = accepted
-	return accepted, nil
 }
 
 func UTF16Len(value string) int { return len(utf16.Encode([]rune(value))) }

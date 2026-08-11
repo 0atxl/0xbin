@@ -381,10 +381,21 @@ function PrivacyPage() {
       <section>
         <h2>Browser storage and analytics</h2>
         <p>
-          0xbin stores only your light or dark theme preference in local browser
-          storage. It does not store paste bodies or encryption keys there. The
-          hosted interface currently uses no advertising, third-party analytics,
-          tracking cookies, or third-party executable scripts.
+          0xbin stores your light or dark theme preference in local browser
+          storage. For each LiveBin room, it also stores a random room-scoped
+          participant credential and the last authoritative nickname so normal
+          tabs, reloads, and reopenings represent one participant. Different
+          rooms cannot use that credential to correlate participants. Clearing
+          site data creates a new participant identity.
+        </p>
+        <p>
+          LiveBin room access and creator authority use room-scoped HttpOnly
+          cookies. The creator cookie is not a recoverable account: clearing it
+          loses creator authority. 0xbin does not store paste bodies, live-room
+          text, passwords, or encryption keys in persistent script-visible
+          browser storage. The hosted interface currently uses no advertising,
+          third-party analytics, tracking cookies, or third-party executable
+          scripts.
         </p>
       </section>
       <section>

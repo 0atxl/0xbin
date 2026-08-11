@@ -77,10 +77,18 @@ curl --fail http://127.0.0.1:8080/health/live
 curl --fail http://127.0.0.1:8080/health/ready
 ```
 
-The named `0xbin-data` volume persists pastes through container recreation.
-For a bind mount instead, replace the Compose volume with a host directory that
-is writable by the container's non-root user. Run only one 0xbin container per
-SQLite data directory.
+The named `0xbin-data` volume persists pastes and durable live-room state
+through container recreation. Durable live state includes room documents,
+expiry, lock state, and the hash of the creator capability. Active
+participants, cursors, reconnect timers, and ordinary password-access sessions
+remain process-local and are rebuilt or renewed after restart. For a bind mount
+instead, replace the Compose volume with a host directory that is writable by
+the container's non-root user. Run only one 0xbin container per SQLite data
+directory; live rooms do not support multi-instance coordination.
+
+Set `OXBIN_LIVE_ENABLED=false` before startup when the installation should
+serve only ordinary pastes. This omits the live routes, hub, and frontend entry
+point rather than running an unused collaboration service.
 
 ### Reverse proxying live rooms
 
@@ -92,6 +100,13 @@ route, and allow an idle timeout longer than the configured heartbeat interval
 recommended). Keep the proxy and application on the same public HTTPS origin
 so the `Secure`, `HttpOnly`, `SameSite=Strict` room cookie and origin check
 continue to work.
+
+Do not cache `/api/v1/live/*` responses or the HTML application shell, and do
+not strip `Set-Cookie` from live create or unlock responses. The application
+serves HTML with `Cache-Control: no-store`; each HTML build references
+content-hashed JavaScript and CSS assets that may safely use a long immutable
+cache lifetime. Deploy the binary and its embedded frontend together so a
+reload cannot combine a new shell with an old, incompatible bundle.
 
 ### Public deployment: Cloudflare Tunnel and rate limiting
 
@@ -190,7 +205,23 @@ docker compose up --build -d
 ```
 
 Database migrations run automatically at startup. Keep the volume mounted;
-without it, all pastes disappear when the container is removed.
+without it, all pastes and durable live-room state disappear when the container
+is removed.
+
+The current live identity/authority schema was revised in place before its
+first public release. A database created by an earlier development build of
+LiveBin is not an upgrade source: stop the service and create a fresh local
+database instead. This exception applies only to the unreleased development
+baseline; published migrations must never be rewritten.
+
+On an ordinary restart, live documents, expiry, creator authority, and room
+lock state survive. Presence and cursors disappear until browsers reconnect.
+A normal browser profile reuses its room-scoped participant identity and last
+nickname from local storage; a protected room may ask for its shared password
+again because the ordinary access session is process-local. The separate
+creator-capability cookie remains authoritative through room expiry when it is
+still present. Clearing site data loses both participant continuity and creator
+authority, and neither has a recovery flow.
 
 ## SQLite
 

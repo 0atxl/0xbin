@@ -118,58 +118,11 @@ func TestBrowserFixturesConvergeAndMapSelections(t *testing.T) {
 				}
 			}
 
-			authority := NewAuthority(fixture.Document)
-			if _, err := authority.Submit(Operation{
-				OperationID: fixture.Name + "-alice",
-				ClientID:    fixture.Updates[0].ClientID,
-				BaseVersion: 0,
-				Changes:     first,
-			}); err != nil {
-				t.Fatalf("accept first update: %v", err)
-			}
-			accepted, err := authority.Submit(Operation{
-				OperationID: fixture.Name + "-bob",
-				ClientID:    fixture.Updates[1].ClientID,
-				BaseVersion: 0,
-				Changes:     second,
-			})
-			if err != nil {
-				t.Fatalf("rebase and accept second update: %v", err)
-			}
-			if accepted.Version != 2 || accepted.Document != fixture.ExpectedDocument {
-				t.Fatalf("authority result: version=%d document=%q", accepted.Version, accepted.Document)
-			}
 		})
 	}
 }
 
-func TestAuthorityRetriesAreIdempotent(t *testing.T) {
-	authority := NewAuthority("hello")
-	changes := mustParseChangeSet(t, `[5,[0,"!"]]`)
-	operation := Operation{OperationID: "op-1", ClientID: "alice", BaseVersion: 0, Changes: changes}
-
-	accepted, err := authority.Submit(operation)
-	if err != nil {
-		t.Fatal(err)
-	}
-	duplicate, err := authority.Submit(operation)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !duplicate.Duplicate || duplicate.Version != accepted.Version || authority.Version() != 1 {
-		t.Fatalf("duplicate retry was not idempotent: %+v", duplicate)
-	}
-
-	changedPayload := mustParseChangeSet(t, `[5,[0,"?"]]`)
-	if _, err := authority.Submit(Operation{OperationID: "op-1", ClientID: "alice", BaseVersion: 0, Changes: changedPayload}); !errors.Is(err, ErrDuplicateOperation) {
-		t.Fatalf("changed duplicate error = %v, want ErrDuplicateOperation", err)
-	}
-	if _, err := authority.Submit(Operation{OperationID: "op-1", ClientID: "bob", BaseVersion: 0, Changes: changes}); !errors.Is(err, ErrDuplicateOperation) {
-		t.Fatalf("cross-client duplicate error = %v, want ErrDuplicateOperation", err)
-	}
-}
-
-func TestAuthorityRejectsMalformedAndStaleUpdates(t *testing.T) {
+func TestParseChangeSetRejectsMalformedInput(t *testing.T) {
 	malformed := []string{
 		"",
 		"null",
@@ -184,15 +137,6 @@ func TestAuthorityRejectsMalformedAndStaleUpdates(t *testing.T) {
 		if _, err := ParseChangeSetJSON([]byte(input)); !errors.Is(err, ErrInvalidChangeSet) {
 			t.Errorf("ParseChangeSetJSON(%q) error = %v, want ErrInvalidChangeSet", input, err)
 		}
-	}
-
-	authority := NewAuthority("hello")
-	valid := mustParseChangeSet(t, `[5,[0,"!"]]`)
-	if _, err := authority.Submit(Operation{OperationID: "future", ClientID: "alice", BaseVersion: 1, Changes: valid}); !errors.Is(err, ErrRevisionConflict) {
-		t.Fatalf("future revision error = %v, want ErrRevisionConflict", err)
-	}
-	if _, err := authority.Submit(Operation{OperationID: "wrong-length", ClientID: "alice", BaseVersion: 0, Changes: ChangeSet{}}); !errors.Is(err, ErrRevisionConflict) {
-		t.Fatalf("wrong base length error = %v, want ErrRevisionConflict", err)
 	}
 }
 

@@ -226,7 +226,7 @@ func TestLiveBootstrapReturnsAcceptedOperationsForHTTPReconciliation(t *testing.
 		t.Fatalf("create status = %d: %s", create.Code, create.Body.String())
 	}
 	now := time.Now().UTC()
-	joined, err := hub.Join(context.Background(), "calmbrightotter", "reconcile-session", now)
+	joined, err := joinHub(hub, context.Background(), "calmbrightotter", "reconcile-session", now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -331,7 +331,7 @@ func TestLiveOperationErrorsClassifyRecoveryPaths(t *testing.T) {
 		{name: "persistence is retryable", err: live.ErrPersistence, code: "service_unavailable", status: "retryable"},
 		{name: "revision conflict resynchronizes", err: livecollab.ErrRevisionConflict, code: "resync_required", status: "resync_required"},
 		{name: "invalid request is terminal", err: live.ErrOperationConflict, code: "invalid_request", status: "validation"},
-		{name: "legacy participant removal is unsupported", err: errLiveUnsupportedOperation, code: "unsupported_operation", status: "validation"},
+		{name: "unknown operation is unsupported", err: errLiveUnsupportedOperation, code: "unsupported_operation", status: "validation"},
 		{name: "content or tab limit is overload", err: live.ErrRoomLimit, code: "room_limit_reached", status: "overloaded"},
 		{name: "room limit is overload", err: live.ErrParticipantLimit, code: "room_limit_reached", status: "overloaded"},
 	}
@@ -476,7 +476,7 @@ func TestLiveCreatorCredentialSurvivesRestartAndRejectsInvalidCookies(t *testing
 		t.Fatal(err)
 	}
 	defer hub.Shutdown(ctx, later)
-	joined, err := hub.JoinWithCreator(ctx, room.Slug, "creator-after-renewal", got, later)
+	joined, err := joinHubWithCreator(hub, ctx, room.Slug, "creator-after-renewal", got, later)
 	if err != nil || !joined.Session.IsCreator() {
 		t.Fatalf("creator reconnect = %#v, %v", joined, err)
 	}
@@ -646,7 +646,7 @@ func TestLiveWebSocketRejectsInvalidOriginUnauthorizedAccessAndOversizedFrames(t
 	}
 	wsURL = "ws" + strings.TrimPrefix(placeholder.URL, "http") + "/api/v1/live/quietbrightotter/ws"
 	missingSession := dialLivePeer(t, wsURL, placeholder.URL, nil)
-	writeLiveMessage(t, missingSession, `{"type":"join","client_id":"legacy-client-only","metadata_revision":0,"document_revisions":[{"document_id":"main","revision":0}]}`)
+	writeLiveMessage(t, missingSession, `{"type":"join","connection_id":"connection-only","client_id":"client-only","metadata_revision":0,"document_revisions":[{"document_id":"main","revision":0}]}`)
 	readCtx, cancel := context.WithTimeout(context.Background(), time.Second)
 	_, _, err = missingSession.Read(readCtx)
 	cancel()
@@ -667,7 +667,7 @@ func TestLiveWebSocketRejectsInvalidOriginUnauthorizedAccessAndOversizedFrames(t
 		t.Run(test.name, func(t *testing.T) {
 			candidate := dialLivePeer(t, wsURL, placeholder.URL, nil)
 			payload, err := json.Marshal(map[string]any{
-				"type": "join", "session_id": "valid-session", test.field: test.value,
+				"type": "join", "session_id": "valid-session", "connection_id": "valid-connection", "client_id": "valid-client", test.field: test.value,
 				"metadata_revision":  0,
 				"document_revisions": []map[string]any{{"document_id": "main", "revision": 0}},
 			})
@@ -700,7 +700,7 @@ func TestLiveWebSocketRejectsInvalidOriginUnauthorizedAccessAndOversizedFrames(t
 	}
 }
 
-func TestLiveWebSocketAdditiveJoinIdentityAndLegacyFallback(t *testing.T) {
+func TestLiveWebSocketUsesExplicitParticipantConnectionAndClientIdentity(t *testing.T) {
 	placeholder := httptest.NewUnstartedServer(http.NotFoundHandler())
 	handler, store, hub := newLiveTestHandler(t, "http://"+placeholder.Listener.Addr().String())
 	placeholder.Config.Handler = handler
@@ -718,12 +718,15 @@ func TestLiveWebSocketAdditiveJoinIdentityAndLegacyFallback(t *testing.T) {
 		t.Fatalf("create status = %d", created.StatusCode)
 	}
 	wsURL := "ws" + strings.TrimPrefix(placeholder.URL, "http") + "/api/v1/live/calmbrightotter/ws"
-	legacy := dialLivePeer(t, wsURL, placeholder.URL, nil)
-	defer legacy.CloseNow()
-	legacyJoined := joinLivePeer(t, legacy, "legacy-session")
-	legacyParticipant, _ := legacyJoined["participant"].(map[string]any)
-	if legacyJoined["connection_id"] != "legacy-session" || legacyParticipant["connection_count"] != float64(1) || legacyParticipant["access_class"] != "collaborator" || legacyParticipant["can_edit"] != true || legacyParticipant["role"] != "writer" {
-		t.Fatalf("legacy joined event = %#v", legacyJoined)
+	observer := dialLivePeer(t, wsURL, placeholder.URL, nil)
+	defer observer.CloseNow()
+	observerJoined := joinLivePeer(t, observer, "observer-session")
+	observerParticipant, _ := observerJoined["participant"].(map[string]any)
+	if observerJoined["connection_id"] != "observer-session" || observerParticipant["connection_count"] != float64(1) || observerParticipant["access_class"] != "collaborator" || observerParticipant["can_edit"] != true {
+		t.Fatalf("observer joined event = %#v", observerJoined)
+	}
+	if _, exists := observerParticipant["role"]; exists {
+		t.Fatalf("joined event retained legacy role alias = %#v", observerJoined)
 	}
 
 	modern := dialLivePeer(t, wsURL, placeholder.URL, nil)
@@ -731,10 +734,10 @@ func TestLiveWebSocketAdditiveJoinIdentityAndLegacyFallback(t *testing.T) {
 	writeLiveMessage(t, modern, `{"type":"join","session_id":"browser-credential","connection_id":"connection-one","client_id":"operation-client-one","preferred_name":"Quiet Otter","metadata_revision":0,"document_revisions":[{"document_id":"main","revision":0}]}`)
 	modernJoined := readLiveEvent(t, modern, "joined")
 	modernParticipant, _ := modernJoined["participant"].(map[string]any)
-	if modernJoined["connection_id"] != "connection-one" || modernParticipant["nickname"] != "Quiet Otter" || modernParticipant["connection_count"] != float64(1) || modernParticipant["access_class"] != "collaborator" || modernParticipant["can_edit"] != true || modernParticipant["role"] != "writer" {
+	if modernJoined["connection_id"] != "connection-one" || modernParticipant["nickname"] != "Quiet Otter" || modernParticipant["connection_count"] != float64(1) || modernParticipant["access_class"] != "collaborator" || modernParticipant["can_edit"] != true {
 		t.Fatalf("modern joined event = %#v", modernJoined)
 	}
-	presence := readLiveEvent(t, legacy, "presence_joined")
+	presence := readLiveEvent(t, observer, "presence_joined")
 	if presence["connection_id"] != "connection-one" {
 		t.Fatalf("connection-specific presence = %#v", presence)
 	}
@@ -931,8 +934,22 @@ func TestDecodeLiveWireMessageRejectsMalformedAndUnknownFields(t *testing.T) {
 	if _, err := decodeLiveWireMessage([]byte(`{"type":"heartbeat"}`)); err != nil {
 		t.Fatalf("valid heartbeat rejected: %v", err)
 	}
-	if message, err := decodeLiveWireMessage([]byte(`{"type":"participant_remove","participant_id":"p-1"}`)); err != nil || message.ParticipantID != "p-1" {
-		t.Fatalf("legacy participant removal decode = %#v, %v", message, err)
+	if _, err := decodeLiveWireMessage([]byte(`{"type":"participant_remove"}`)); !errors.Is(err, errLiveUnsupportedOperation) {
+		t.Fatalf("removed participant operation error = %v", err)
+	}
+	missingConnection, err := decodeLiveWireMessage([]byte(`{"type":"join","session_id":"participant","client_id":"client"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := liveJoinIdentity(missingConnection); !errors.Is(err, live.ErrInvalidConnectionID) {
+		t.Fatalf("missing connection identity error = %v", err)
+	}
+	missingClient, err := decodeLiveWireMessage([]byte(`{"type":"join","session_id":"participant","connection_id":"connection"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := liveJoinIdentity(missingClient); !errors.Is(err, live.ErrInvalidClientID) {
+		t.Fatalf("missing client identity error = %v", err)
 	}
 }
 
@@ -1049,7 +1066,7 @@ func TestLiveWebSocketBridgesHubChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer conn.Close(websocket.StatusNormalClosure, "")
-	if err := conn.Write(context.Background(), websocket.MessageText, []byte(`{"type":"join","session_id":"client-one","metadata_revision":0,"document_revisions":[{"document_id":"main","revision":0}]}`)); err != nil {
+	if err := conn.Write(context.Background(), websocket.MessageText, []byte(`{"type":"join","session_id":"client-one","connection_id":"connection-one","client_id":"client-one","metadata_revision":0,"document_revisions":[{"document_id":"main","revision":0}]}`)); err != nil {
 		t.Fatal(err)
 	}
 	_, joinedData, err := conn.Read(context.Background())
@@ -1092,7 +1109,7 @@ func TestLiveWebSocketBridgesHubChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer reader.Close(websocket.StatusNormalClosure, "")
-	if err := reader.Write(context.Background(), websocket.MessageText, []byte(`{"type":"join","session_id":"client-two","metadata_revision":0,"document_revisions":[{"document_id":"main","revision":0}]}`)); err != nil {
+	if err := reader.Write(context.Background(), websocket.MessageText, []byte(`{"type":"join","session_id":"client-two","connection_id":"connection-two","client_id":"client-two","metadata_revision":0,"document_revisions":[{"document_id":"main","revision":0}]}`)); err != nil {
 		t.Fatal(err)
 	}
 	_, joinedData, err = reader.Read(context.Background())
@@ -1124,7 +1141,7 @@ func TestLiveWebSocketBridgesHubChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer resync.Close(websocket.StatusNormalClosure, "")
-	if err := resync.Write(context.Background(), websocket.MessageText, []byte(`{"type":"join","session_id":"client-three","metadata_revision":0,"document_revisions":[{"document_id":"main","revision":2}]}`)); err != nil {
+	if err := resync.Write(context.Background(), websocket.MessageText, []byte(`{"type":"join","session_id":"client-three","connection_id":"connection-three","client_id":"client-three","metadata_revision":0,"document_revisions":[{"document_id":"main","revision":2}]}`)); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := resync.Read(context.Background()); err != nil {
@@ -1241,7 +1258,7 @@ func TestLiveCreatorControlsRequireCreatorSession(t *testing.T) {
 		t.Fatalf("creator joined without creator authority: %s", creatorJoined)
 	}
 	creatorParticipant, _ := creatorJoined["participant"].(map[string]any)
-	if creatorParticipant == nil || creatorParticipant["role"] != "writer" || creatorParticipant["access_class"] != "creator" || creatorParticipant["can_edit"] != true || creatorParticipant["connection_count"] != float64(1) {
+	if creatorParticipant == nil || creatorParticipant["access_class"] != "creator" || creatorParticipant["can_edit"] != true || creatorParticipant["connection_count"] != float64(1) {
 		t.Fatalf("creator participant = %#v", creatorParticipant)
 	}
 
@@ -1261,7 +1278,7 @@ func TestLiveCreatorControlsRequireCreatorSession(t *testing.T) {
 		t.Fatalf("ordinary password access acquired creator authority: %s", writerJoined)
 	}
 	writerParticipant, _ := writerJoined["participant"].(map[string]any)
-	if writerParticipant == nil || writerParticipant["role"] != "writer" || writerParticipant["access_class"] != "collaborator" || writerParticipant["can_edit"] != true {
+	if writerParticipant == nil || writerParticipant["access_class"] != "collaborator" || writerParticipant["can_edit"] != true {
 		t.Fatalf("writer participant = %#v", writerParticipant)
 	}
 
@@ -1294,10 +1311,6 @@ func TestLiveCreatorControlsRequireCreatorSession(t *testing.T) {
 	if event := readLiveEvent(t, writer, "error"); event["code"] != "unauthorized" {
 		t.Fatalf("non-creator room mode response = %#v", event)
 	}
-	writeLiveMessage(t, writer, `{"type":"participant_remove","participant_id":"`+creatorParticipant["id"].(string)+`"}`)
-	if event := readLiveEvent(t, writer, "error"); event["code"] != "unsupported_operation" || event["status"] != "validation" {
-		t.Fatalf("legacy removal response = %#v", event)
-	}
 
 	writeLiveMessage(t, creator, `{"type":"room_watch_only","watch_only":true}`)
 	for name, connection := range map[string]*websocket.Conn{"creator-one": creator, "creator-two": creatorAfterUnlock, "collaborator": writer} {
@@ -1309,11 +1322,14 @@ func TestLiveCreatorControlsRequireCreatorSession(t *testing.T) {
 		for _, item := range participants {
 			participant, _ := item.(map[string]any)
 			if participant["id"] == creatorParticipant["id"] {
-				if participant["access_class"] != "creator" || participant["can_edit"] != true || participant["role"] != "writer" {
+				if participant["access_class"] != "creator" || participant["can_edit"] != true {
 					t.Fatalf("%s locked creator = %#v", name, participant)
 				}
-			} else if participant["access_class"] != "collaborator" || participant["can_edit"] != false || participant["role"] != "watch_only" {
+			} else if participant["access_class"] != "collaborator" || participant["can_edit"] != false {
 				t.Fatalf("%s locked collaborator = %#v", name, participant)
+			}
+			if _, exists := participant["role"]; exists {
+				t.Fatalf("%s mode event retained legacy role alias = %#v", name, participant)
 			}
 		}
 	}
@@ -1335,7 +1351,7 @@ func TestLiveCreatorControlsRequireCreatorSession(t *testing.T) {
 		participants, _ := mode["participants"].([]any)
 		for _, item := range participants {
 			participant, _ := item.(map[string]any)
-			if participant["can_edit"] != true || participant["role"] != "writer" {
+			if participant["can_edit"] != true {
 				t.Fatalf("%s unlocked writer = %#v", name, participant)
 			}
 		}
@@ -1345,22 +1361,12 @@ func TestLiveCreatorControlsRequireCreatorSession(t *testing.T) {
 		t.Fatalf("unlocked collaborator mutation = %#v", event)
 	}
 
-	writeLiveMessage(t, creator, `{"type":"participant_remove","participant_id":"`+writerParticipant["id"].(string)+`"}`)
-	if event := readLiveEvent(t, creator, "error"); event["code"] != "unsupported_operation" || event["status"] != "validation" {
-		t.Fatalf("creator legacy removal response = %#v", event)
-	}
 	state, err := hub.State("calmbrightotter")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(state.Participants) != 2 {
-		t.Fatalf("legacy removal mutated roster = %#v", state.Participants)
-	}
-	readCtx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
-	_, data, readErr := writer.Read(readCtx)
-	cancel()
-	if readErr == nil {
-		t.Fatalf("legacy removal broadcast unexpected event: %s", data)
+		t.Fatalf("lock transitions changed roster = %#v", state.Participants)
 	}
 }
 
@@ -1428,7 +1434,7 @@ func TestLiveFailedLockPersistenceDoesNotBroadcastOrChangePermissions(t *testing
 		t.Fatal("failed lock changed in-memory room mode")
 	}
 	for _, participant := range state.Participants {
-		if !participant.CanEdit || participant.Role != live.ParticipantWriter {
+		if !participant.CanEdit {
 			t.Fatalf("failed lock changed participant permission = %#v", participant)
 		}
 	}
@@ -1524,7 +1530,7 @@ func TestServerLifecycleEvictsDisconnectedRoomAndStops(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	joined, err := hub.Join(ctx, room.Slug, "one-visit", now)
+	joined, err := joinHub(hub, ctx, room.Slug, "one-visit", now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1559,7 +1565,7 @@ func TestServerLifecycleEvictsDisconnectedRoomAndStops(t *testing.T) {
 	if err := <-serveErr; !errors.Is(err, ErrServerClosed) {
 		t.Fatalf("serve error = %v", err)
 	}
-	if _, err := hub.Join(ctx, room.Slug, "after-shutdown", time.Now().UTC()); !errors.Is(err, live.ErrHubClosed) {
+	if _, err := joinHub(hub, ctx, room.Slug, "after-shutdown", time.Now().UTC()); !errors.Is(err, live.ErrHubClosed) {
 		t.Fatalf("join after lifecycle shutdown error = %v", err)
 	}
 }
@@ -1597,8 +1603,26 @@ func cookieNamed(cookies []*http.Cookie, name string) *http.Cookie {
 
 func joinLivePeer(t *testing.T, conn *websocket.Conn, sessionID string) map[string]any {
 	t.Helper()
-	writeLiveMessage(t, conn, `{"type":"join","session_id":"`+sessionID+`","metadata_revision":0,"document_revisions":[{"document_id":"main","revision":0}]}`)
+	writeLiveMessage(t, conn, `{"type":"join","session_id":"`+sessionID+`","connection_id":"`+sessionID+`","client_id":"`+sessionID+`","metadata_revision":0,"document_revisions":[{"document_id":"main","revision":0}]}`)
 	return readLiveEvent(t, conn, "joined")
+}
+
+func joinHub(hub *live.Hub, ctx context.Context, slug, participantCredential string, now time.Time) (live.JoinResult, error) {
+	identity := live.JoinIdentity{
+		ParticipantCredential: participantCredential,
+		ConnectionID:          participantCredential,
+		ClientID:              participantCredential,
+	}
+	return hub.JoinWithIdentity(ctx, slug, identity, live.CreatorCapability{}, now)
+}
+
+func joinHubWithCreator(hub *live.Hub, ctx context.Context, slug, participantCredential string, capability live.CreatorCapability, now time.Time) (live.JoinResult, error) {
+	identity := live.JoinIdentity{
+		ParticipantCredential: participantCredential,
+		ConnectionID:          participantCredential,
+		ClientID:              participantCredential,
+	}
+	return hub.JoinWithIdentity(ctx, slug, identity, capability, now)
 }
 
 func writeLiveMessage(t *testing.T, conn *websocket.Conn, message string) {

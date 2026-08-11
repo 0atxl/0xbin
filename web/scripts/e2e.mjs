@@ -328,8 +328,12 @@ try {
     "Untitled tab",
     "the live creator should mirror the paste creator's untitled placeholder",
   );
+  const liveCreateByteCount = page.locator(".live-create-canvas .byte-count");
+  await page.getByText("0 B / 1 MiB", { exact: true }).waitFor({
+    state: "visible",
+  });
   assert.equal(
-    await page.locator(".live-create-canvas .byte-count").textContent(),
+    await liveCreateByteCount.textContent(),
     "0 B / 1 MiB",
     "LiveBin should use the paste creator's MiB limit presentation",
   );

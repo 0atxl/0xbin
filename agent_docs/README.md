@@ -6,10 +6,9 @@ maintainers working on the project.
 
 The live-sharing extension is implemented through Steps 0A–13 of its
 implementation plan, and release-hardening Phases 0–10 are complete. Phases
-0–6 of the bounded browser-identity and creator-authority evolution are
-complete; Phase 6A, its final workspace design pass, is next. That pass follows
-the completed behavioral gate and precedes code-quality closure and the final
-release audit.
+0–7A of the bounded browser-identity and creator-authority evolution are
+complete, including final design, compatibility closure, and bounded
+code-quality work. Phase 8, the final independent release audit, is next.
 
 The repository-level instructions remain in [`AGENTS.md`](../AGENTS.md) at
 the repository root because agent tools discover that filename there.

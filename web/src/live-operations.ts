@@ -1,4 +1,4 @@
-export type LiveOperationKind = "document" | "metadata";
+type LiveOperationKind = "document" | "metadata";
 
 export type LiveOperation = {
   id: string;

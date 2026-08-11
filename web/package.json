@@ -28,21 +28,19 @@
     "@codemirror/state": "^6.7.1",
     "@codemirror/view": "^6.43.6",
     "@lezer/highlight": "^1.2.3",
-    "@vitejs/plugin-react": "latest",
     "react": "latest",
     "react-dom": "latest",
-    "topbar": "^3.0.1",
-    "vite": "latest"
+    "topbar": "^3.0.1"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.12.1",
-    "@emnapi/core": "1.11.2",
-    "@emnapi/runtime": "1.11.2",
     "@playwright/test": "^1.61.1",
     "@types/react": "latest",
     "@types/react-dom": "latest",
+    "@vitejs/plugin-react": "latest",
     "prettier": "latest",
     "typescript": "latest",
+    "vite": "latest",
     "vitest": "latest"
   }
 }

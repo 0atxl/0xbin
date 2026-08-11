@@ -293,7 +293,7 @@ function CheckIcon() {
   );
 }
 
-export function CodeIcon() {
+function CodeIcon() {
   return (
     <svg viewBox="0 0 20 20" aria-hidden="true">
       <path d="m7 5-5 5 5 5M13 5l5 5-5 5" />

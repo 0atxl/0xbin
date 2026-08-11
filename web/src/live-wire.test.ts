@@ -46,7 +46,6 @@ describe("live WebSocket wire decoder", () => {
           {
             id: "p-1",
             nickname: "calm otter",
-            role: "writer",
             access_class: "creator",
             can_edit: true,
             connection_count: 2,
@@ -75,7 +74,6 @@ describe("live WebSocket wire decoder", () => {
         participant: {
           id: "p-1",
           nickname: "calm otter",
-          role: "writer",
           access_class: "creator",
           can_edit: true,
           connection_count: 2,
@@ -115,11 +113,13 @@ describe("live WebSocket wire decoder", () => {
     });
   });
 
-  it("decodes creator control events and rejects invalid role updates", () => {
+  it("decodes creator control events and rejects invalid access classes", () => {
     const participant = {
       id: "p-1",
       nickname: "calm otter",
-      role: "watch_only",
+      access_class: "collaborator",
+      can_edit: false,
+      connection_count: 1,
       color: "#123456",
       current_tab: "main",
       joined_at: "2026-08-08T10:00:00Z",
@@ -143,7 +143,7 @@ describe("live WebSocket wire decoder", () => {
       decodeLiveWireEvent({
         type: "room_mode_changed",
         watch_only: true,
-        participants: [{ ...participant, role: "owner" }],
+        participants: [{ ...participant, access_class: "owner" }],
       }),
     ).toBeUndefined();
     expect(
@@ -162,6 +162,22 @@ describe("live WebSocket wire decoder", () => {
       type: "presence_left",
       participantID: "p-1",
       participant: { connectionCount: 1, status: "connected" },
+    });
+    expect(
+      decodeLiveWireEvent({
+        type: "presence_left",
+        participant_id: "p-1",
+        participant: {
+          ...participant,
+          status: "connection_lost",
+          connection_count: 0,
+          cursors: [],
+        },
+      }),
+    ).toMatchObject({
+      type: "presence_left",
+      participantID: "p-1",
+      participant: { connectionCount: 0, status: "connection_lost" },
     });
   });
 
@@ -182,7 +198,9 @@ describe("live WebSocket wire decoder", () => {
         participant: {
           id: "p",
           nickname: "name",
-          role: "writer",
+          access_class: "collaborator",
+          can_edit: true,
+          connection_count: 1,
           color: "#123456",
           current_tab: 7,
           joined_at: "not-a-time",

@@ -127,65 +127,6 @@ type liveConfigResponse struct {
 	RoomLifetimeSeconds int64 `json:"room_lifetime_seconds"`
 }
 
-type liveRoomResponse struct {
-	Slug                     string                    `json:"slug"`
-	URL                      string                    `json:"url,omitempty"`
-	ExpiresAt                time.Time                 `json:"expires_at"`
-	PasswordRequired         bool                      `json:"password_required"`
-	MetadataRevision         int                       `json:"metadata_revision"`
-	MetadataSnapshotRevision int                       `json:"metadata_snapshot_revision"`
-	MaxBytes                 int64                     `json:"max_bytes"`
-	MaxDocumentBytes         int64                     `json:"max_document_bytes"` // Always identical to MaxBytes.
-	MaxTabs                  int                       `json:"max_tabs"`
-	MaxWriters               int                       `json:"max_writers"`
-	MaxViewers               int                       `json:"max_viewers"`
-	MaxParticipants          int                       `json:"max_participants"`
-	RoomLifetimeSeconds      int64                     `json:"room_lifetime_seconds"`
-	Creator                  bool                      `json:"creator"`
-	Locked                   bool                      `json:"locked"`
-	Documents                []liveDocumentResponse    `json:"documents,omitempty"`
-	Participants             []liveParticipantResponse `json:"participants,omitempty"`
-	AcceptedOperationIDs     []string                  `json:"accepted_operation_ids,omitempty"`
-}
-
-type liveDocumentResponse struct {
-	ID               string `json:"id"`
-	Name             string `json:"name"`
-	Language         string `json:"language"`
-	Content          string `json:"content"`
-	Position         int    `json:"position"`
-	Revision         int    `json:"revision"`
-	SnapshotRevision int    `json:"snapshot_revision"`
-}
-
-type liveCursorResponse struct {
-	DocumentID string `json:"document_id"`
-	Revision   int    `json:"revision"`
-	Anchor     int    `json:"anchor"`
-	Head       int    `json:"head"`
-}
-
-type liveConnectionCursorResponse struct {
-	ConnectionID string `json:"connection_id"`
-	liveCursorResponse
-}
-
-type liveParticipantResponse struct {
-	ID              string                         `json:"id"`
-	Nickname        string                         `json:"nickname"`
-	JoinedAt        time.Time                      `json:"joined_at"`
-	Color           string                         `json:"color"`
-	CurrentTab      string                         `json:"current_tab"`
-	Cursor          *liveCursorResponse            `json:"cursor,omitempty"`
-	Cursors         []liveConnectionCursorResponse `json:"cursors,omitempty"`
-	Status          live.ParticipantStatus         `json:"status"`
-	AccessClass     live.ParticipantAccessClass    `json:"access_class"`
-	CanEdit         bool                           `json:"can_edit"`
-	ConnectionCount int                            `json:"connection_count"`
-	Role            live.ParticipantRole           `json:"role"`
-	LastSeenAt      time.Time                      `json:"last_seen_at"`
-}
-
 func (api *liveAPI) create(w http.ResponseWriter, r *http.Request) {
 	if !api.allowHTTP(w, r, ratelimit.LiveCreate, clientIPFromContext(r.Context()), 1) {
 		return
@@ -462,26 +403,6 @@ func liveRoomURL(base *url.URL, slugValue string) string {
 	return copy.String()
 }
 
-func responseForLiveSnapshot(snapshot live.RoomSnapshot) liveRoomResponse {
-	response := liveRoomResponse{Slug: snapshot.Slug, ExpiresAt: snapshot.ExpiresAt, PasswordRequired: false, MetadataRevision: snapshot.MetadataRevision, MetadataSnapshotRevision: snapshot.MetadataSnapshotRevision, Locked: snapshot.Locked, Documents: make([]liveDocumentResponse, 0, len(snapshot.Documents))}
-	for _, document := range snapshot.Documents {
-		response.Documents = append(response.Documents, liveDocumentResponse{ID: document.ID, Name: document.Name, Language: document.Language, Content: document.Content, Position: document.Position, Revision: document.CurrentRevision, SnapshotRevision: document.SnapshotRevision})
-	}
-	return response
-}
-
-func (api *liveAPI) responseForLiveSnapshot(snapshot live.RoomSnapshot) liveRoomResponse {
-	response := responseForLiveSnapshot(snapshot)
-	response.MaxBytes = api.cfg.LiveMaxBytes
-	response.MaxDocumentBytes = api.cfg.LiveMaxBytes
-	response.MaxTabs = api.cfg.LiveMaxTabs
-	response.MaxWriters = api.cfg.LiveMaxWriters
-	response.MaxViewers = api.cfg.LiveMaxViewers
-	response.MaxParticipants = api.cfg.LiveMaxParticipants
-	response.RoomLifetimeSeconds = int64(api.cfg.LiveRoomLifetime.Seconds())
-	return response
-}
-
 func (api *liveAPI) publicConfig() liveConfigResponse {
 	return liveConfigResponse{
 		MaxBytes:            api.cfg.LiveMaxBytes,
@@ -492,54 +413,6 @@ func (api *liveAPI) publicConfig() liveConfigResponse {
 		MaxParticipants:     api.cfg.LiveMaxParticipants,
 		RoomLifetimeSeconds: int64(api.cfg.LiveRoomLifetime.Seconds()),
 	}
-}
-
-func responseForLiveState(state live.RoomState) liveRoomResponse {
-	response := liveRoomResponse{Slug: state.Slug, ExpiresAt: state.ExpiresAt, MetadataRevision: state.MetadataRevision, MetadataSnapshotRevision: state.MetadataSnapshotRevision, Locked: state.WatchOnly, Documents: make([]liveDocumentResponse, 0, len(state.Documents)), Participants: make([]liveParticipantResponse, 0, len(state.Participants))}
-	for _, document := range state.Documents {
-		response.Documents = append(response.Documents, liveDocumentResponse{ID: document.ID, Name: document.Name, Language: document.Language, Content: document.Content, Position: document.Position, Revision: document.Revision, SnapshotRevision: document.SnapshotRevision})
-	}
-	for _, participant := range state.Participants {
-		response.Participants = append(response.Participants, responseForLiveParticipant(participant))
-	}
-	return response
-}
-
-func responseForLiveParticipant(participant live.ParticipantSnapshot) liveParticipantResponse {
-	accessClass := participant.AccessClass
-	canEdit := participant.CanEdit
-	connectionCount := participant.ConnectionCount
-	legacySnapshot := accessClass == ""
-	if accessClass == "" {
-		if participant.Role == live.ParticipantWriter {
-			accessClass, canEdit = live.ParticipantCollaborator, true
-		} else {
-			accessClass = live.ParticipantViewer
-		}
-	}
-	if legacySnapshot && connectionCount < 1 {
-		connectionCount = 1
-	}
-	legacyRole := live.ParticipantWatchOnly
-	if canEdit {
-		legacyRole = live.ParticipantWriter
-	}
-	response := liveParticipantResponse{
-		ID: participant.ID, Nickname: participant.Nickname, JoinedAt: participant.JoinedAt,
-		Color: participant.Color, CurrentTab: participant.CurrentTab, Status: participant.Status,
-		AccessClass: accessClass, CanEdit: canEdit,
-		ConnectionCount: connectionCount, Role: legacyRole, LastSeenAt: participant.LastSeenAt,
-	}
-	if participant.Cursor != nil {
-		response.Cursor = &liveCursorResponse{DocumentID: participant.Cursor.DocumentID, Revision: participant.Cursor.Revision, Anchor: participant.Cursor.Anchor, Head: participant.Cursor.Head}
-	}
-	for _, cursor := range participant.Cursors {
-		response.Cursors = append(response.Cursors, liveConnectionCursorResponse{
-			ConnectionID:       cursor.ConnectionID,
-			liveCursorResponse: liveCursorResponse{DocumentID: cursor.DocumentID, Revision: cursor.Revision, Anchor: cursor.Anchor, Head: cursor.Head},
-		})
-	}
-	return response
 }
 
 func newLiveDocumentID(used map[string]struct{}) (string, error) {
@@ -610,121 +483,6 @@ func (api *liveAPI) acquirePasswordSlot() bool {
 
 func (api *liveAPI) releasePasswordSlot() {
 	<-api.passwordSlots
-}
-
-type liveSessionRecord struct {
-	slug    string
-	expires time.Time
-}
-
-type liveSessionStore struct {
-	mu         sync.Mutex
-	records    map[string]liveSessionRecord
-	maxRecords int
-}
-
-func newLiveSessionStore() *liveSessionStore {
-	return &liveSessionStore{
-		records:    make(map[string]liveSessionRecord),
-		maxRecords: liveMaxSessions,
-	}
-}
-
-func (store *liveSessionStore) put(slugValue string, expires time.Time) string {
-	token, err := newLiveSessionToken()
-	if err != nil {
-		return ""
-	}
-	store.mu.Lock()
-	store.pruneExpiredLocked(time.Now().UTC())
-	if len(store.records) >= store.maxRecords {
-		for key := range store.records {
-			delete(store.records, key)
-			break
-		}
-	}
-	store.records[token] = liveSessionRecord{slug: slugValue, expires: expires}
-	store.mu.Unlock()
-	return token
-}
-
-func (store *liveSessionStore) pruneExpiredLocked(now time.Time) {
-	for key, record := range store.records {
-		if !record.expires.After(now) {
-			delete(store.records, key)
-		}
-	}
-}
-
-func newLiveSessionToken() (string, error) {
-	tokenBytes := make([]byte, 32)
-	if _, err := rand.Read(tokenBytes); err != nil {
-		return "", err
-	}
-	return base64.RawURLEncoding.EncodeToString(tokenBytes), nil
-}
-
-func (store *liveSessionStore) get(token, slugValue string, now time.Time) (liveSessionRecord, bool) {
-	if token == "" {
-		return liveSessionRecord{}, false
-	}
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	record, ok := store.records[token]
-	if !ok || record.slug != slugValue || !record.expires.After(now) {
-		if ok && !record.expires.After(now) {
-			delete(store.records, token)
-		}
-		return liveSessionRecord{}, false
-	}
-	return record, true
-}
-
-func (api *liveAPI) sessionAuthorized(r *http.Request, slugValue string, now time.Time) bool {
-	_, ok := api.session(r, slugValue, now)
-	return ok
-}
-
-func (api *liveAPI) session(r *http.Request, slugValue string, now time.Time) (liveSessionRecord, bool) {
-	cookie, err := r.Cookie(liveSessionCookie)
-	if err != nil {
-		return liveSessionRecord{}, false
-	}
-	return api.sessions.get(cookie.Value, slugValue, now)
-}
-
-func (api *liveAPI) setSessionCookie(w http.ResponseWriter, slugValue string, now time.Time) {
-	token := api.sessions.put(slugValue, now.Add(liveSessionLifetime))
-	if token == "" {
-		return
-	}
-	http.SetCookie(w, &http.Cookie{Name: liveSessionCookie, Value: token, Path: "/api/v1/live/" + slugValue, Expires: now.Add(liveSessionLifetime), MaxAge: int(liveSessionLifetime.Seconds()), HttpOnly: true, Secure: strings.EqualFold(api.baseURL.Scheme, "https"), SameSite: http.SameSiteStrictMode})
-}
-
-// The raw creator credential exists only in this room-scoped HttpOnly cookie;
-// SQLite stores its room-bound hash.
-func (api *liveAPI) setCreatorCookie(w http.ResponseWriter, slugValue string, expiresAt time.Time, creator live.CreatorCapability) {
-	token := creator.CookieValue()
-	now := time.Now().UTC()
-	if token == "" || !expiresAt.After(now) {
-		return
-	}
-	http.SetCookie(w, &http.Cookie{Name: liveCreatorCookie, Value: token, Path: "/api/v1/live/" + slugValue, Expires: expiresAt, MaxAge: int(expiresAt.Sub(now).Seconds()), HttpOnly: true, Secure: strings.EqualFold(api.baseURL.Scheme, "https"), SameSite: http.SameSiteStrictMode})
-}
-
-func (api *liveAPI) creatorCapability(r *http.Request, snapshot live.RoomSnapshot, now time.Time) (live.CreatorCapability, bool) {
-	if !snapshot.ExpiresAt.After(now) {
-		return live.CreatorCapability{}, false
-	}
-	cookie, err := r.Cookie(liveCreatorCookie)
-	if err != nil {
-		return live.CreatorCapability{}, false
-	}
-	capability, err := live.ParseCreatorCapability(cookie.Value)
-	if err != nil || !capability.MatchesRoomHash(snapshot.Slug, snapshot.CreatorTokenHash) {
-		return live.CreatorCapability{}, false
-	}
-	return capability, true
 }
 
 type livePeer struct {
@@ -1208,8 +966,6 @@ func (api *liveAPI) handleWireMessage(ctx context.Context, peer *livePeer, messa
 			Participants: responseForLiveState(state).Participants,
 		}), nil)
 		return nil
-	case "participant_remove":
-		return fmt.Errorf("%w: %s", errLiveUnsupportedOperation, message.Type)
 	case "presence":
 		participant, err := peer.session.UpdatePresence(live.PresenceUpdate{CurrentTab: message.CurrentTab, DocumentID: message.DocumentID, Revision: message.Revision, Anchor: message.Anchor, Head: message.Head}, now)
 		if err != nil {

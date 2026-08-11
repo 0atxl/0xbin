@@ -1,6 +1,6 @@
 export const maxPasteBytes = 1 << 20;
 export const maxTitleBytes = 200;
-export const maxLanguageBytes = 64;
+const maxLanguageBytes = 64;
 
 export type Lifetime = "once" | "1h" | "24h" | "72h";
 

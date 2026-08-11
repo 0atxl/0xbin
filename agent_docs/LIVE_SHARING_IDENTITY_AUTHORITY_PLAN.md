@@ -2,7 +2,7 @@
 
 ## Status
 
-**Phases 0–6 complete (2026-08-11). Phase 6A is next and has not started.**
+**Phases 0–7A complete (2026-08-11). Phase 8 is next and has not started.**
 
 This plan defines the bounded behavioral foundation, one user-approved final
 live-workspace design pass, and the release gates that must be completed before
@@ -161,8 +161,9 @@ Editing ability is derived separately:
 - Remove the creator-only participant-removal button.
 - Remove `participant_remove` client handling and the corresponding
   `participant_removed` kick semantics.
-- During the compatibility window, an old client sending the removed operation
-  receives a stable unsupported-operation error; it cannot mutate the roster.
+- The version-1 wire decoder has no participant-removal request. The natural
+  `participant_removed` expiry event remains distinct and cannot be triggered
+  by a participant.
 - Normal disconnect, heartbeat timeout, reconnect grace, room expiry, and
   capacity cleanup remain.
 
@@ -186,15 +187,13 @@ The `join` message evolves additively:
 
 - Keep `session_id` during the transition; its clarified meaning becomes the
   browser participant credential.
-- `connection_id` is optional for old clients and defaults to the session ID,
-  preserving their one-connection behavior.
+- `connection_id` is required and identifies one mounted page.
 - `preferred_name` is optional and is accepted only through the existing
   nickname validation and uniqueness rules.
 - `client_id` remains connection-scoped operation identity and never grants
   participant or creator authority.
-- `joined` and roster events add `access_class`, `can_edit`, and
-  `connection_count`. Retain the legacy `role` field during the compatibility
-  window as a derived alias.
+- `joined` and roster events expose `access_class`, `can_edit`, and
+  `connection_count`; no derived role alias remains.
 - Connection-specific presence events add `connection_id`; durable document and
   metadata events remain unchanged.
 - Replace the one-way UI action with the existing `room_watch_only` message
@@ -643,6 +642,22 @@ semantics.
   still pass with no backend or protocol change.
 - No unapproved feature or user-facing explanatory clutter was introduced.
 
+### Completion record — 2026-08-11
+
+- Completed the user-approved compact creation and workspace design: inline
+  naming, fixed utility controls, horizontally scrollable and reorderable tabs,
+  compact participant details, responsive editor-first layout, toast errors,
+  and paste-page-consistent language and byte controls.
+- Moved remote cursors and side-by-side labels into non-layout-affecting editor
+  decorations, including first-line visibility and revision-aware mapping, so
+  presence does not split text or displace the document during remote edits.
+- Preserved focus visibility, keyboard and touch completion paths, accessible
+  labels, reduced-motion behavior, server-authoritative state, and the Phase 6
+  identity, capacity, lock, reconnect, and multi-connection contract.
+- The user accepted the final workspace presentation. Frontend unit, full
+  browser, Go, race, and embedded production-build gates passed during the
+  batched design work; the completed pass is checkpointed through `a905c7c`.
+
 ## Phase 7 — Compatibility and documentation closure
 
 **Objective:** Finish the transition without stranding open tabs or stale
@@ -664,6 +679,35 @@ documents.
 - One explicit compatibility policy is documented; no indefinite dual protocol
   remains by accident.
 - Normative and operational documentation matches the implementation.
+
+### Compatibility policy and completion record — 2026-08-11
+
+- No identity-and-authority client or schema version has been publicly
+  released. The first public release will therefore require `connection_id`,
+  omit the derived legacy `role` response alias, and reject the removed
+  `participant_remove` type as unknown instead of shipping transitional paths.
+  Phase 7A removed their code and compatibility behavior tests before the
+  release candidate; there is no indefinite dual protocol or post-release
+  deadline.
+- Verified the HTML application shell is served with `Cache-Control: no-store`
+  and references content-hashed Vite JavaScript/CSS assets served immutable.
+  The frontend is embedded in the same Go binary, so a reload selects a
+  compatible shell and bundle. No service worker can pin an earlier shell.
+- Updated self-hosting and proxy guidance for live enablement, one-instance
+  operation, WebSocket headers/timeouts/cookies, cache boundaries, restart
+  behavior, and the fresh-database requirement for unreleased development
+  builds.
+- Corrected the hosted privacy page to disclose the room-scoped browser
+  credential, last nickname, and functional room cookies while confirming that
+  content, passwords, and encryption keys are not persistently stored there.
+- Reviewed the complete `main...HEAD` diff. Changes remain within the LiveBin
+  extension and its required shared configuration, packaging, documentation,
+  and verification surfaces; paste API, AES-GCM envelope, burn semantics, CLI
+  contract, and the separate MCP boundary were not expanded.
+- `make format`, `make lint`, `make test` (including 123 frontend tests), and
+  `make build` pass at the Phase 7 documentation boundary. The existing Vite
+  main-chunk size advisory remains non-blocking and is deferred to the bounded
+  Phase 7A concentration review rather than changing bundling in this phase.
 
 ## Phase 7A — Bounded code-quality and concentration pass
 
@@ -717,6 +761,72 @@ audit cycle.
 - Full verification passes with no race, behavior, fixture, or build regression.
 - The pass ends when its recorded findings are resolved or explicitly accepted;
   it does not trigger another general audit.
+
+### Completion record — 2026-08-11
+
+- Removed the pre-release one-connection Hub entry points, omitted
+  `connection_id`/`client_id` fallback, derived `role` domain and JSON alias,
+  and retired `participant_remove` request field/dispatch path. The natural
+  `participant_removed` reconnect-grace expiry event remains and cannot be
+  triggered by a participant.
+- Ran the official Go `deadcode` reachability analysis with and without test
+  executables. Removed the superseded prototype `livecollab.Authority`, the
+  unreachable immediate-leave path, unused constructor wrappers, and their
+  obsolete tests. The test-inclusive scan is clean; production-only findings
+  are retained test seams and invariant helpers used by the test suite.
+- Ran Knip across the full Vite/Vitest project and separately reviewed its
+  production-only graph. Removed the unused `projectName` scaffold and its
+  tautological test, removed unnecessary exports from internally scoped values
+  and types, and retained scripts, generated collaboration fixtures, and
+  test-facing exports as deliberate tooling/test entry points. The full-project
+  Knip scan is clean.
+- Tightened the frontend participant decoder to require `access_class`,
+  `can_edit`, and `connection_count`. It now accepts the authoritative zero
+  connection count for `connection_lost`/`offline` participants while rejecting
+  a connected participant with zero sockets or a disconnected participant with
+  active sockets.
+- Split public Hub contracts and limits into `internal/live/hub_contract.go`,
+  HTTP/WebSocket response translation into
+  `internal/httpapi/live_response.go`, and process-local password/creator
+  session handling into `internal/httpapi/live_session.go`. Consolidated pure
+  snapshot and display helpers into the existing frontend collaboration/UI
+  modules with focused tests.
+- Retained the remaining `internal/live/hub.go` as the single serialized room
+  authority: document, metadata, presence, persistence rollback, and reconnect
+  operations share one room mutex and persist-before-publish boundary. Revisit
+  a participant-lifecycle extraction only when it can move as one tested unit
+  without crossing that boundary.
+- Retained the remaining `internal/httpapi/live.go` as the live transport
+  coordinator after extracting wire codecs, publication locking, response
+  mapping, and sessions. Retained `web/src/live-room.tsx` as the per-room
+  synchronization controller because its refs and generation checks jointly
+  order HTTP snapshots, WebSocket events, editor state, and pending operations;
+  connection, reconciliation, resync, editor, operations, and pure UI helpers
+  already live in focused modules. A future behavior change that materially
+  expands controller state must first introduce a tested state boundary.
+- Reviewed dependency changes: WebSocket, Argon2id, CodeMirror collaboration,
+  and the progress indicator are all used directly; `go.mod` now identifies
+  direct Go imports accurately. `go mod tidy` changed only direct/indirect
+  classification and required transitive checksums, and `go mod verify`
+  passes. Removed unused direct frontend declarations for `@emnapi/core` and
+  `@emnapi/runtime`, and classified Vite and its React plugin as development
+  tooling. `npm audit --omit=dev` reports zero shipped dependency
+  vulnerabilities; the full audit retains one moderate PostCSS and one high
+  nanoid advisory in Vite's development-only toolchain, with no compatible
+  lockfile-only update proposed by `npm audit fix --dry-run`. No framework,
+  datastore, service, or runtime dependency was added in this pass.
+- Kept the visible Vite advisory as an accepted size risk rather than hiding
+  it. The live page is already a separate 65.64 kB minified chunk; the shared
+  entry is 547.71 kB minified / 175.21 kB gzip and contains the core paste
+  editor/viewer dependencies. Revisit only if measured initial-load performance
+  fails its release target or another feature grows the shared entry.
+- `make format`, `make lint`, `make test`, `make test-race`, `make test-e2e`,
+  and `make build` pass. This includes 124 frontend tests, the full Go race
+  suite, unchanged collaboration fixtures, the complete browser journey, and
+  the embedded Go binary. The browser gate now waits for the asynchronously
+  loaded LiveBin byte limit before asserting its value, removing a reproduced
+  timing race without weakening the assertion. No paste, encryption, burn,
+  slug, CLI, MCP, or one-service deployment contract changed.
 
 ## Phase 8 — Final independent release audit and behavioral review
 
@@ -797,7 +907,7 @@ Push only the feature branch. Before merge, require a green pull-request
 | Creator token leaks | HttpOnly cookie, hash-only SQLite storage, no response/log echo |
 | Restart silently unlocks a room | Persist lock before broadcast |
 | Lock converts collaborators into viewers | Separate access class from `can_edit` |
-| Old open tabs cannot reconnect | Optional additive connection field and legacy fallback |
+| A future wire change strands open tabs | Require an explicit additive or versioned rollout after version 1 ships |
 | Browser storage is unavailable | In-memory identity fallback |
 | Unbounded browser identities or connections | Existing room bounds plus a new per-participant connection cap |
 | Multiple cursors overwrite each other | Cursor state keyed by participant and connection |

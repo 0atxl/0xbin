@@ -3,7 +3,10 @@ import type { LiveRoomDocument } from "./live-api";
 import type { LiveParticipant } from "./live-wire";
 import {
   aggregateLiveRoomBytes,
+  formatLiveBytes,
+  formatLiveMebibytes,
   formatLiveRoomLifetime,
+  liveInlineRenameWidth,
   liveRemoteCursors,
   nextLiveTabName,
   nextLiveMenuItemIndex,
@@ -35,7 +38,6 @@ const participant = (
   id: "other",
   nickname: "Other",
   color: "#112233",
-  role: "writer",
   accessClass: "collaborator",
   canEdit: true,
   connectionCount: 1,
@@ -57,6 +59,14 @@ const participant = (
 });
 
 describe("live room UI helpers", () => {
+  it("keeps compact rename and byte labels within their visual bounds", () => {
+    expect(liveInlineRenameWidth("tab1")).toBe("8ch");
+    expect(liveInlineRenameWidth("a very long tab name")).toBe("15ch");
+    expect(formatLiveBytes(512)).toBe("512 B");
+    expect(formatLiveBytes(1536)).toBe("1.5 KiB");
+    expect(formatLiveMebibytes(1 << 20)).toBe("1 MiB");
+  });
+
   it("shows aggregate UTF-8 bytes and the configured room lifetime", () => {
     expect(
       aggregateLiveRoomBytes(documents, (document) => document.content),

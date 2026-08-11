@@ -1,11 +1,11 @@
 import { utf8Bytes, type CreateDraft } from "./create";
 
 export const defaultLiveDocumentName = "tab1";
-export const maxLiveDocumentNameBytes = 64;
-export const maxLivePasswordBytes = 256;
+const maxLiveDocumentNameBytes = 64;
+const maxLivePasswordBytes = 256;
 export const fallbackLiveRoomBytes = 1 << 20;
 
-export type LiveDocumentDraft = {
+type LiveDocumentDraft = {
   name: string;
   language: string;
   content: string;

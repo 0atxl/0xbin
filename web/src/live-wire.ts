@@ -1,20 +1,19 @@
 import type { LiveRoomDocument } from "./live-api";
 
-export type LiveCursor = {
+type LiveCursor = {
   documentID: string;
   revision: number;
   anchor: number;
   head: number;
 };
 
-export type LiveConnectionCursor = LiveCursor & {
+type LiveConnectionCursor = LiveCursor & {
   connectionID: string;
 };
 
 export type LiveParticipant = {
   id: string;
   nickname: string;
-  role: "writer" | "watch_only";
   accessClass: "creator" | "collaborator" | "viewer";
   canEdit: boolean;
   connectionCount: number;
@@ -27,7 +26,7 @@ export type LiveParticipant = {
   lastSeenAt: string;
 };
 
-export type LiveDocumentRevision = {
+type LiveDocumentRevision = {
   documentID: string;
   revision: number;
 };
@@ -355,7 +354,8 @@ function decodeParticipant(value: unknown): LiveParticipant | undefined {
     !participant ||
     !strings(participant, "id", "nickname", "color", "current_tab") ||
     !isParticipantStatus(participant.status) ||
-    !isParticipantRole(participant.role)
+    !isParticipantAccessClass(participant.access_class) ||
+    typeof participant.can_edit !== "boolean"
   )
     return undefined;
   const joinedAt = timestamp(participant.joined_at);
@@ -368,31 +368,24 @@ function decodeParticipant(value: unknown): LiveParticipant | undefined {
     participant.cursors === undefined
       ? []
       : array(participant.cursors)?.map(decodeConnectionCursor);
-  const accessClass = isParticipantAccessClass(participant.access_class)
-    ? participant.access_class
-    : participant.role === "writer"
-      ? "collaborator"
-      : "viewer";
-  const canEdit =
-    typeof participant.can_edit === "boolean"
-      ? participant.can_edit
-      : participant.role === "writer";
-  const connectionCount = nonnegativeInteger(participant.connection_count) ?? 1;
+  const connectionCount = nonnegativeInteger(participant.connection_count);
   if (
     !joinedAt ||
     !lastSeenAt ||
     (participant.cursor !== undefined && !cursor) ||
     !decodedCursors ||
     decodedCursors.some((value) => !value) ||
-    connectionCount < 1
+    connectionCount === undefined ||
+    (participant.status === "connected"
+      ? connectionCount < 1
+      : connectionCount !== 0)
   )
     return undefined;
   return {
     id: participant.id as string,
     nickname: participant.nickname as string,
-    role: participant.role,
-    accessClass,
-    canEdit,
+    accessClass: participant.access_class,
+    canEdit: participant.can_edit,
     connectionCount,
     color: participant.color as string,
     currentTab: participant.current_tab as string,
@@ -462,10 +455,6 @@ function isParticipantStatus(
   return (
     value === "connected" || value === "connection_lost" || value === "offline"
   );
-}
-
-function isParticipantRole(value: unknown): value is LiveParticipant["role"] {
-  return value === "writer" || value === "watch_only";
 }
 
 function isParticipantAccessClass(

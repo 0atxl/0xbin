@@ -51,14 +51,14 @@ export type CreatedPaste = {
   expiresAt: string;
 };
 
-export type PlaintextPayload = {
+type PlaintextPayload = {
   version: 1;
   title: string;
   language: string;
   content: string;
 };
 
-export type CiphertextEnvelope = {
+type CiphertextEnvelope = {
   version: 1;
   algorithm: "A256GCM";
   iv: string;

@@ -50,9 +50,8 @@ public participant ID is derived from the room slug and credential with a
 domain-separated hash.
 
 `connection_id` identifies one mounted page and is unique for each tab
-connection. During the compatibility window it is optional; an older client
-that omits it uses its `session_id` and therefore retains one-connection
-behavior. `client_id` identifies that page's submitted operation stream.
+connection and is required. `client_id` identifies that page's submitted
+operation stream and is also required.
 `preferred_name` is considered only when the browser participant has no
 authoritative room nickname; later tabs receive the existing nickname. The
 revision set must describe the HTTP bootstrap from which the client is joining.
@@ -95,7 +94,7 @@ malformed change sets are rejected.
 
 | Type | Required fields | Meaning |
 | --- | --- | --- |
-| `join` | `session_id`, revision set; optional `connection_id`, `client_id`, `preferred_name` | Complete the connection handshake. |
+| `join` | `session_id`, `connection_id`, `client_id`, revision set; optional `preferred_name` | Complete the connection handshake. |
 | `heartbeat` | — | Keep this connection active. |
 | `ack` | current revisions | Acknowledge applied authority state. |
 | `push_changes` | `operation_id`, `document_id`, `base_version`, `changes` | Submit one CodeMirror change set. |
@@ -106,10 +105,6 @@ malformed change sets are rejected.
 | `presence` | `current_tab`, optional cursor selection | Send connection-specific tab/cursor state. |
 | `participant_rename` | `name` | Rename the browser participant for this room. |
 | `room_watch_only` | `watch_only` | Creator-only durable lock (`true`) or unlock (`false`). |
-
-During the bounded compatibility window, the removed `participant_remove`
-message receives a stable unsupported-operation error and cannot disconnect a
-participant or mutate the roster.
 
 The server bounds frame size, message rate, the operator-configured aggregate
 room-content budget, tab count, browser-participant capacity, and connections
@@ -175,3 +170,19 @@ URLs. It authorizes durable room lock/unlock and gives its holder the creator
 access class; it is not an account. Ordinary password unlock grants room access
 but not creator authority. LiveBin intentionally provides no participant kick,
 ban, promotion, demotion, or per-user role-management messages.
+
+## Pre-release compatibility closure
+
+No browser/client version of the identity-and-authority protocol has been
+publicly released, and the development database baseline is explicitly fresh
+start only. The first public release therefore does not ship transitional
+support for an omitted `connection_id`, the derived `role` response alias, or
+the removed `participant_remove` request. Phase 7A removed all three paths and
+their compatibility-only tests before the release candidate audit.
+
+The application shell uses `Cache-Control: no-store` and references
+content-hashed JavaScript and CSS. A reload after deployment therefore selects
+the frontend embedded in the running binary rather than retaining an old
+application entry point indefinitely. Future changes to a published WebSocket
+version must use an explicit additive or versioned rollout policy; this
+pre-release removal decision is not precedent for breaking deployed clients.

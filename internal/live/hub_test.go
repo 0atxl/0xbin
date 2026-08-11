@@ -31,11 +31,11 @@ func TestHubRebasesConcurrentEditsAndPersistsBeforeReturn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	alice, err := hub.Join(ctx, "calmbrightotter", "session-a", now)
+	alice, err := joinHub(hub, ctx, "calmbrightotter", "session-a", now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	bob, err := hub.Join(ctx, "calmbrightotter", "session-b", now)
+	bob, err := joinHub(hub, ctx, "calmbrightotter", "session-b", now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +78,7 @@ func TestHubRebasesConcurrentEditsAndPersistsBeforeReturn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	joined, err := restarted.Join(ctx, "calmbrightotter", "new-session", now.Add(3*time.Second))
+	joined, err := joinHub(restarted, ctx, "calmbrightotter", "new-session", now.Add(3*time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +120,7 @@ func TestHubJoinIdentitySeparatesParticipantConnectionAndClient(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if joined.Participant.ID != wantID || joined.Participant.Nickname != identity.PreferredName || joined.Participant.AccessClass != live.ParticipantCollaborator || !joined.Participant.CanEdit || joined.Participant.ConnectionCount != 1 || joined.Participant.Role != live.ParticipantWriter {
+	if joined.Participant.ID != wantID || joined.Participant.Nickname != identity.PreferredName || joined.Participant.AccessClass != live.ParticipantCollaborator || !joined.Participant.CanEdit || joined.Participant.ConnectionCount != 1 {
 		t.Fatalf("joined participant = %#v", joined.Participant)
 	}
 	if joined.Session.ConnectionID() != identity.ConnectionID || joined.Session.ClientID() != identity.ClientID {
@@ -181,13 +181,6 @@ func TestHubJoinIdentitySeparatesParticipantConnectionAndClient(t *testing.T) {
 	}
 	if colliding.Participant.Nickname == identity.PreferredName {
 		t.Fatal("preferred-name collision bypassed active-room uniqueness")
-	}
-	legacy, err := restarted.Join(ctx, "calmbrightotter", "legacy-session", now.Add(6*time.Second))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if legacy.Session.ConnectionID() != "legacy-session" || legacy.Session.ClientID() != "legacy-session" || legacy.Participant.ConnectionCount != 1 {
-		t.Fatalf("legacy join compatibility = %#v", legacy)
 	}
 }
 
@@ -570,11 +563,11 @@ func TestHubMetadataConflictsAndIdempotentCreate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	alice, err := hub.Join(ctx, "calmbrightotter", "session-a", now)
+	alice, err := joinHub(hub, ctx, "calmbrightotter", "session-a", now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	bob, err := hub.Join(ctx, "calmbrightotter", "session-b", now)
+	bob, err := joinHub(hub, ctx, "calmbrightotter", "session-b", now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -648,7 +641,7 @@ func TestHubAtomicCommitFailureIsNotAcknowledgedAndSuccessfulRetrySurvivesRestar
 	if err != nil {
 		t.Fatal(err)
 	}
-	joined, err := hub.Join(ctx, "calmbrightotter", "session-a", now)
+	joined, err := joinHub(hub, ctx, "calmbrightotter", "session-a", now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -675,7 +668,7 @@ func TestHubAtomicCommitFailureIsNotAcknowledgedAndSuccessfulRetrySurvivesRestar
 	if err != nil {
 		t.Fatal(err)
 	}
-	rejoined, err := restarted.Join(ctx, "calmbrightotter", "new-session", now.Add(time.Second))
+	rejoined, err := joinHub(restarted, ctx, "calmbrightotter", "new-session", now.Add(time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -701,11 +694,11 @@ func TestHubPresenceReconnectsWithinGraceAndEvictsAfterLeave(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	first, err := hub.Join(ctx, "calmbrightotter", "session-a", now)
+	first, err := joinHub(hub, ctx, "calmbrightotter", "session-a", now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := hub.Join(ctx, "calmbrightotter", "session-b", now)
+	second, err := joinHub(hub, ctx, "calmbrightotter", "session-b", now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -733,7 +726,7 @@ func TestHubPresenceReconnectsWithinGraceAndEvictsAfterLeave(t *testing.T) {
 	if disconnected.Status != live.ParticipantConnectionLost || disconnected.Cursor != nil || len(disconnected.Cursors) != 0 || disconnected.CurrentTab != "notes" {
 		t.Fatalf("disconnected presence = %#v", disconnected)
 	}
-	reconnected, err := hub.Join(ctx, "calmbrightotter", "session-a", now.Add(3*time.Second))
+	reconnected, err := joinHub(hub, ctx, "calmbrightotter", "session-a", now.Add(3*time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -743,20 +736,11 @@ func TestHubPresenceReconnectsWithinGraceAndEvictsAfterLeave(t *testing.T) {
 	if err := first.Session.Heartbeat(now.Add(3 * time.Second)); !errors.Is(err, live.ErrParticipantInactive) {
 		t.Fatalf("stale connection heartbeat error = %v", err)
 	}
-	if err := reconnected.Session.Leave(now.Add(4 * time.Second)); err != nil {
-		t.Fatal(err)
-	}
-	if err := second.Session.Leave(now.Add(4 * time.Second)); err != nil {
-		t.Fatal(err)
-	}
-	if hub.RoomCount() != 0 {
-		t.Fatalf("room count after final leave = %d, want 0", hub.RoomCount())
-	}
 	newHub, err := live.NewHub(store, nil, testHubOptions([]string{"participant-after"}, nil))
 	if err != nil {
 		t.Fatal(err)
 	}
-	joined, err := newHub.Join(ctx, "calmbrightotter", "new-session", now.Add(5*time.Second))
+	joined, err := joinHub(newHub, ctx, "calmbrightotter", "new-session", now.Add(5*time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -786,7 +770,7 @@ func TestHubSweepEvictsSequentialOneVisitRoomsAfterReconnectGrace(t *testing.T) 
 	}
 	for visit := 0; visit < 3; visit++ {
 		joinedAt := now.Add(time.Duration(visit) * time.Minute)
-		joined, err := hub.Join(ctx, "calmbrightotter", "session-"+strconv.Itoa(visit), joinedAt)
+		joined, err := joinHub(hub, ctx, "calmbrightotter", "session-"+strconv.Itoa(visit), joinedAt)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -826,11 +810,11 @@ func TestHubSweepPublishesGraceExpiredParticipantBeforeRemovingState(t *testing.
 	}
 	defer hub.Shutdown(ctx, now)
 
-	stale, err := hub.Join(ctx, "calmbrightotter", "stale-session", now)
+	stale, err := joinHub(hub, ctx, "calmbrightotter", "stale-session", now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := hub.Join(ctx, "calmbrightotter", "active-session", now); err != nil {
+	if _, err := joinHub(hub, ctx, "calmbrightotter", "active-session", now); err != nil {
 		t.Fatal(err)
 	}
 	if err := stale.Session.Disconnect(now.Add(time.Second)); err != nil {
@@ -876,7 +860,7 @@ func TestHubSweepExpiresLoadedRoomWithoutStorageCleanup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	joined, err := hub.Join(ctx, room.Slug, "session-a", now)
+	joined, err := joinHub(hub, ctx, room.Slug, "session-a", now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -914,7 +898,7 @@ func TestHubShutdownDoesNotFlushRejectedAtomicCommit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	joined, err := hub.Join(ctx, "calmbrightotter", "session-a", now)
+	joined, err := joinHub(hub, ctx, "calmbrightotter", "session-a", now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -953,7 +937,7 @@ func TestHubCompactsHistoryOnlyAfterConfiguredThreshold(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	joined, err := hub.Join(ctx, "calmbrightotter", "session-a", now)
+	joined, err := joinHub(hub, ctx, "calmbrightotter", "session-a", now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -995,7 +979,7 @@ func TestHubRetriesCommittedOperationAfterCompactionAndRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	joined, err := hub.Join(ctx, "calmbrightotter", "session-before", now)
+	joined, err := joinHub(hub, ctx, "calmbrightotter", "session-before", now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1046,7 +1030,7 @@ func TestHubRetriesCommittedOperationAfterCompactionAndRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rejoined, err := restarted.Join(ctx, "calmbrightotter", "session-after", now.Add(4*time.Second))
+	rejoined, err := joinHub(restarted, ctx, "calmbrightotter", "session-after", now.Add(4*time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1092,11 +1076,12 @@ func TestHubRetriesCommittedOperationAfterRoomEviction(t *testing.T) {
 	if err := store.CreateRoom(ctx, testRoom(now)); err != nil {
 		t.Fatal(err)
 	}
-	hub, err := live.NewHub(store, nil, testHubOptions([]string{"first", "second"}, nil))
+	options := testHubOptions([]string{"first", "second"}, nil)
+	hub, err := live.NewHub(store, nil, options)
 	if err != nil {
 		t.Fatal(err)
 	}
-	joined, err := hub.Join(ctx, "calmbrightotter", "first-session", now)
+	joined, err := joinHub(hub, ctx, "calmbrightotter", "first-session", now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1107,13 +1092,16 @@ func TestHubRetriesCommittedOperationAfterRoomEviction(t *testing.T) {
 	if _, err := joined.Session.SubmitDocument(ctx, operation, now.Add(time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	if err := joined.Session.Leave(now.Add(2 * time.Second)); err != nil {
+	if err := joined.Session.Disconnect(now.Add(2 * time.Second)); err != nil {
 		t.Fatal(err)
+	}
+	if removed, err := hub.Sweep(ctx, now.Add(2*time.Second+options.ReconnectGrace+time.Nanosecond)); err != nil || removed != 1 {
+		t.Fatalf("sweep after reconnect grace = %d, %v; want 1, nil", removed, err)
 	}
 	if hub.RoomCount() != 0 {
 		t.Fatalf("room count after leave = %d, want eviction", hub.RoomCount())
 	}
-	rejoined, err := hub.Join(ctx, "calmbrightotter", "second-session", now.Add(3*time.Second))
+	rejoined, err := joinHub(hub, ctx, "calmbrightotter", "second-session", now.Add(3*time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1143,7 +1131,7 @@ func TestHubCompactsHistoryAtConfiguredByteThreshold(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	joined, err := hub.Join(ctx, "calmbrightotter", "session-a", now)
+	joined, err := joinHub(hub, ctx, "calmbrightotter", "session-a", now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1185,7 +1173,7 @@ func TestHubShutdownRacesWithJoins(t *testing.T) {
 		go func(index int) {
 			defer group.Done()
 			<-start
-			_, err := hub.Join(ctx, "calmbrightotter", "session-"+strconv.Itoa(index), now)
+			_, err := joinHub(hub, ctx, "calmbrightotter", "session-"+strconv.Itoa(index), now)
 			results <- err
 		}(index)
 	}
@@ -1206,7 +1194,7 @@ func TestHubShutdownRacesWithJoins(t *testing.T) {
 	if hub.RoomCount() != 0 {
 		t.Fatalf("room count after shutdown race = %d, want 0", hub.RoomCount())
 	}
-	if _, err := hub.Join(ctx, "calmbrightotter", "after-shutdown", now); !errors.Is(err, live.ErrHubClosed) {
+	if _, err := joinHub(hub, ctx, "calmbrightotter", "after-shutdown", now); !errors.Is(err, live.ErrHubClosed) {
 		t.Fatalf("join after shutdown error = %v", err)
 	}
 }
@@ -1228,7 +1216,7 @@ func TestHubBoundsHistoryAndReturnsResync(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	joined, err := hub.Join(ctx, "calmbrightotter", "session-a", now)
+	joined, err := joinHub(hub, ctx, "calmbrightotter", "session-a", now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1266,7 +1254,7 @@ func TestHubSerializesConcurrentEdits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	joined, err := hub.Join(ctx, "calmbrightotter", "session-a", now)
+	joined, err := joinHub(hub, ctx, "calmbrightotter", "session-a", now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1317,7 +1305,7 @@ func TestHubBridgesRetainedDeltasAndRequiresResyncWhenCompacted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	writer, err := hub.Join(ctx, "calmbrightotter", "writer-session", now)
+	writer, err := joinHub(hub, ctx, "calmbrightotter", "writer-session", now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1333,7 +1321,7 @@ func TestHubBridgesRetainedDeltasAndRequiresResyncWhenCompacted(t *testing.T) {
 	}, now.Add(time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	reader, err := hub.Join(ctx, "calmbrightotter", "reader-session", now.Add(2*time.Second))
+	reader, err := joinHub(hub, ctx, "calmbrightotter", "reader-session", now.Add(2*time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1380,25 +1368,25 @@ func TestHubEnforcesWriterViewerCapacityAndWatchOnlyRole(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	creator, err := hub.JoinWithCreator(ctx, "calmbrightotter", "creator-session", creatorCapability, now)
+	creator, err := joinHubWithCreator(hub, ctx, "calmbrightotter", "creator-session", creatorCapability, now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !creator.Session.IsCreator() || creator.Participant.Role != live.ParticipantWriter || creator.Participant.AccessClass != live.ParticipantCreator || !creator.Participant.CanEdit || creator.Participant.ConnectionCount != 1 {
+	if !creator.Session.IsCreator() || creator.Participant.AccessClass != live.ParticipantCreator || !creator.Participant.CanEdit || creator.Participant.ConnectionCount != 1 {
 		t.Fatalf("creator session = %#v", creator)
 	}
-	viewerA, err := hub.Join(ctx, "calmbrightotter", "viewer-a-session", now)
+	viewerA, err := joinHub(hub, ctx, "calmbrightotter", "viewer-a-session", now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	viewerB, err := hub.Join(ctx, "calmbrightotter", "viewer-b-session", now)
+	viewerB, err := joinHub(hub, ctx, "calmbrightotter", "viewer-b-session", now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if viewerA.Participant.Role != live.ParticipantWatchOnly || viewerB.Participant.Role != live.ParticipantWatchOnly || viewerA.Participant.AccessClass != live.ParticipantViewer || viewerB.Participant.AccessClass != live.ParticipantViewer || viewerA.Participant.CanEdit || viewerB.Participant.CanEdit {
-		t.Fatalf("viewer roles = %q, %q", viewerA.Participant.Role, viewerB.Participant.Role)
+	if viewerA.Participant.AccessClass != live.ParticipantViewer || viewerB.Participant.AccessClass != live.ParticipantViewer || viewerA.Participant.CanEdit || viewerB.Participant.CanEdit {
+		t.Fatalf("viewer authority = %#v, %#v", viewerA.Participant, viewerB.Participant)
 	}
-	if _, err := hub.Join(ctx, "calmbrightotter", "overflow-session", now); !errors.Is(err, live.ErrParticipantLimit) {
+	if _, err := joinHub(hub, ctx, "calmbrightotter", "overflow-session", now); !errors.Is(err, live.ErrParticipantLimit) {
 		t.Fatalf("overflow join error = %v", err)
 	}
 	if _, err := viewerA.Session.SubmitDocument(ctx, live.DocumentOperation{
@@ -1424,14 +1412,14 @@ func TestHubEnforcesWriterViewerCapacityAndWatchOnlyRole(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	creatorRole := live.ParticipantRole("")
+	creatorCanEdit := false
 	for _, participant := range writableState.Participants {
 		if participant.ID == creator.Participant.ID {
-			creatorRole = participant.Role
+			creatorCanEdit = participant.CanEdit
 		}
 	}
-	if creatorRole != live.ParticipantWriter {
-		t.Fatalf("creator role after restoring writable mode = %q", creatorRole)
+	if !creatorCanEdit {
+		t.Fatal("creator cannot edit after restoring writable mode")
 	}
 }
 
@@ -1452,7 +1440,7 @@ func TestHubAccessClassAndLockTruthTable(t *testing.T) {
 	}
 	defer hub.Shutdown(ctx, now.Add(time.Hour))
 
-	creator, err := hub.JoinWithCreator(ctx, "calmbrightotter", "creator-session", creatorCapability, now)
+	creator, err := joinHubWithCreator(hub, ctx, "calmbrightotter", "creator-session", creatorCapability, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1463,15 +1451,15 @@ func TestHubAccessClassAndLockTruthTable(t *testing.T) {
 	if !locked.WatchOnly {
 		t.Fatal("room did not lock")
 	}
-	collaborator, err := hub.Join(ctx, "calmbrightotter", "collaborator-session", now.Add(2*time.Second))
+	collaborator, err := joinHub(hub, ctx, "calmbrightotter", "collaborator-session", now.Add(2*time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
-	viewerA, err := hub.Join(ctx, "calmbrightotter", "viewer-a-session", now.Add(3*time.Second))
+	viewerA, err := joinHub(hub, ctx, "calmbrightotter", "viewer-a-session", now.Add(3*time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
-	viewerB, err := hub.Join(ctx, "calmbrightotter", "viewer-b-session", now.Add(4*time.Second))
+	viewerB, err := joinHub(hub, ctx, "calmbrightotter", "viewer-b-session", now.Add(4*time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1481,15 +1469,15 @@ func TestHubAccessClassAndLockTruthTable(t *testing.T) {
 	} {
 		switch name {
 		case "creator":
-			if participant.AccessClass != live.ParticipantCreator || !participant.CanEdit || participant.Role != live.ParticipantWriter {
+			if participant.AccessClass != live.ParticipantCreator || !participant.CanEdit {
 				t.Fatalf("locked creator = %#v", participant)
 			}
 		case "collaborator":
-			if participant.AccessClass != live.ParticipantCollaborator || participant.CanEdit || participant.Role != live.ParticipantWatchOnly {
+			if participant.AccessClass != live.ParticipantCollaborator || participant.CanEdit {
 				t.Fatalf("locked collaborator = %#v", participant)
 			}
 		default:
-			if participant.AccessClass != live.ParticipantViewer || participant.CanEdit || participant.Role != live.ParticipantWatchOnly {
+			if participant.AccessClass != live.ParticipantViewer || participant.CanEdit {
 				t.Fatalf("locked viewer = %#v", participant)
 			}
 		}
@@ -1516,7 +1504,7 @@ func TestHubAccessClassAndLockTruthTable(t *testing.T) {
 	if err := collaborator.Session.Disconnect(now.Add(7 * time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	reconnected, err := hub.Join(ctx, "calmbrightotter", "collaborator-session", now.Add(8*time.Second))
+	reconnected, err := joinHub(hub, ctx, "calmbrightotter", "collaborator-session", now.Add(8*time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1561,25 +1549,25 @@ func TestHubReservesWriterCapacityForLateCreatorJoin(t *testing.T) {
 	}
 	defer hub.Shutdown(ctx, now.Add(time.Hour))
 
-	first, err := hub.Join(ctx, "calmbrightotter", "first-session", now)
+	first, err := joinHub(hub, ctx, "calmbrightotter", "first-session", now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := hub.Join(ctx, "calmbrightotter", "second-session", now)
+	second, err := joinHub(hub, ctx, "calmbrightotter", "second-session", now)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if first.Participant.AccessClass != live.ParticipantCollaborator || second.Participant.AccessClass != live.ParticipantViewer {
 		t.Fatalf("reserved creator capacity = first %#v, second %#v", first.Participant, second.Participant)
 	}
-	creator, err := hub.JoinWithCreator(ctx, "calmbrightotter", "creator-session", creatorCapability, now)
+	creator, err := joinHubWithCreator(hub, ctx, "calmbrightotter", "creator-session", creatorCapability, now)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if creator.Participant.AccessClass != live.ParticipantCreator || !creator.Participant.CanEdit || len(creator.State.Participants) != 3 {
 		t.Fatalf("late creator join = %#v", creator)
 	}
-	if _, err := hub.Join(ctx, "calmbrightotter", "overflow-session", now); !errors.Is(err, live.ErrParticipantLimit) {
+	if _, err := joinHub(hub, ctx, "calmbrightotter", "overflow-session", now); !errors.Is(err, live.ErrParticipantLimit) {
 		t.Fatalf("late creator capacity overflow error = %v", err)
 	}
 }
@@ -1601,20 +1589,20 @@ func TestHubWatchOnlyModePreservesWriterCapacitySlots(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	creator, err := hub.JoinWithCreator(ctx, "calmbrightotter", "creator-session", creatorCapability, now)
+	creator, err := joinHubWithCreator(hub, ctx, "calmbrightotter", "creator-session", creatorCapability, now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	writer, err := hub.Join(ctx, "calmbrightotter", "writer-session", now)
+	writer, err := joinHub(hub, ctx, "calmbrightotter", "writer-session", now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	viewer, err := hub.Join(ctx, "calmbrightotter", "viewer-session", now)
+	viewer, err := joinHub(hub, ctx, "calmbrightotter", "viewer-session", now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if writer.Participant.Role != live.ParticipantWriter || viewer.Participant.Role != live.ParticipantWatchOnly {
-		t.Fatalf("initial roles = writer %q, viewer %q", writer.Participant.Role, viewer.Participant.Role)
+	if writer.Participant.AccessClass != live.ParticipantCollaborator || !writer.Participant.CanEdit || viewer.Participant.AccessClass != live.ParticipantViewer || viewer.Participant.CanEdit {
+		t.Fatalf("initial participant authority = writer %#v, viewer %#v", writer.Participant, viewer.Participant)
 	}
 	if _, err := creator.Session.SetWatchOnly(ctx, true, now); err != nil {
 		t.Fatal(err)
@@ -1625,14 +1613,14 @@ func TestHubWatchOnlyModePreservesWriterCapacitySlots(t *testing.T) {
 	if _, err := hub.Sweep(ctx, now.Add(time.Second+options.ReconnectGrace+time.Nanosecond)); err != nil {
 		t.Fatal(err)
 	}
-	replacement, err := hub.Join(ctx, "calmbrightotter", "replacement-session", now.Add(time.Second+options.ReconnectGrace+time.Nanosecond))
+	replacement, err := joinHub(hub, ctx, "calmbrightotter", "replacement-session", now.Add(time.Second+options.ReconnectGrace+time.Nanosecond))
 	if err != nil {
 		t.Fatalf("replacement should use the released writer capacity slot: %v", err)
 	}
-	if replacement.Participant.Role != live.ParticipantWatchOnly || replacement.Participant.AccessClass != live.ParticipantCollaborator || replacement.Participant.CanEdit {
+	if replacement.Participant.AccessClass != live.ParticipantCollaborator || replacement.Participant.CanEdit {
 		t.Fatalf("locked replacement participant = %#v", replacement.Participant)
 	}
-	if _, err := hub.Join(ctx, "calmbrightotter", "overflow-session", now); !errors.Is(err, live.ErrParticipantLimit) {
+	if _, err := joinHub(hub, ctx, "calmbrightotter", "overflow-session", now); !errors.Is(err, live.ErrParticipantLimit) {
 		t.Fatalf("overflow join error = %v", err)
 	}
 }
@@ -1650,11 +1638,11 @@ func TestHubCreatorCapabilityAndLockSurviveRestartWhilePresenceDoesNot(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	creator, err := hub.JoinWithCreator(ctx, "calmbrightotter", "creator-session", creatorCapability, now)
+	creator, err := joinHubWithCreator(hub, ctx, "calmbrightotter", "creator-session", creatorCapability, now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	collaborator, err := hub.Join(ctx, "calmbrightotter", "collaborator-session", now)
+	collaborator, err := joinHub(hub, ctx, "calmbrightotter", "collaborator-session", now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1706,11 +1694,11 @@ func TestHubCreatorCapabilityAndLockSurviveRestartWhilePresenceDoesNot(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	joined, err := restarted.JoinWithCreator(ctx, "calmbrightotter", "after-restart-session", creatorCapability, now.Add(time.Second))
+	joined, err := joinHubWithCreator(restarted, ctx, "calmbrightotter", "after-restart-session", creatorCapability, now.Add(time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !joined.Session.IsCreator() || !joined.State.WatchOnly || len(joined.State.Participants) != 1 || joined.Participant.AccessClass != live.ParticipantCreator || !joined.Participant.CanEdit || joined.Participant.Role != live.ParticipantWriter {
+	if !joined.Session.IsCreator() || !joined.State.WatchOnly || len(joined.State.Participants) != 1 || joined.Participant.AccessClass != live.ParticipantCreator || !joined.Participant.CanEdit {
 		t.Fatalf("durable creator/lock or transient presence after restart = %#v", joined)
 	}
 }
@@ -1728,7 +1716,7 @@ func TestHubRejectsWrongCreatorCapabilityAndExpiredRoom(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	joined, err := hub.JoinWithCreator(ctx, "calmbrightotter", "creator-session", capability, now.Add(16*time.Minute))
+	joined, err := joinHubWithCreator(hub, ctx, "calmbrightotter", "creator-session", capability, now.Add(16*time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1739,14 +1727,14 @@ func TestHubRejectsWrongCreatorCapabilityAndExpiredRoom(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	joined, err = hub.JoinWithCreator(ctx, "calmbrightotter", "wrong-capability-session", wrong, now.Add(17*time.Minute))
+	joined, err = joinHubWithCreator(hub, ctx, "calmbrightotter", "wrong-capability-session", wrong, now.Add(17*time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if joined.Session.IsCreator() {
 		t.Fatal("wrong creator capability acquired authority")
 	}
-	if _, err := hub.JoinWithCreator(ctx, "calmbrightotter", "expired-room-session", capability, now.Add(24*time.Hour)); !errors.Is(err, live.ErrRoomExpired) {
+	if _, err := joinHubWithCreator(hub, ctx, "calmbrightotter", "expired-room-session", capability, now.Add(24*time.Hour)); !errors.Is(err, live.ErrRoomExpired) {
 		t.Fatalf("expired room join error = %v", err)
 	}
 }
@@ -1765,7 +1753,7 @@ func TestHubLockPersistenceFailureDoesNotChangeAuthorityState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	joined, err := hub.JoinWithCreator(ctx, "calmbrightotter", "creator-session", capability, now)
+	joined, err := joinHubWithCreator(hub, ctx, "calmbrightotter", "creator-session", capability, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1963,6 +1951,24 @@ func createTestRoomWithCreator(t *testing.T, ctx context.Context, store *sqlite.
 		t.Fatal(err)
 	}
 	return capability
+}
+
+func joinHub(hub *live.Hub, ctx context.Context, slug, participantCredential string, now time.Time) (live.JoinResult, error) {
+	identity := live.JoinIdentity{
+		ParticipantCredential: participantCredential,
+		ConnectionID:          participantCredential,
+		ClientID:              participantCredential,
+	}
+	return hub.JoinWithIdentity(ctx, slug, identity, live.CreatorCapability{}, now)
+}
+
+func joinHubWithCreator(hub *live.Hub, ctx context.Context, slug, participantCredential string, capability live.CreatorCapability, now time.Time) (live.JoinResult, error) {
+	identity := live.JoinIdentity{
+		ParticipantCredential: participantCredential,
+		ConnectionID:          participantCredential,
+		ClientID:              participantCredential,
+	}
+	return hub.JoinWithIdentity(ctx, slug, identity, capability, now)
 }
 
 func testHubOptions(participants, documents []string) live.HubOptions {

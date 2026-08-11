@@ -19,7 +19,7 @@ export type LiveOutboundUpdate = {
   update: Update & { origin: Transaction };
 };
 
-export const liveQueueLimits = {
+const liveQueueLimits = {
   maxUpdates: 64,
   maxBytes: 48 * 1024,
 } as const;
@@ -140,6 +140,26 @@ export function rebaseAfterAcceptedSnapshot(
   } catch {
     return undefined;
   }
+}
+
+// CodeMirror advances one synchronized revision per received update. When an
+// HTTP snapshot skips several server revisions, represent the snapshot change
+// once and pad the remaining revision steps with empty updates.
+export function liveSnapshotUpdates(
+  changes: ChangeSet,
+  revision: number,
+  currentRevision: number,
+): Update[] {
+  const count = revision - currentRevision;
+  if (count <= 0) return [];
+  const updates: Update[] = [{ changes, clientID: "snapshot-resync" }];
+  for (let index = 1; index < count; index += 1) {
+    updates.push({
+      changes: ChangeSet.empty(changes.newLength),
+      clientID: `snapshot-resync-${index}`,
+    });
+  }
+  return updates;
 }
 
 export function normalizeLiveDocuments(

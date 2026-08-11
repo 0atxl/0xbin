@@ -22,8 +22,7 @@ var (
 var participantIDDomain = []byte("0xbin/live-participant/v1\x00")
 
 // JoinIdentity keeps browser-participant, mounted-page connection, and
-// operation-stream identity separate even while the compatibility path still
-// supports one active connection per participant.
+// operation-stream identity separate.
 type JoinIdentity struct {
 	ParticipantCredential string
 	ConnectionID          string

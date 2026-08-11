@@ -9,8 +9,9 @@ complete. The approved browser-identity and creator-authority evolution is
 planned separately in
 [`LIVE_SHARING_IDENTITY_AUTHORITY_PLAN.md`](LIVE_SHARING_IDENTITY_AUTHORITY_PLAN.md)
 and its contract, durable-storage, additive-identity, grouped-connection,
-lock-authority, kick-removal, and minimal frontend-wiring Phases 0–6 are
-complete. Phase 6A, the final live-workspace design pass, is next and has not
+lock-authority, kick-removal, minimal frontend-wiring, final design,
+compatibility/documentation, and bounded code-quality Phases 0–7A are
+complete. Phase 8, the final independent release audit, is next and has not
 started.
 
 **Related:** [`spec.md`](../spec.md), [`docs/PRD.md`](../docs/PRD.md),

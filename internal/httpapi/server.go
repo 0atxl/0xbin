@@ -71,16 +71,6 @@ func NewServer(cfg config.Config, pastes PasteService, readiness ...func(context
 	return newServerWithLive(cfg, pastes, nil, nil, readiness...)
 }
 
-// NewServerWithFrontend creates a server that serves the embedded frontend
-// for browser routes while keeping API and health routes separate.
-func NewServerWithFrontend(cfg config.Config, pastes PasteService, frontend fs.FS, readiness ...func(context.Context) error) *Server {
-	return newServerWithLive(cfg, pastes, frontend, nil, readiness...)
-}
-
-func newServer(cfg config.Config, pastes PasteService, frontend fs.FS, readiness ...func(context.Context) error) *Server {
-	return newServerWithLive(cfg, pastes, frontend, nil, readiness...)
-}
-
 // NewServerWithFrontendAndLive creates a server with the live-room transport
 // wired alongside the existing paste API and embedded frontend.
 func NewServerWithFrontendAndLive(cfg config.Config, pastes PasteService, frontend fs.FS, dependencies *LiveDependencies, readiness ...func(context.Context) error) *Server {
@@ -170,10 +160,6 @@ func NewHandler(cfg config.Config, pastes PasteService, readiness ...func(contex
 // NewHandlerWithFrontend attaches a frontend filesystem to browser routes.
 // It is useful for integration tests and the embedded production bundle.
 func NewHandlerWithFrontend(cfg config.Config, pastes PasteService, frontend fs.FS, readiness ...func(context.Context) error) http.Handler {
-	return newHandlerWithLive(cfg, pastes, frontend, nil, readiness...)
-}
-
-func newHandler(cfg config.Config, pastes PasteService, frontend fs.FS, readiness ...func(context.Context) error) http.Handler {
 	return newHandlerWithLive(cfg, pastes, frontend, nil, readiness...)
 }
 

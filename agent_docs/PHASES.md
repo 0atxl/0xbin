@@ -2,15 +2,17 @@
 
 This document groups the detailed implementation plan into product milestones. A phase is complete only when its exit criteria pass; writing code is not itself completion.
 
-**Current status (2026-08-09):** Phases 0–3 are complete. Phase 4 hosted
+**Current status (2026-08-11):** Phases 0–3 are complete. Phase 4 hosted
 public-beta work remains open. The separate Phase 5 live-sharing extension,
 release hardening, and independent audit are complete. A bounded
 browser-identity and creator-authority evolution is planned in
 [`LIVE_SHARING_IDENTITY_AUTHORITY_PLAN.md`](LIVE_SHARING_IDENTITY_AUTHORITY_PLAN.md)
 through the final live-workspace design pass and release audit. Its contract,
 durable-storage, additive-identity, grouped-connection, lock-authority,
-kick-removal, and minimal frontend-wiring Phases 0–6 are complete; Phase 6A,
-the final live-workspace design pass, is next and has not started.
+kick-removal, minimal frontend-wiring, final design,
+compatibility/documentation, and bounded code-quality Phases 0–7A are
+complete; Phase 8, the final independent release audit, is next and has not
+started.
 
 ## Phase 0 — Foundation
 
