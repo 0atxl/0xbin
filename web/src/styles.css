@@ -1118,10 +1118,25 @@ svg {
 
 .live-room-canvas {
   display: grid;
-  grid-template-rows: 46px 42px minmax(0, 1fr) 56px;
+  grid-template-rows: 46px minmax(0, 1fr) 56px;
+  height: 100%;
   min-width: 0;
   min-height: 0;
   overflow: hidden;
+}
+
+.live-room-topbar {
+  display: flex;
+  min-width: 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.live-room-actions-bar {
+  flex: 0 0 auto;
+  order: 2;
+  padding-right: 20px;
+  padding-left: 8px;
+  border: 0;
 }
 
 .live-room-toolbar {
@@ -1171,14 +1186,14 @@ svg {
 }
 
 .live-connection-status {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  min-height: 32px;
-  padding: 0 9px;
+  display: grid;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  place-items: center;
   border: 0;
   border-radius: 6px;
-  background: var(--surface);
+  background: transparent;
   color: var(--text-muted);
   cursor: pointer;
   font-size: 12px;
@@ -1218,8 +1233,7 @@ svg {
 }
 
 .live-participant-popover,
-.live-export-menu,
-.live-tab-rename-popover {
+.live-export-menu {
   position: absolute;
   z-index: 35;
   border: 1px solid var(--border-subtle);
@@ -1269,11 +1283,65 @@ svg {
   gap: 2px;
 }
 
-.live-participant-row strong {
+.live-participant-row strong,
+.live-participant-name-button,
+.live-participant-name-input {
   overflow: hidden;
   font-size: 12px;
+  font-weight: 700;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.live-participant-name-form {
+  min-width: 0;
+  margin: 0;
+}
+
+.live-participant-name-button,
+.live-participant-name-input {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  height: auto;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-primary);
+  line-height: inherit;
+  text-align: left;
+}
+
+.live-participant-name-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: text;
+}
+
+.live-participant-name-button span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.live-participant-name-button:hover {
+  color: var(--accent);
+}
+
+.live-participant-name-input {
+  outline: 0;
+}
+
+.live-participant-name-input:focus,
+.live-participant-name-input:focus-visible,
+.live-tab-name-input:focus,
+.live-tab-name-input:focus-visible {
+  border: 0;
+  outline: 0;
+  box-shadow: none;
 }
 
 .live-participant-row small {
@@ -1289,36 +1357,20 @@ svg {
   border-radius: 50%;
 }
 
-.live-rename-form {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding-top: 5px;
-  border-top: 1px solid var(--border-subtle);
-}
-
-.live-rename-form input,
-.live-tab-rename-popover input {
-  min-width: 0;
-  height: 30px;
-  padding: 0 7px;
-  border: 1px solid var(--border-subtle);
-  border-radius: 5px;
-  background: var(--surface);
-  color: var(--text-primary);
-}
-
 .live-tab-strip {
   display: flex;
+  flex: 1 1 auto;
+  order: 1;
   min-width: 0;
   gap: 3px;
-  padding: 5px 20px;
+  padding: 5px 0 5px 20px;
   overflow-x: auto;
-  border-bottom: 1px solid var(--border-subtle);
   scrollbar-width: thin;
 }
 
-.live-tab-strip > button {
+.live-tab-shell,
+.live-tab-item,
+.live-tab-strip .live-add-tab {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -1335,26 +1387,89 @@ svg {
   white-space: nowrap;
 }
 
-.live-tab-strip > button:hover,
-.live-tab-strip > button.is-active {
+.live-tab-shell {
+  flex: 0 0 auto;
+  gap: 0;
+  padding: 0;
+}
+
+.live-tab-shell:hover,
+.live-tab-shell.is-active,
+.live-tab-strip > button:hover {
   background: var(--accent-soft);
   color: var(--text-primary);
 }
 
-.live-tab-strip > button.is-active {
+.live-tab-shell.is-active {
   color: var(--accent);
   font-weight: 620;
 }
 
-.live-tab-strip > button span {
+.live-tab-shell .live-tab-item {
+  padding-right: 4px;
+  background: transparent;
+  color: inherit;
+}
+
+.live-tab-item > span {
+  min-width: 8ch;
+  max-width: 15ch;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.live-tab-strip > button svg {
+.live-tab-item > svg:not(.live-pencil-icon) {
   width: 14px;
   height: 14px;
   flex: 0 0 auto;
+}
+
+.live-tab-name-form {
+  cursor: text;
+}
+
+.live-tab-name-input {
+  min-width: 8ch;
+  max-width: 15ch;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+
+.live-pencil-icon {
+  width: 11px;
+  height: 11px;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.25;
+  opacity: 0.65;
+}
+
+.live-tab-close {
+  display: grid;
+  width: 24px;
+  min-height: 31px;
+  padding: 0 5px 1px 2px;
+  place-items: center;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  opacity: 0.62;
+}
+
+.live-tab-close:hover {
+  color: var(--danger);
+  opacity: 1;
 }
 
 .live-tab-strip .live-add-tab {
@@ -1369,6 +1484,7 @@ svg {
 }
 
 .live-room-editor-frame {
+  height: 100%;
   min-width: 0;
   min-height: 0;
   overflow: hidden;
@@ -1423,17 +1539,26 @@ svg {
 }
 
 .live-room-bottom-toolbar {
+  height: 56px;
+  min-height: 56px;
+  flex-wrap: nowrap;
   border-top: 1px solid var(--border-subtle);
   border-bottom: 0;
 }
 
 .live-room-tab-controls {
   flex: 0 1 auto;
-  overflow-x: auto;
+  overflow: visible;
 }
 
 .live-room-tab-controls .custom-select > button {
   width: 132px;
+}
+
+.live-room-bottom-toolbar .custom-select ul {
+  top: auto;
+  bottom: calc(100% + 7px);
+  transform-origin: bottom right;
 }
 
 .live-room-connection-copy {
@@ -1442,8 +1567,11 @@ svg {
 }
 
 .live-queue-warning {
+  overflow: hidden;
   color: var(--danger);
   font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .live-export-control {
@@ -1473,25 +1601,9 @@ svg {
   background: var(--accent-soft);
 }
 
-.live-tab-rename-popover {
-  right: 20px;
-  bottom: 62px;
-  display: flex;
-  align-items: end;
-  gap: 8px;
-  padding: 10px;
-}
-
-.live-tab-rename-popover label {
-  display: grid;
-  gap: 4px;
-  color: var(--text-muted);
-  font-size: 11px;
-}
-
 @media (max-width: 700px) {
   .live-room-canvas {
-    grid-template-rows: auto 42px minmax(0, 1fr) auto;
+    grid-template-rows: 46px minmax(0, 1fr) 56px;
   }
 
   .live-room-toolbar {
@@ -1530,12 +1642,6 @@ svg {
     min-width: 0;
     text-align: left;
     white-space: normal;
-  }
-
-  .live-tab-rename-popover {
-    right: 12px;
-    bottom: 12px;
-    max-width: calc(100vw - 24px);
   }
 }
 
@@ -2041,12 +2147,6 @@ svg {
   .live-export-control .primary-action {
     width: 100%;
   }
-
-  .live-tab-rename-popover {
-    right: 8px;
-    bottom: 8px;
-    flex-wrap: wrap;
-  }
 }
 
 @media (max-width: 390px) {
@@ -2056,6 +2156,31 @@ svg {
 
   .live-participant-popover {
     right: -4px;
+  }
+}
+
+@media (max-width: 700px) {
+  .live-room-canvas {
+    grid-template-rows: 46px minmax(0, 1fr) 56px;
+  }
+
+  .live-room-bottom-toolbar {
+    height: 56px;
+    min-height: 56px;
+    flex-wrap: nowrap;
+    align-items: center;
+    padding-block: 0;
+    overflow: visible;
+  }
+
+  .live-room-bottom-toolbar .toolbar-spacer {
+    display: block;
+  }
+
+  .live-room-bottom-toolbar .live-export-control,
+  .live-room-bottom-toolbar .live-export-control .primary-action {
+    width: auto;
+    flex: 0 0 auto;
   }
 }
 

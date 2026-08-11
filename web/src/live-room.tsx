@@ -63,7 +63,6 @@ import {
 } from "./live-editor";
 import {
   aggregateLiveRoomBytes,
-  formatLiveRoomLifetime,
   liveRemoteCursors,
   nextLiveMenuItemIndex,
 } from "./live-room-ui";
@@ -173,7 +172,6 @@ export function LiveRoomWorkspace({
   const participantHoverCloseRef = useRef<number | undefined>(undefined);
   const exportTriggerRef = useRef<HTMLButtonElement>(null);
   const exportMenuRef = useRef<HTMLDivElement>(null);
-  const tabRenameTriggerRef = useRef<HTMLButtonElement>(null);
   const tabRenameInputRef = useRef<HTMLInputElement>(null);
   statusRef.current = onStatus;
   reauthenticateRef.current = onReauthenticate;
@@ -802,6 +800,7 @@ export function LiveRoomWorkspace({
   function selectDocument(documentID: string) {
     if (!documentsRef.current.some((document) => document.id === documentID))
       return;
+    setTabRenameOpen(false);
     activeDocumentRef.current = documentID;
     setActiveDocumentID(documentID);
     const state = editorStatesRef.current.get(documentID);
@@ -880,20 +879,35 @@ export function LiveRoomWorkspace({
     setTabRenameOpen(true);
   }
 
+  function cancelTabRename() {
+    setTabRenameOpen(false);
+    setTabRenameValue("");
+  }
+
   function submitRename() {
     const name = tabRenameValue.trim();
-    if (!name) return;
     const document = documentsRef.current.find(
       (candidate) => candidate.id === activeDocumentRef.current,
     );
-    if (!document) return;
+    if (!document) {
+      cancelTabRename();
+      return;
+    }
+    if (!name) {
+      cancelTabRename();
+      onStatus("Tab name cannot be empty");
+      return;
+    }
+    if (name === document.name) {
+      cancelTabRename();
+      return;
+    }
     sendMetadata("document_update", {
       document_id: activeDocumentRef.current,
       name,
       language: document.language,
     });
-    setTabRenameOpen(false);
-    tabRenameTriggerRef.current?.focus();
+    cancelTabRename();
   }
 
   function updateLanguage(language: string) {
@@ -908,24 +922,12 @@ export function LiveRoomWorkspace({
     });
   }
 
-  function deleteDocument() {
+  function deleteDocument(documentID = activeDocumentRef.current) {
     if (documentsRef.current.length <= 1) {
       onStatus("A live room needs at least one tab");
       return;
     }
-    sendMetadata("document_delete", { document_id: activeDocumentRef.current });
-  }
-
-  function reorderDocument(offset: -1 | 1) {
-    const index = documentsRef.current.findIndex(
-      (document) => document.id === activeDocumentRef.current,
-    );
-    const nextIndex = index + offset;
-    if (index < 0 || nextIndex < 0 || nextIndex >= documentsRef.current.length)
-      return;
-    const order = documentsRef.current.map((document) => document.id);
-    [order[index], order[nextIndex]] = [order[nextIndex], order[index]];
-    sendMetadata("document_reorder", { order });
+    sendMetadata("document_delete", { document_id: documentID });
   }
 
   async function copyRoomURL() {
@@ -982,9 +984,34 @@ export function LiveRoomWorkspace({
       window.clearTimeout(participantHoverCloseRef.current);
       participantHoverCloseRef.current = undefined;
     }
+    participantRenameInputRef.current?.blur();
     setParticipantRenameOpen(false);
     setParticipantOpen(false);
     if (restoreFocus) participantTriggerRef.current?.focus();
+  }
+
+  function beginParticipantRename(nickname: string) {
+    setParticipantRenameValue(nickname);
+    setParticipantRenameOpen(true);
+  }
+
+  function cancelParticipantRename() {
+    setParticipantRenameOpen(false);
+    setParticipantRenameValue("");
+  }
+
+  function submitParticipantRename() {
+    const nickname = participantRenameValue.trim();
+    const currentNickname = participants.find(
+      (participant) => participant.id === localParticipantID,
+    )?.nickname;
+    cancelParticipantRename();
+    if (!nickname) {
+      onStatus("Participant name cannot be empty");
+      return;
+    }
+    if (nickname === currentNickname) return;
+    send({ type: "participant_rename", name: nickname });
   }
 
   function scheduleParticipantPopoverClose() {
@@ -1000,11 +1027,6 @@ export function LiveRoomWorkspace({
   function closeExportMenu() {
     setExportOpen(false);
     exportTriggerRef.current?.focus();
-  }
-
-  function closeTabRename() {
-    setTabRenameOpen(false);
-    tabRenameTriggerRef.current?.focus();
   }
 
   function handleExportMenuKeyDown(event: KeyboardEvent<HTMLDivElement>) {
@@ -1064,7 +1086,9 @@ export function LiveRoomWorkspace({
   );
 
   useEffect(() => {
-    if (participantRenameOpen) participantRenameInputRef.current?.focus();
+    if (!participantRenameOpen) return;
+    participantRenameInputRef.current?.focus();
+    participantRenameInputRef.current?.select();
   }, [participantRenameOpen]);
 
   useEffect(() => {
@@ -1077,11 +1101,7 @@ export function LiveRoomWorkspace({
   useEffect(() => {
     if (!tabRenameOpen) return;
     tabRenameInputRef.current?.focus();
-    const onKeyDown = (event: globalThis.KeyboardEvent) => {
-      if (event.key === "Escape") closeTabRename();
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
+    tabRenameInputRef.current?.select();
   }, [tabRenameOpen]);
 
   function recoveryText() {
@@ -1326,213 +1346,253 @@ export function LiveRoomWorkspace({
     !localCanEdit ||
     roomFull ||
     !!recovery;
-  const currentIndex = activeDocument
-    ? documents.findIndex((document) => document.id === activeDocument.id)
-    : -1;
-
   return (
     <main className="live-room-canvas" aria-labelledby="live-room-heading">
       <h1 className="sr-only" id="live-room-heading">
         Live room
       </h1>
-      <header className="live-room-toolbar">
-        <div className="live-room-identity">
-          <span className="accent-label">Live room</span>
-          <span className="live-room-expiry">
-            {formatLiveRoomLifetime(initialRoom.roomLifetimeSeconds)} room ·
-            expires {new Date(initialRoom.expiresAt).toLocaleString()}
-          </span>
-        </div>
-        <div className="live-room-actions">
-          <button
-            className="live-text-button"
-            type="button"
-            onClick={() => void copyRoomURL()}
-          >
-            Copy link
-          </button>
-          <div
-            className="live-participant-menu"
-            ref={participantPopoverBoundaryRef}
-            onPointerEnter={openParticipantPopover}
-            onPointerLeave={scheduleParticipantPopoverClose}
-            onFocusCapture={openParticipantPopover}
-            onBlur={(event) => {
-              const next = event.relatedTarget;
-              if (
-                next instanceof Node &&
-                participantPopoverBoundaryRef.current?.contains(next)
-              ) {
-                return;
-              }
-              closeParticipantPopover(false);
-            }}
-          >
+      <div className="live-room-topbar">
+        <header className="live-room-toolbar live-room-actions-bar">
+          <div className="live-room-actions">
             <button
-              className="live-connection-status"
+              className="action-button"
               type="button"
-              ref={participantTriggerRef}
-              aria-controls="live-participants"
-              aria-haspopup="dialog"
-              aria-expanded={participantOpen}
-              onClick={openParticipantPopover}
+              aria-label="Copy room link"
+              title="Copy link"
+              onClick={() => void copyRoomURL()}
             >
-              <span
-                className={`live-status-dot is-${connection}`}
-                aria-hidden="true"
-              />
-              {connectionLabel(connection)}
-              <span className="live-participant-count">
-                {participants.length}
-              </span>
+              <LinkIcon />
             </button>
-            {participantOpen ? (
-              <div
-                className="live-participant-popover"
-                id="live-participants"
-                role="dialog"
-                aria-modal="false"
-                aria-label="Participants"
+            <div
+              className="live-participant-menu"
+              ref={participantPopoverBoundaryRef}
+              onPointerEnter={openParticipantPopover}
+              onPointerLeave={scheduleParticipantPopoverClose}
+              onFocusCapture={openParticipantPopover}
+              onBlur={(event) => {
+                const next = event.relatedTarget;
+                if (
+                  next instanceof Node &&
+                  participantPopoverBoundaryRef.current?.contains(next)
+                ) {
+                  return;
+                }
+                closeParticipantPopover(false);
+              }}
+            >
+              <button
+                className="live-connection-status"
+                type="button"
+                ref={participantTriggerRef}
+                aria-controls="live-participants"
+                aria-haspopup="dialog"
+                aria-expanded={participantOpen}
+                aria-label={`${connectionLabel(connection)}. ${participants.length} participant${participants.length === 1 ? "" : "s"}`}
+                onClick={openParticipantPopover}
               >
-                {participants.length === 0 ? (
-                  <p>No other participants</p>
-                ) : (
-                  participants.map((participant) => (
-                    <div
-                      className="live-participant-row"
-                      key={participant.id}
-                      data-participant-id={participant.id}
-                      data-connection-count={participant.connectionCount}
-                      data-cursor-count={participant.cursors.length}
-                    >
-                      <span
-                        className="live-participant-colour"
-                        style={{
-                          backgroundColor: safeParticipantColor(
-                            participant.color,
-                          ),
-                        }}
-                        aria-hidden="true"
-                      />
-                      <span>
-                        <strong>{participant.nickname}</strong>
-                        <small>
-                          {participant.id === localParticipantID
-                            ? "You · "
-                            : ""}
-                          {participant.accessClass} ·{" "}
-                          {participant.canEdit ? "can edit" : "view only"} ·{" "}
-                          {participant.connectionCount === 1
-                            ? "1 tab"
-                            : `${participant.connectionCount} tabs`}{" "}
-                          · {participant.status.replace("_", " ")} ·{" "}
-                          {documents.find(
-                            (document) =>
-                              document.id === participant.currentTab,
-                          )?.name ?? participant.currentTab}{" "}
-                          · joined{" "}
-                          {new Date(participant.joinedAt).toLocaleTimeString()}
-                        </small>
-                      </span>
+                <span
+                  className={`live-status-dot is-${connection}`}
+                  aria-hidden="true"
+                />
+              </button>
+              {participantOpen ? (
+                <div
+                  className="live-participant-popover"
+                  id="live-participants"
+                  role="dialog"
+                  aria-modal="false"
+                  aria-label="Participants"
+                >
+                  {participants.length === 0 ? (
+                    <p>No other participants</p>
+                  ) : (
+                    participants.map((participant) => (
+                      <div
+                        className="live-participant-row"
+                        key={participant.id}
+                        data-participant-id={participant.id}
+                        data-connection-count={participant.connectionCount}
+                        data-cursor-count={participant.cursors.length}
+                      >
+                        <span
+                          className="live-participant-colour"
+                          style={{
+                            backgroundColor: safeParticipantColor(
+                              participant.color,
+                            ),
+                          }}
+                          aria-hidden="true"
+                        />
+                        <span>
+                          {participant.id === localParticipantID ? (
+                            participantRenameOpen ? (
+                              <form
+                                className="live-participant-name-form"
+                                onSubmit={(event) => {
+                                  event.preventDefault();
+                                  submitParticipantRename();
+                                }}
+                              >
+                                <input
+                                  className="live-participant-name-input"
+                                  ref={participantRenameInputRef}
+                                  aria-label="Participant name"
+                                  enterKeyHint="done"
+                                  value={participantRenameValue}
+                                  maxLength={64}
+                                  onChange={(event) =>
+                                    setParticipantRenameValue(
+                                      event.target.value,
+                                    )
+                                  }
+                                  onBlur={submitParticipantRename}
+                                  onKeyDown={(event) => {
+                                    if (event.key !== "Escape") return;
+                                    event.preventDefault();
+                                    event.stopPropagation();
+                                    cancelParticipantRename();
+                                  }}
+                                />
+                              </form>
+                            ) : (
+                              <button
+                                className="live-participant-name-button"
+                                type="button"
+                                aria-label="Rename your participant name"
+                                onClick={() =>
+                                  beginParticipantRename(participant.nickname)
+                                }
+                              >
+                                <span>{participant.nickname}</span>
+                                <PencilIcon />
+                              </button>
+                            )
+                          ) : (
+                            <strong>{participant.nickname}</strong>
+                          )}
+                          <small>
+                            {participant.id === localParticipantID
+                              ? "You · "
+                              : ""}
+                            {participant.accessClass} ·{" "}
+                            {participant.connectionCount === 1
+                              ? "1 tab"
+                              : `${participant.connectionCount} tabs`}{" "}
+                            · {participant.status.replace("_", " ")} ·{" "}
+                            {documents.find(
+                              (document) =>
+                                document.id === participant.currentTab,
+                            )?.name ?? participant.currentTab}
+                          </small>
+                        </span>
+                      </div>
+                    ))
+                  )}
+                  {creator ? (
+                    <div className="live-creator-controls">
+                      <button
+                        className="live-text-button"
+                        type="button"
+                        onClick={() =>
+                          send({
+                            type: "room_watch_only",
+                            watch_only: !roomWatchOnly,
+                          })
+                        }
+                      >
+                        {roomWatchOnly ? "Unlock" : "Lock"}
+                      </button>
                     </div>
-                  ))
-                )}
-                {creator ? (
-                  <div className="live-creator-controls">
-                    <strong>Room controls</strong>
-                    <small>
-                      Up to {initialRoom.maxWriters} writers and{" "}
-                      {initialRoom.maxViewers} viewers (
-                      {initialRoom.maxParticipants} total)
-                    </small>
-                    <button
-                      className="live-text-button"
-                      type="button"
-                      onClick={() =>
-                        send({
-                          type: "room_watch_only",
-                          watch_only: !roomWatchOnly,
-                        })
-                      }
-                    >
-                      {roomWatchOnly ? "Unlock" : "Lock"}
-                    </button>
-                  </div>
-                ) : null}
-                {localParticipantID ? (
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+          </div>
+        </header>
+
+        <nav className="live-tab-strip" aria-label="Live room tabs">
+          {documents.map((document) => {
+            const active = document.id === activeDocument?.id;
+            return (
+              <div
+                className={`live-tab-shell${active ? " is-active" : ""}`}
+                key={document.id}
+              >
+                {active && tabRenameOpen ? (
                   <form
-                    className="live-rename-form"
+                    className="live-tab-item live-tab-name-form"
                     onSubmit={(event) => {
                       event.preventDefault();
-                      if (participantRenameValue.trim()) {
-                        send({
-                          type: "participant_rename",
-                          name: participantRenameValue.trim(),
-                        });
-                        setParticipantRenameValue("");
-                        setParticipantRenameOpen(false);
-                      }
+                      submitRename();
                     }}
                   >
-                    <button
-                      className="live-text-button"
-                      type="button"
-                      onClick={() => {
-                        const local = participants.find(
-                          (participant) =>
-                            participant.id === localParticipantID,
-                        );
-                        setParticipantRenameValue(local?.nickname ?? "");
-                        setParticipantRenameOpen((open) => !open);
+                    <CodeIcon />
+                    <input
+                      className="live-tab-name-input"
+                      ref={tabRenameInputRef}
+                      aria-label="Tab name"
+                      enterKeyHint="done"
+                      value={tabRenameValue}
+                      maxLength={64}
+                      style={{ width: inlineRenameWidth(tabRenameValue) }}
+                      onChange={(event) =>
+                        setTabRenameValue(event.target.value)
+                      }
+                      onBlur={submitRename}
+                      onKeyDown={(event) => {
+                        if (event.key !== "Escape") return;
+                        event.preventDefault();
+                        event.stopPropagation();
+                        cancelTabRename();
                       }}
-                    >
-                      Rename
-                    </button>
-                    {participantRenameOpen ? (
-                      <input
-                        ref={participantRenameInputRef}
-                        aria-label="Temporary participant name"
-                        value={participantRenameValue}
-                        maxLength={64}
-                        onChange={(event) =>
-                          setParticipantRenameValue(event.target.value)
-                        }
-                      />
-                    ) : null}
+                    />
+                    <PencilIcon />
                   </form>
-                ) : null}
+                ) : (
+                  <button
+                    className="live-tab-item"
+                    type="button"
+                    aria-current={active ? "page" : undefined}
+                    onClick={() => {
+                      if (active && !structuralDisabled) renameDocument();
+                      else selectDocument(document.id);
+                    }}
+                  >
+                    <CodeIcon />
+                    <span style={{ width: inlineRenameWidth(document.name) }}>
+                      {document.name}
+                    </span>
+                    {active && !structuralDisabled ? <PencilIcon /> : null}
+                  </button>
+                )}
+                <button
+                  className="live-tab-close"
+                  type="button"
+                  aria-label={`Delete ${document.name}`}
+                  title="Delete tab"
+                  disabled={structuralDisabled || documents.length <= 1}
+                  onPointerDown={(event) => {
+                    if (!active || !tabRenameOpen) return;
+                    event.preventDefault();
+                    cancelTabRename();
+                  }}
+                  onClick={() => deleteDocument(document.id)}
+                >
+                  ×
+                </button>
               </div>
-            ) : null}
-          </div>
-        </div>
-      </header>
-
-      <nav className="live-tab-strip" aria-label="Live room tabs">
-        {documents.map((document) => (
+            );
+          })}
           <button
-            className={
-              document.id === activeDocument?.id ? "is-active" : undefined
-            }
-            key={document.id}
+            className="live-add-tab"
             type="button"
-            aria-current={
-              document.id === activeDocument?.id ? "page" : undefined
-            }
-            onClick={() => selectDocument(document.id)}
+            disabled={structuralDisabled}
+            onClick={addDocument}
           >
-            <CodeIcon />
-            <span>{document.name}</span>
+            + Add tab
           </button>
-        ))}
-        <button
-          className="live-add-tab"
-          type="button"
-          disabled={structuralDisabled}
-          onClick={addDocument}
-        >
-          + Add tab
-        </button>
-      </nav>
+        </nav>
+      </div>
 
       <section className="live-room-editor-frame">
         {activeDocument && activeState ? (
@@ -1559,45 +1619,6 @@ export function LiveRoomWorkspace({
 
       <footer className="live-room-toolbar live-room-bottom-toolbar">
         <div className="live-room-tab-controls">
-          <button
-            className="live-text-button"
-            type="button"
-            ref={tabRenameTriggerRef}
-            disabled={structuralDisabled}
-            onClick={renameDocument}
-          >
-            Rename
-          </button>
-          <button
-            className="live-text-button"
-            type="button"
-            disabled={structuralDisabled || documents.length <= 1}
-            onClick={deleteDocument}
-          >
-            Delete
-          </button>
-          <button
-            className="action-button"
-            type="button"
-            disabled={structuralDisabled || currentIndex <= 0}
-            onClick={() => reorderDocument(-1)}
-            aria-label="Move tab earlier"
-          >
-            ←
-          </button>
-          <button
-            className="action-button"
-            type="button"
-            disabled={
-              structuralDisabled ||
-              currentIndex < 0 ||
-              currentIndex >= documents.length - 1
-            }
-            onClick={() => reorderDocument(1)}
-            aria-label="Move tab later"
-          >
-            →
-          </button>
           {activeDocument ? (
             <LanguageMenu
               value={activeDocument.language}
@@ -1606,11 +1627,6 @@ export function LiveRoomWorkspace({
             />
           ) : null}
         </div>
-        <span className="byte-count">
-          {formatLiveBytes(roomBytes)} / {formatLiveBytes(initialRoom.maxBytes)}{" "}
-          · {documents.length} / {initialRoom.maxTabs} tabs
-        </span>
-        <div className="toolbar-spacer" />
         {recovery ? (
           <span className="live-queue-warning" role="alert">
             {recovery.message}{" "}
@@ -1626,28 +1642,21 @@ export function LiveRoomWorkspace({
           <span className="live-queue-warning" role="status">
             Editor paused while queued changes replay
           </span>
-        ) : null}
-        {roomFull ? (
+        ) : roomFull ? (
           <span className="live-queue-warning" role="status">
-            Room is full. Ask someone to leave and reopen the link.
+            Room is full
           </span>
         ) : !localCanEdit ? (
           <span className="live-queue-warning" role="status">
             {localAccessClass === "collaborator" && roomWatchOnly
-              ? "This room is locked. You can view changes until it is unlocked."
-              : "You’re viewing this room."}
+              ? "Room locked"
+              : "View only"}
           </span>
-        ) : (
-          <span className="live-room-connection-copy" role="status">
-            You can edit this room.
-          </span>
-        )}
-        <span
-          className="live-room-connection-copy"
-          role="status"
-          aria-live="polite"
-        >
-          {connectionLabel(connection)}
+        ) : null}
+        <div className="toolbar-spacer" />
+        <span className="byte-count">
+          {formatLiveMebibytes(roomBytes)} /{" "}
+          {formatLiveMebibytes(initialRoom.maxBytes)}
         </span>
         <div className="live-export-control">
           <button
@@ -1688,42 +1697,31 @@ export function LiveRoomWorkspace({
           ) : null}
         </div>
       </footer>
-
-      {tabRenameOpen ? (
-        <form
-          className="live-tab-rename-popover"
-          onSubmit={(event) => {
-            event.preventDefault();
-            submitRename();
-          }}
-        >
-          <label>
-            Tab name
-            <input
-              ref={tabRenameInputRef}
-              value={tabRenameValue}
-              maxLength={64}
-              onChange={(event) => setTabRenameValue(event.target.value)}
-            />
-          </label>
-          <button
-            className="primary-action"
-            type="submit"
-            disabled={structuralDisabled}
-          >
-            Save
-          </button>
-          <button
-            className="live-text-button"
-            type="button"
-            onClick={closeTabRename}
-          >
-            Cancel
-          </button>
-        </form>
-      ) : null}
     </main>
   );
+}
+
+function PencilIcon() {
+  return (
+    <svg className="live-pencil-icon" viewBox="0 0 16 16" aria-hidden="true">
+      <path d="m3 11.75-.5 2 2-.5 7.7-7.7-1.5-1.5L3 11.75Z" />
+      <path d="m9.9 4.85 1.5 1.5" />
+    </svg>
+  );
+}
+
+function LinkIcon() {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden="true">
+      <path d="M8.25 11.75 11.75 8.25" />
+      <path d="M6.5 13.5 5.25 14.75a3.18 3.18 0 0 1-4.5-4.5L4 7a3.18 3.18 0 0 1 4.5 0" />
+      <path d="m13.5 6.5 1.25-1.25a3.18 3.18 0 0 1 4.5 4.5L16 13a3.18 3.18 0 0 1-4.5 0" />
+    </svg>
+  );
+}
+
+function inlineRenameWidth(value: string): string {
+  return `${Math.min(Math.max(Array.from(value).length, 8), 15)}ch`;
 }
 
 type TransactionUpdate = Update;
@@ -1762,6 +1760,7 @@ function connectionLabel(connection: LiveConnection): string {
   }
 }
 
-function formatLiveBytes(bytes: number): string {
-  return bytes < 1024 ? `${bytes} B` : `${(bytes / 1024).toFixed(1)} KiB`;
+function formatLiveMebibytes(bytes: number): string {
+  const mebibytes = bytes / (1 << 20);
+  return `${Number.isInteger(mebibytes) ? mebibytes : mebibytes.toFixed(2)} MiB`;
 }

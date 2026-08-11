@@ -380,7 +380,71 @@ try {
   await page.getByRole("button", { name: "Create", exact: true }).click();
   await page.waitForURL((url) => url.pathname.startsWith("/live/"));
   const liveRoomURL = page.url();
-  await expectVisible(page, "Connected");
+  await expectLiveConnected(page);
+  await assert.equal(
+    await page.locator(".live-room-identity").count(),
+    0,
+    "the workspace should not render a visible Live room identity block",
+  );
+  await assert.equal(
+    await page.getByRole("button", { name: "Move tab earlier" }).count(),
+    0,
+    "the compact workspace should not render ordering arrows",
+  );
+  await assert.equal(
+    (
+      await page.getByRole("button", { name: "Copy room link" }).textContent()
+    )?.trim(),
+    "",
+    "copy room link should remain icon-only",
+  );
+  await assert.equal(
+    (await page.locator(".live-connection-status").textContent())?.trim(),
+    "",
+    "connection status should remain dot-only",
+  );
+  await assert.equal(
+    await page.locator(".live-room-topbar").evaluate((topbar) => {
+      const tabs = topbar.querySelector(".live-tab-strip");
+      const actions = topbar.querySelector(".live-room-actions-bar");
+      if (!(tabs instanceof HTMLElement) || !(actions instanceof HTMLElement))
+        return false;
+      return (
+        Math.abs(
+          tabs.getBoundingClientRect().top -
+            actions.getBoundingClientRect().top,
+        ) < 1
+      );
+    }),
+    true,
+    "tabs and room actions should share one top row",
+  );
+  const liveFooter = page.locator(".live-room-bottom-toolbar");
+  assert.match(
+    (await liveFooter.locator(".byte-count").textContent()) ?? "",
+    /^\d+(?:\.\d+)? MiB \/ \d+(?:\.\d+)? MiB$/,
+    "live room size should use MiB without a tab count",
+  );
+  const languageTrigger = liveFooter.locator(".custom-select > button");
+  await languageTrigger.click();
+  const languageList = page.getByRole("listbox", { name: "Language" });
+  await languageList.waitFor({ state: "visible" });
+  await assert.equal(
+    await languageList.evaluate((list) => {
+      const trigger = document.querySelector(
+        ".live-room-bottom-toolbar .custom-select > button",
+      );
+      return (
+        trigger instanceof HTMLElement &&
+        list.getBoundingClientRect().bottom <=
+          trigger.getBoundingClientRect().top
+      );
+    }),
+    true,
+    "the bottom language menu should open upward",
+  );
+  await page.keyboard.press("Escape");
+  await languageList.waitFor({ state: "hidden" });
   await assertNoSeriousAccessibilityIssues(page, "live room");
   for (const width of [700, 420, 390]) {
     await page.setViewportSize({ width, height: 844 });
@@ -397,12 +461,42 @@ try {
     );
   }
   await page.setViewportSize({ width: 1280, height: 900 });
+  const longWorkspaceText = Array.from(
+    { length: 180 },
+    (_, index) => `fixed footer line ${index + 1}`,
+  ).join("\n");
+  await page.locator(".live-code-editor .cm-content").fill(longWorkspaceText);
+  await assert.equal(
+    await page.evaluate(() => {
+      const canvas = document.querySelector(".live-room-canvas");
+      const footer = document.querySelector(".live-room-bottom-toolbar");
+      const scroller = document.querySelector(".live-code-editor .cm-scroller");
+      if (
+        !(canvas instanceof HTMLElement) ||
+        !(footer instanceof HTMLElement) ||
+        !(scroller instanceof HTMLElement)
+      )
+        return false;
+      const canvasBounds = canvas.getBoundingClientRect();
+      const footerBounds = footer.getBoundingClientRect();
+      return (
+        Math.abs(footerBounds.height - 56) < 1 &&
+        Math.abs(footerBounds.bottom - canvasBounds.bottom) < 1 &&
+        scroller.scrollHeight > scroller.clientHeight
+      );
+    }),
+    true,
+    "long documents should scroll while the 56px footer remains pinned",
+  );
+  await page
+    .locator(".live-code-editor .cm-content")
+    .fill("shared main content");
   progress("checking LiveBin participant popover interactions");
   const participantTrigger = page.locator(".live-connection-status");
   const participantPopover = page.locator(".live-participant-popover");
   await participantTrigger.hover();
   await participantPopover.waitFor({ state: "visible" });
-  await page.locator(".live-room-identity").hover();
+  await page.locator(".live-tab-strip").hover();
   await participantPopover.waitFor({ state: "hidden" });
   await participantTrigger.click();
   await participantPopover.waitFor({ state: "visible" });
@@ -418,10 +512,10 @@ try {
   progress("checking stable browser identity across tabs and reload");
   await participantTrigger.click();
   await participantPopover
-    .getByRole("button", { name: "Rename", exact: true })
+    .getByRole("button", { name: "Rename your participant name" })
     .click();
-  await page.getByLabel("Temporary participant name").fill("Persistent Otter");
-  await page.getByLabel("Temporary participant name").press("Enter");
+  await page.getByLabel("Participant name").fill("Persistent Otter");
+  await page.getByLabel("Participant name").press("Enter");
   await expectVisible(page, "Persistent Otter");
   const stableParticipantRow = page
     .locator(".live-participant-row")
@@ -433,7 +527,7 @@ try {
 
   const sameBrowserTab = await context.newPage();
   await sameBrowserTab.goto(liveRoomURL);
-  await expectVisible(sameBrowserTab, "Connected");
+  await expectLiveConnected(sameBrowserTab);
   await stableParticipantRow.waitFor({ state: "visible" });
   await assert.equal(
     await page.locator(".live-participant-row").count(),
@@ -466,7 +560,7 @@ try {
     );
   });
   await page.reload();
-  await expectVisible(page, "Connected");
+  await expectLiveConnected(page);
   await page.locator(".live-connection-status").click();
   const reloadedParticipantRow = page
     .locator(".live-participant-row")
@@ -481,7 +575,7 @@ try {
   const collaboratorContext = await browser.newContext();
   const collaborator = await collaboratorContext.newPage();
   await collaborator.goto(liveRoomURL);
-  await expectVisible(collaborator, "Connected");
+  await expectLiveConnected(collaborator);
   await page.waitForFunction(
     () => document.querySelectorAll(".live-participant-row").length === 2,
   );
@@ -523,7 +617,6 @@ try {
     () => document.querySelectorAll(".live-remote-caret").length > 0,
   );
   await page.locator(".live-connection-status").click();
-  await expectVisible(page, "joined");
   await expectVisible(page, "main");
   await page.locator(".live-connection-status").click();
   const rapidSnapshot = await page.evaluate(async () => {
@@ -577,8 +670,10 @@ try {
   await collaboratorContext.close();
   await page.waitForFunction(
     () =>
-      document.querySelector(".live-participant-count")?.textContent?.trim() ===
-      "1",
+      document
+        .querySelector(".live-connection-status")
+        ?.getAttribute("aria-label")
+        ?.includes("1 participant"),
     undefined,
     { timeout: 15_000 },
   );
@@ -591,7 +686,7 @@ try {
   await expectVisible(page, "tab-2");
   await page.getByRole("button", { name: "tab-2", exact: true }).click();
   await page
-    .locator(".live-tab-strip button.is-active")
+    .locator(".live-tab-shell.is-active")
     .filter({ hasText: "tab-2" })
     .waitFor({ state: "visible" });
   await page.waitForTimeout(100);
@@ -604,27 +699,16 @@ try {
     "the active LiveBin editor should retain local text immediately",
   );
   await page.waitForTimeout(150);
-  await page
-    .locator(".live-room-bottom-toolbar")
-    .getByRole("button", { name: "Rename", exact: true })
-    .click();
-  await assertFocused(page.locator(".live-tab-rename-popover input"));
-  await page.keyboard.press("Escape");
-  await page.locator(".live-tab-rename-popover").waitFor({ state: "hidden" });
-  await assertFocused(
-    page
-      .locator(".live-room-bottom-toolbar")
-      .getByRole("button", { name: "Rename", exact: true }),
+  const activeTabName = page.locator(
+    ".live-tab-shell.is-active .live-tab-item",
   );
-  await page
-    .locator(".live-room-bottom-toolbar")
-    .getByRole("button", { name: "Rename", exact: true })
-    .click();
-  await page.locator(".live-tab-rename-popover input").fill("notes");
-  await page
-    .locator(".live-tab-rename-popover")
-    .getByRole("button", { name: "Save", exact: true })
-    .click();
+  await activeTabName.click();
+  await assertFocused(page.locator(".live-tab-name-input"));
+  await page.keyboard.press("Escape");
+  await page.locator(".live-tab-name-input").waitFor({ state: "hidden" });
+  await activeTabName.click();
+  await page.locator(".live-tab-name-input").fill("notes");
+  await page.locator(".live-tab-name-input").press("Enter");
   await expectVisible(page, "notes");
   await assert.equal(
     await liveEditorText(page.locator(".live-code-editor .cm-content")),
@@ -731,7 +815,7 @@ try {
     url.pathname.startsWith("/live/"),
   );
   const acknowledgementRoomURL = acknowledgementPage.url();
-  await expectVisible(acknowledgementPage, "Connected");
+  await expectLiveConnected(acknowledgementPage);
   const resynchronized = acknowledgementPage.waitForResponse((response) => {
     const request = response.request();
     return (
@@ -776,7 +860,7 @@ try {
   );
   const acknowledgementObserver = await acknowledgementContext.newPage();
   await acknowledgementObserver.goto(acknowledgementRoomURL);
-  await expectVisible(acknowledgementObserver, "Connected");
+  await expectLiveConnected(acknowledgementObserver);
   await acknowledgementObserver.waitForFunction(() => {
     const content = document.querySelector(".live-code-editor .cm-content");
     if (!content) return false;
@@ -872,10 +956,10 @@ try {
   await disagreementPage.waitForURL((url) => url.pathname.startsWith("/live/"));
   const disagreementURL = disagreementPage.url();
   const disagreementSlug = new URL(disagreementURL).pathname.split("/").pop();
-  await expectVisible(disagreementPage, "Connected");
+  await expectLiveConnected(disagreementPage);
   const disagreementObserver = await disagreementObserverContext.newPage();
   await disagreementObserver.goto(disagreementURL);
-  await expectVisible(disagreementObserver, "Connected");
+  await expectLiveConnected(disagreementObserver);
   const disagreementEditor = disagreementPage.locator(
     ".live-code-editor .cm-content",
   );
@@ -894,7 +978,8 @@ try {
       copy.textContent === "revision fixed" &&
       document
         .querySelector(".live-connection-status")
-        ?.textContent?.includes("Connected")
+        ?.getAttribute("aria-label")
+        ?.startsWith("Connected.")
     );
   });
   await disagreementObserver.waitForFunction(() => {
@@ -976,10 +1061,10 @@ try {
   await validationPage.waitForURL((url) => url.pathname.startsWith("/live/"));
   const validationURL = validationPage.url();
   const validationSlug = new URL(validationURL).pathname.split("/").pop();
-  await expectVisible(validationPage, "Connected");
+  await expectLiveConnected(validationPage);
   const validationObserver = await validationObserverContext.newPage();
   await validationObserver.goto(validationURL);
-  await expectVisible(validationObserver, "Connected");
+  await expectLiveConnected(validationObserver);
   const validationEditor = validationPage.locator(
     ".live-code-editor .cm-content",
   );
@@ -988,7 +1073,9 @@ try {
   await expectVisible(validationPage, "Copy recovery text");
   await expectVisible(validationPage, "Recovery");
   assert.equal(
-    await validationPage.getByText("Connected", { exact: true }).count(),
+    await validationPage
+      .locator('.live-connection-status[aria-label^="Connected."]')
+      .count(),
     0,
     "terminal validation recovery must not claim to be connected",
   );
@@ -1023,13 +1110,13 @@ try {
   await stalePage.waitForURL((url) => url.pathname.startsWith("/live/"));
   const staleRoomURL = stalePage.url();
   const staleSlug = new URL(staleRoomURL).pathname.split("/").pop();
-  await expectVisible(stalePage, "Connected");
+  await expectLiveConnected(stalePage);
   await stalePage.getByRole("button", { name: "Add tab" }).click();
   await expectVisible(stalePage, "tab-2");
 
   const staleObserver = await staleObserverContext.newPage();
   await staleObserver.goto(staleRoomURL);
-  await expectVisible(staleObserver, "Connected");
+  await expectLiveConnected(staleObserver);
   const snapshotCaptured = deferred();
   const releaseSnapshot = deferred();
   let delayedSnapshotRequests = 0;
@@ -1059,10 +1146,11 @@ try {
   );
   await staleObserverEditor.click();
   await staleObserverEditor.pressSequentially("x");
-  await staleObserver.getByRole("button", { name: "tab-2" }).click();
   await staleObserver
-    .locator(".live-room-bottom-toolbar")
-    .getByRole("button", { name: "Delete", exact: true })
+    .getByRole("button", { name: "tab-2", exact: true })
+    .click();
+  await staleObserver
+    .getByRole("button", { name: "Delete tab-2", exact: true })
     .click();
   await staleObserver.waitForFunction(async (slug) => {
     const response = await fetch(`/api/v1/live/${slug}`);
@@ -1075,7 +1163,7 @@ try {
   }, staleSlug);
   releaseSnapshot.resolve();
 
-  await expectVisible(stalePage, "Connected");
+  await expectLiveConnected(stalePage);
   try {
     await stalePage.waitForFunction(
       () => {
@@ -1116,7 +1204,9 @@ try {
   const staleEditor = stalePage.locator(".live-code-editor .cm-content");
   await staleEditor.click();
   await staleEditor.pressSequentially("y");
-  await staleObserver.getByRole("button", { name: "tab1" }).click();
+  await staleObserver
+    .getByRole("button", { name: "tab1", exact: true })
+    .click();
   await staleObserver.waitForFunction(() => {
     const editor = document.querySelector(".live-code-editor .cm-content");
     if (!editor) return false;
@@ -1168,7 +1258,7 @@ try {
   await failedPage.getByRole("button", { name: "Create", exact: true }).click();
   await failedPage.waitForURL((url) => url.pathname.startsWith("/live/"));
   const failedSlug = new URL(failedPage.url()).pathname.split("/").pop();
-  await expectVisible(failedPage, "Connected");
+  await expectLiveConnected(failedPage);
   let failedSnapshotRequests = 0;
   await failedPage.route(
     new RegExp(`/api/v1/live/${failedSlug}$`),
@@ -1258,9 +1348,9 @@ try {
   await page.waitForURL((url) => url.pathname.startsWith("/live/"));
   const protectedLiveURL = page.url();
   await page.reload();
-  await expectVisible(page, "Connected");
+  await expectLiveConnected(page);
   await page.locator(".live-connection-status").click();
-  await expectVisible(page, "Room controls");
+  await expectCreatorLockControl(page);
   await page.locator(".live-connection-status").click();
   progress("checking protected creator reauthentication after access expiry");
   const protectedSlug = new URL(protectedLiveURL).pathname.split("/").pop();
@@ -1278,7 +1368,7 @@ try {
     '<img src=x onerror="window.__liveXSS=true"> renewal pending';
   const protectedCreatorEditor = page.locator(".live-code-editor .cm-content");
   await page.context().setOffline(true);
-  await expectVisible(page, "Offline");
+  await expectLiveState(page, "Offline");
   await protectedCreatorEditor.click();
   await protectedCreatorEditor.press("End");
   await protectedCreatorEditor.pressSequentially(" renewal pending");
@@ -1305,7 +1395,7 @@ try {
   );
   await page.getByLabel("Room password").fill("correct horse");
   await page.getByRole("button", { name: "Unlock" }).click();
-  await expectVisible(page, "Connected");
+  await expectLiveConnected(page);
   await page.waitForFunction((content) => {
     const editor = document.querySelector(".live-code-editor .cm-content");
     if (!editor) return false;
@@ -1327,7 +1417,7 @@ try {
     { slug: protectedSlug, content: protectedPendingText },
   );
   await page.locator(".live-connection-status").click();
-  await expectVisible(page, "Room controls");
+  await expectCreatorLockControl(page);
   const renewedCreatorCookies = await page
     .context()
     .cookies(`${apiOrigin}/api/v1/live/${protectedSlug}`);
@@ -1358,7 +1448,7 @@ try {
   progress("checking protected LiveBin successful unlock");
   await protectedVisitor.getByLabel("Room password").fill("correct horse");
   await protectedVisitor.getByRole("button", { name: "Unlock" }).click();
-  await expectVisible(protectedVisitor, "Connected");
+  await expectLiveConnected(protectedVisitor);
   await assert.equal(
     await liveEditorText(
       protectedVisitor.locator(".live-code-editor .cm-content"),
@@ -1379,7 +1469,7 @@ try {
   await expectVisible(protectedVisitor, "Room password");
   await protectedVisitor.getByLabel("Room password").fill("correct horse");
   await protectedVisitor.getByRole("button", { name: "Unlock" }).click();
-  await expectVisible(protectedVisitor, "Connected");
+  await expectLiveConnected(protectedVisitor);
   await protectedContext.close();
 
   const reconnectContext = await browser.newContext();
@@ -1393,20 +1483,20 @@ try {
     .click();
   await reconnectCreator.waitForURL((url) => url.pathname.startsWith("/live/"));
   await reconnectCreator.reload();
-  await expectVisible(reconnectCreator, "Connected");
+  await expectLiveConnected(reconnectCreator);
   await reconnectCreator.locator(".live-connection-status").click();
-  await expectVisible(reconnectCreator, "Room controls");
+  await expectCreatorLockControl(reconnectCreator);
   await reconnectCreator.locator(".live-connection-status").click();
   await reconnectContext.clearCookies({ name: "oxbin_live_session" });
   await reconnectCreatorSocket.disconnect();
-  await expectVisible(reconnectCreator, "Connected");
+  await expectLiveConnected(reconnectCreator);
   await assert.equal(
     await reconnectCreator.getByText("Room password", { exact: true }).count(),
     0,
     "unprotected reconnect must not show the password gate",
   );
   await reconnectCreator.locator(".live-connection-status").click();
-  await expectVisible(reconnectCreator, "Room controls");
+  await expectCreatorLockControl(reconnectCreator);
   await reconnectContext.close();
 
   progress(
@@ -1428,23 +1518,20 @@ try {
   const accessURL = new URL(accessRoomURL);
   assert.equal(accessURL.search, "", "live room URL must not carry authority");
   assert.equal(accessURL.hash, "", "live room URL must not carry authority");
-  await expectVisible(owner, "Connected");
-  await owner
-    .locator(".live-room-bottom-toolbar")
-    .getByRole("button", { name: "Rename", exact: true })
-    .click();
-  await owner.locator(".live-tab-rename-popover input").fill("tab draft");
+  await expectLiveConnected(owner);
+  await owner.locator(".live-tab-shell.is-active .live-tab-item").click();
+  await owner.locator(".live-tab-name-input").fill("tab draft");
   await owner.locator(".live-connection-status").click();
   await owner
-    .locator(".live-rename-form")
-    .getByRole("button", { name: "Rename", exact: true })
+    .getByRole("button", { name: "Rename your participant name" })
     .click();
-  await owner
-    .getByLabel("Temporary participant name")
-    .fill("participant draft");
+  await owner.getByLabel("Participant name").fill("participant draft");
   await assert.equal(
-    await owner.locator(".live-tab-rename-popover input").inputValue(),
-    "tab draft",
+    await owner
+      .locator(".live-tab-shell.is-active")
+      .textContent()
+      .then((text) => text?.includes("tab draft")),
+    true,
     "participant rename state must not overwrite tab rename state",
   );
   await owner.keyboard.press("Escape");
@@ -1495,37 +1582,38 @@ try {
   );
   const writer = await writerContext.newPage();
   await writer.goto(accessRoomURL);
-  await expectVisible(writer, "Connected");
+  await expectLiveConnected(writer);
   await writer.locator(".live-connection-status").click();
   const writerName = await writer
     .locator(".live-participant-row")
     .filter({ hasText: "You · collaborator" })
-    .locator("strong")
+    .getByRole("button", { name: "Rename your participant name" })
     .textContent();
   assert.ok(writerName, "writer should have a participant identity");
   await writer.locator(".live-connection-status").click();
 
   const viewer = await viewerContext.newPage();
   await viewer.goto(accessRoomURL);
-  await expectVisible(viewer, "You’re viewing this room.");
+  await expectVisible(viewer, "View only");
   await viewer.waitForFunction(
     () =>
       document.querySelector(".live-add-tab") instanceof HTMLButtonElement &&
       document.querySelector(".live-add-tab").disabled,
   );
-  await owner.waitForFunction(
-    () =>
-      document.querySelector(".live-participant-count")?.textContent?.trim() ===
-      "3",
+  await owner.waitForFunction(() =>
+    document
+      .querySelector(".live-connection-status")
+      ?.getAttribute("aria-label")
+      ?.includes("3 participants"),
   );
 
   const overflow = await overflowContext.newPage();
   await overflow.goto(accessRoomURL);
-  await expectVisible(overflow, "Room is full. Ask someone to leave");
+  await expectVisible(overflow, "Room is full");
 
   await owner.locator(".live-connection-status").click();
   await owner.getByRole("button", { name: "Lock", exact: true }).click();
-  await expectVisible(writer, "This room is locked.");
+  await expectVisible(writer, "Room locked");
   await writer.waitForFunction(
     () =>
       document.querySelector(".live-add-tab") instanceof HTMLButtonElement &&
@@ -1544,8 +1632,7 @@ try {
     "live rooms must not expose participant-removal controls",
   );
   await owner.getByRole("button", { name: "Unlock", exact: true }).click();
-  await expectVisible(writer, "You can edit this room.");
-  await expectVisible(viewer, "You’re viewing this room.");
+  await expectVisible(viewer, "View only");
   await writer.waitForFunction(
     () =>
       document.querySelector(".live-add-tab") instanceof HTMLButtonElement &&
@@ -1832,6 +1919,23 @@ async function expectVisible(page, text) {
   await page
     .getByText(text, { exact: false })
     .first()
+    .waitFor({ state: "visible" });
+}
+
+async function expectLiveConnected(page) {
+  await expectLiveState(page, "Connected");
+}
+
+async function expectLiveState(page, state) {
+  await page
+    .locator(`.live-connection-status[aria-label^="${state}."]`)
+    .waitFor({ state: "visible" });
+}
+
+async function expectCreatorLockControl(page) {
+  await page
+    .locator(".live-participant-popover")
+    .getByRole("button", { name: /^(Lock|Unlock)$/ })
     .waitFor({ state: "visible" });
 }
 
