@@ -335,8 +335,9 @@ baseline is documented in [`FRONTEND.md`](../agent_docs/FRONTEND.md).
   offline, expired, unavailable, and service-error states
 - The existing top progress bar is used for actual live loading/connectivity
   work; persistent failures do not disappear when it hides
-- The participant popover shows only real participants, their temporary names,
-  active state, joined time, and current tab
+- The compact participant popover shows only real participants, their temporary
+  names, the local `(You)` marker, access designation, and connection state;
+  connection counts and current tabs remain internal presence details
 - Remote cursors and selections remain subtle and do not cover editor content
 - Live screens contain functional labels and concise state copy only; no
   architecture, maturity, encryption, or collaboration slogans are added

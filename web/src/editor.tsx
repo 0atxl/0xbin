@@ -149,6 +149,7 @@ export function LanguageMenu({
                 disabled={disabled}
                 onClick={() => {
                   onChange(language);
+                  closeMenu();
                 }}
               >
                 <span>{label}</span>

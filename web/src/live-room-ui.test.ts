@@ -5,7 +5,9 @@ import {
   aggregateLiveRoomBytes,
   formatLiveRoomLifetime,
   liveRemoteCursors,
+  nextLiveTabName,
   nextLiveMenuItemIndex,
+  reorderLiveTabIDs,
 } from "./live-room-ui";
 
 const documents: LiveRoomDocument[] = [
@@ -118,5 +120,32 @@ describe("live room UI helpers", () => {
     expect(nextLiveMenuItemIndex(1, 2, "Home")).toBe(0);
     expect(nextLiveMenuItemIndex(0, 2, "End")).toBe(1);
     expect(nextLiveMenuItemIndex(0, 2, "Enter")).toBeUndefined();
+  });
+
+  it("keeps generated names sequential after an earlier tab is deleted", () => {
+    expect(
+      nextLiveTabName([{ name: "tab1" }, { name: "tab2" }, { name: "tab3" }]),
+    ).toBe("tab4");
+    expect(nextLiveTabName([{ name: "tab2" }, { name: "tab3" }])).toBe("tab4");
+    expect(nextLiveTabName([{ name: "main" }])).toBe("tab2");
+    expect(nextLiveTabName([{ name: "tab-2" }, { name: "notes" }])).toBe(
+      "tab3",
+    );
+  });
+
+  it("moves a dragged tab before or after an authoritative target", () => {
+    const order = ["one", "two", "three"];
+    expect(reorderLiveTabIDs(order, "one", "three", "after")).toEqual([
+      "two",
+      "three",
+      "one",
+    ]);
+    expect(reorderLiveTabIDs(order, "three", "one", "before")).toEqual([
+      "three",
+      "one",
+      "two",
+    ]);
+    expect(reorderLiveTabIDs(order, "two", "two", "before")).toEqual(order);
+    expect(reorderLiveTabIDs(order, "missing", "one", "before")).toEqual(order);
   });
 });

@@ -4,6 +4,7 @@ import {
   useRef,
   useState,
   type KeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
 } from "react";
 import { ChangeSet, EditorState } from "@codemirror/state";
 import {
@@ -21,7 +22,7 @@ import {
   type LiveRoomDocument,
   type LiveRoomSnapshot,
 } from "./live-api";
-import { CodeIcon, LanguageMenu } from "./editor";
+import { LanguageMenu } from "./editor";
 import {
   applyLiveChanges,
   diffLiveDocuments,
@@ -64,7 +65,10 @@ import {
 import {
   aggregateLiveRoomBytes,
   liveRemoteCursors,
+  nextLiveTabName,
   nextLiveMenuItemIndex,
+  reorderLiveTabIDs,
+  type LiveTabDropPlacement,
 } from "./live-room-ui";
 
 type LiveConnection = LiveConnectionState;
@@ -128,6 +132,19 @@ export function LiveRoomWorkspace({
   const [tabRenameValue, setTabRenameValue] = useState("");
   const [participantRenameOpen, setParticipantRenameOpen] = useState(false);
   const [participantRenameValue, setParticipantRenameValue] = useState("");
+  const [tabDrag, setTabDrag] = useState<
+    | {
+        sourceID: string;
+        targetID: string;
+        placement: LiveTabDropPlacement;
+        layout?: Array<{ id: string; left: number; width: number }>;
+        gap?: number;
+      }
+    | undefined
+  >();
+  const [pendingTabOrder, setPendingTabOrder] = useState<
+    string[] | undefined
+  >();
   const [roomBytes, setRoomBytes] = useState(() =>
     aggregateLiveRoomBytes(
       initialRoom.documents,
@@ -173,6 +190,23 @@ export function LiveRoomWorkspace({
   const exportTriggerRef = useRef<HTMLButtonElement>(null);
   const exportMenuRef = useRef<HTMLDivElement>(null);
   const tabRenameInputRef = useRef<HTMLInputElement>(null);
+  const tabStripRef = useRef<HTMLElement>(null);
+  const tabPointerDragRef = useRef<
+    | {
+        pointerID: number;
+        sourceID: string;
+        startX: number;
+        startY: number;
+        startScrollLeft: number;
+        dragging: boolean;
+        targetID: string;
+        placement: LiveTabDropPlacement;
+        layout?: Array<{ id: string; left: number; width: number }>;
+        gap?: number;
+      }
+    | undefined
+  >(undefined);
+  const suppressTabClickRef = useRef(false);
   statusRef.current = onStatus;
   reauthenticateRef.current = onReauthenticate;
 
@@ -354,12 +388,13 @@ export function LiveRoomWorkspace({
         if (
           !nextDocuments.some((document) => document.id === event.document.id)
         ) {
-          nextDocuments = normalizeLiveDocuments([
+          nextDocuments = [
             ...nextDocuments,
-            event.document,
-          ]);
+            { ...event.document, position: nextDocuments.length },
+          ];
           getEditorState(event.document);
         }
+        setPendingTabOrder(undefined);
         break;
       case "document_updated":
         nextDocuments = nextDocuments.map((document) =>
@@ -372,9 +407,10 @@ export function LiveRoomWorkspace({
         editorStatesRef.current.delete(event.documentID);
         editorViewsRef.current.delete(event.documentID);
         syncedContentsRef.current.delete(event.documentID);
-        nextDocuments = nextDocuments.filter(
-          (document) => document.id !== event.documentID,
-        );
+        nextDocuments = nextDocuments
+          .filter((document) => document.id !== event.documentID)
+          .map((document, position) => ({ ...document, position }));
+        setPendingTabOrder(undefined);
         break;
       case "document_reordered": {
         const position = new Map(event.order.map((id, index) => [id, index]));
@@ -390,6 +426,7 @@ export function LiveRoomWorkspace({
             position: position.get(document.id)!,
           }))
           .sort((left, right) => left.position! - right.position!);
+        setPendingTabOrder(undefined);
         break;
       }
     }
@@ -434,6 +471,21 @@ export function LiveRoomWorkspace({
   function recoverOperationError(
     event: Extract<LiveWireEvent, { type: "error" }>,
   ) {
+    const pendingOperation = operationTrackerRef.current.get(event.operationID);
+    if (
+      event.code === "room_limit_reached" &&
+      pendingOperation?.kind === "metadata" &&
+      pendingOperation.message.type === "document_create"
+    ) {
+      operationTrackerRef.current.clear(pendingOperation.id);
+      if (pendingOperation.id === metadataOperationRef.current) {
+        metadataOperationRef.current = "";
+        setMetadataBusy(false);
+      }
+      statusRef.current(`This room is limited to ${initialRoom.maxTabs} tabs`);
+      if (!resyncingRef.current) void refreshSnapshot();
+      return;
+    }
     const category = classifyLiveOperationError(event.code, event.status);
     if (category === "retryable" || category === "resync") {
       if (!resyncingRef.current) void refreshSnapshot();
@@ -590,6 +642,7 @@ export function LiveRoomWorkspace({
     });
     documentsRef.current = mergedDocuments;
     setDocuments(mergedDocuments);
+    setPendingTabOrder(undefined);
     refreshRoomUsage();
     if (nextMetadataRevision > metadataRevisionRef.current) {
       metadataRevisionRef.current = nextMetadataRevision;
@@ -816,14 +869,14 @@ export function LiveRoomWorkspace({
       | "document_delete"
       | "document_reorder",
     fields: Record<string, unknown>,
-  ) {
+  ): boolean {
     if (
       connection !== "connected" ||
       metadataBusy ||
       recoveryRef.current ||
       !localCanEditRef.current
     )
-      return;
+      return false;
     const operationID = randomLiveID("meta-");
     const message = {
       type,
@@ -845,26 +898,23 @@ export function LiveRoomWorkspace({
       metadataOperationRef.current = "";
       setMetadataBusy(false);
       operationTrackerRef.current.clear(operationID);
+      return false;
     } else {
       operationTrackerRef.current.markSent(
         operationID,
         connectionGenerationRef.current,
       );
     }
+    return true;
   }
 
   function addDocument() {
-    const names = new Set(
-      documentsRef.current.map((document) => document.name),
-    );
-    let index = documentsRef.current.length + 1;
-    let name = `tab-${index}`;
-    while (names.has(name)) {
-      index += 1;
-      name = `tab-${index}`;
+    if (documentsRef.current.length >= initialRoom.maxTabs) {
+      onStatus(`This room is limited to ${initialRoom.maxTabs} tabs`);
+      return;
     }
     sendMetadata("document_create", {
-      name,
+      name: nextLiveTabName(documentsRef.current),
       language: "plaintext",
       content: "",
     });
@@ -928,6 +978,217 @@ export function LiveRoomWorkspace({
       return;
     }
     sendMetadata("document_delete", { document_id: documentID });
+  }
+
+  function commitTabOrder(order: string[]) {
+    const currentOrder = documentsRef.current.map((document) => document.id);
+    if (
+      order.length !== currentOrder.length ||
+      order.every((documentID, index) => documentID === currentOrder[index])
+    ) {
+      return;
+    }
+    if (sendMetadata("document_reorder", { order })) {
+      setPendingTabOrder(order);
+    }
+  }
+
+  function moveDocument(documentID: string, offset: -1 | 1) {
+    const order = documentsRef.current.map((document) => document.id);
+    const index = order.indexOf(documentID);
+    const targetIndex = index + offset;
+    if (index < 0 || targetIndex < 0 || targetIndex >= order.length) return;
+    commitTabOrder(
+      reorderLiveTabIDs(
+        order,
+        documentID,
+        order[targetIndex],
+        offset < 0 ? "before" : "after",
+      ),
+    );
+  }
+
+  function beginTabPointerDrag(
+    event: ReactPointerEvent<HTMLElement>,
+    documentID: string,
+  ) {
+    if (
+      structuralDisabled ||
+      tabRenameOpen ||
+      event.button !== 0 ||
+      (event.target instanceof Element &&
+        event.target.closest(".live-tab-close, input"))
+    ) {
+      return;
+    }
+    tabPointerDragRef.current = {
+      pointerID: event.pointerId,
+      sourceID: documentID,
+      startX: event.clientX,
+      startY: event.clientY,
+      startScrollLeft: tabStripRef.current?.scrollLeft ?? 0,
+      dragging: false,
+      targetID: documentID,
+      placement: "after",
+    };
+  }
+
+  function moveTabPointerDrag(event: ReactPointerEvent<HTMLElement>) {
+    const pointer = tabPointerDragRef.current;
+    if (!pointer || pointer.pointerID !== event.pointerId) return;
+    const strip = tabStripRef.current;
+    const shells = strip
+      ? Array.from(strip.querySelectorAll<HTMLElement>(".live-tab-shell"))
+      : [];
+    if (
+      !pointer.dragging &&
+      Math.hypot(
+        event.clientX - pointer.startX,
+        event.clientY - pointer.startY,
+      ) < 6
+    ) {
+      return;
+    }
+    if (!pointer.dragging) {
+      pointer.dragging = true;
+      if (strip) {
+        const stripBounds = strip.getBoundingClientRect();
+        pointer.layout = shells.flatMap((shell) => {
+          const id = shell.dataset.documentId;
+          if (!id) return [];
+          const bounds = shell.getBoundingClientRect();
+          return [
+            {
+              id,
+              left: bounds.left - stripBounds.left + strip.scrollLeft,
+              width: bounds.width,
+            },
+          ];
+        });
+        pointer.gap = Number.parseFloat(getComputedStyle(strip).columnGap) || 0;
+        strip.setPointerCapture(event.pointerId);
+      }
+    }
+    event.preventDefault();
+
+    if (strip) {
+      const stripBounds = strip.getBoundingClientRect();
+      if (event.clientX < stripBounds.left + 32) strip.scrollLeft -= 14;
+      else if (event.clientX > stripBounds.right - 32) strip.scrollLeft += 14;
+    }
+
+    const sourceShell = shells.find(
+      (shell) => shell.dataset.documentId === pointer.sourceID,
+    );
+    if (sourceShell) {
+      const scrollOffset = (strip?.scrollLeft ?? 0) - pointer.startScrollLeft;
+      sourceShell.style.transform = `translate3d(${event.clientX - pointer.startX + scrollOffset}px, 0, 0)`;
+    }
+
+    let targetID = pointer.sourceID;
+    let placement: LiveTabDropPlacement = "after";
+    const stripBounds = strip?.getBoundingClientRect();
+    const pointerContentX = stripBounds
+      ? event.clientX - stripBounds.left + (strip?.scrollLeft ?? 0)
+      : event.clientX;
+    const targets = (pointer.layout ?? []).filter(
+      (item) => item.id !== pointer.sourceID,
+    );
+    for (const target of targets) {
+      targetID = target.id;
+      placement = "after";
+      if (pointerContentX < target.left + target.width / 2) {
+        placement = "before";
+        break;
+      }
+    }
+
+    const layout = pointer.layout ?? [];
+    const layoutByID = new Map(layout.map((item) => [item.id, item]));
+    const shellByID = new Map(
+      shells.flatMap((shell) => {
+        const id = shell.dataset.documentId;
+        return id ? [[id, shell] as const] : [];
+      }),
+    );
+    const previewOrder = reorderLiveTabIDs(
+      layout.map((item) => item.id),
+      pointer.sourceID,
+      targetID,
+      placement,
+    );
+    let nextLeft = layout[0]?.left ?? 0;
+    for (const id of previewOrder) {
+      const item = layoutByID.get(id);
+      if (!item) continue;
+      if (id !== pointer.sourceID) {
+        const shell = shellByID.get(id);
+        const offset = nextLeft - item.left;
+        if (Math.abs(offset) < 0.5) shell?.style.removeProperty("transform");
+        else
+          shell?.style.setProperty(
+            "transform",
+            `translate3d(${offset}px, 0, 0)`,
+          );
+      }
+      nextLeft += item.width + (pointer.gap ?? 0);
+    }
+    pointer.targetID = targetID;
+    pointer.placement = placement;
+    setTabDrag((current) =>
+      current?.sourceID === pointer.sourceID &&
+      current.targetID === targetID &&
+      current.placement === placement
+        ? current
+        : {
+            sourceID: pointer.sourceID,
+            targetID,
+            placement,
+          },
+    );
+  }
+
+  function finishTabPointerDrag(
+    event: ReactPointerEvent<HTMLElement>,
+    commit: boolean,
+  ) {
+    const pointer = tabPointerDragRef.current;
+    if (!pointer || pointer.pointerID !== event.pointerId) return;
+    if (tabStripRef.current?.hasPointerCapture(event.pointerId)) {
+      tabStripRef.current.releasePointerCapture(event.pointerId);
+    }
+    tabStripRef.current
+      ?.querySelectorAll<HTMLElement>(".live-tab-shell")
+      .forEach((shell) => shell.style.removeProperty("transform"));
+    tabPointerDragRef.current = undefined;
+    setTabDrag(undefined);
+    if (!pointer.dragging) return;
+
+    event.preventDefault();
+    suppressTabClickRef.current = true;
+    window.setTimeout(() => {
+      suppressTabClickRef.current = false;
+    }, 0);
+    if (!commit) return;
+    commitTabOrder(
+      reorderLiveTabIDs(
+        documentsRef.current.map((document) => document.id),
+        pointer.sourceID,
+        pointer.targetID,
+        pointer.placement,
+      ),
+    );
+  }
+
+  function handleTabKeyDown(
+    event: KeyboardEvent<HTMLButtonElement>,
+    documentID: string,
+  ) {
+    if (!event.altKey || !event.shiftKey || structuralDisabled) return;
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    event.preventDefault();
+    event.stopPropagation();
+    moveDocument(documentID, event.key === "ArrowLeft" ? -1 : 1);
   }
 
   async function copyRoomURL() {
@@ -1315,6 +1576,16 @@ export function LiveRoomWorkspace({
   const activeDocument =
     documents.find((document) => document.id === activeDocumentID) ??
     documents[0];
+  const renderedDocuments = useMemo(() => {
+    const order = pendingTabOrder;
+    if (!order || order.length !== documents.length) return documents;
+    const byID = new Map(documents.map((document) => [document.id, document]));
+    const ordered = order.flatMap((documentID) => {
+      const document = byID.get(documentID);
+      return document ? [document] : [];
+    });
+    return ordered.length === documents.length ? ordered : documents;
+  }, [documents, pendingTabOrder]);
   const activeState = activeDocument
     ? getEditorState(activeDocument)
     : undefined;
@@ -1346,6 +1617,7 @@ export function LiveRoomWorkspace({
     !localCanEdit ||
     roomFull ||
     !!recovery;
+  const tabLimitReached = documents.length >= initialRoom.maxTabs;
   return (
     <main className="live-room-canvas" aria-labelledby="live-room-heading">
       <h1 className="sr-only" id="live-room-heading">
@@ -1463,26 +1735,21 @@ export function LiveRoomWorkspace({
                                   beginParticipantRename(participant.nickname)
                                 }
                               >
-                                <span>{participant.nickname}</span>
                                 <PencilIcon />
+                                <span className="live-participant-nickname">
+                                  {participant.nickname}
+                                </span>
+                                <span className="live-participant-you">
+                                  (You)
+                                </span>
                               </button>
                             )
                           ) : (
                             <strong>{participant.nickname}</strong>
                           )}
                           <small>
-                            {participant.id === localParticipantID
-                              ? "You · "
-                              : ""}
                             {participant.accessClass} ·{" "}
-                            {participant.connectionCount === 1
-                              ? "1 tab"
-                              : `${participant.connectionCount} tabs`}{" "}
-                            · {participant.status.replace("_", " ")} ·{" "}
-                            {documents.find(
-                              (document) =>
-                                document.id === participant.currentTab,
-                            )?.name ?? participant.currentTab}
+                            {participant.status.replace("_", " ")}
                           </small>
                         </span>
                       </div>
@@ -1510,13 +1777,33 @@ export function LiveRoomWorkspace({
           </div>
         </header>
 
-        <nav className="live-tab-strip" aria-label="Live room tabs">
-          {documents.map((document) => {
+        <nav
+          className={`live-tab-strip${tabDrag ? " is-reordering" : ""}`}
+          ref={tabStripRef}
+          aria-label="Live room tabs"
+          onPointerMove={moveTabPointerDrag}
+          onPointerUp={(event) => finishTabPointerDrag(event, true)}
+          onPointerCancel={(event) => finishTabPointerDrag(event, false)}
+        >
+          <span className="sr-only" id="live-tab-reorder-help">
+            Drag tabs to reorder them. Keyboard users can press Alt Shift Left
+            or Alt Shift Right.
+          </span>
+          {renderedDocuments.map((document) => {
             const active = document.id === activeDocument?.id;
+            const dragging = tabDrag?.sourceID === document.id;
+            const dropTarget =
+              tabDrag?.targetID === document.id && !dragging
+                ? ` is-drop-${tabDrag.placement}`
+                : "";
             return (
               <div
-                className={`live-tab-shell${active ? " is-active" : ""}`}
+                className={`live-tab-shell${active ? " is-active" : ""}${dragging ? " is-dragging" : ""}${dropTarget}`}
                 key={document.id}
+                data-document-id={document.id}
+                onPointerDown={(event) =>
+                  beginTabPointerDrag(event, document.id)
+                }
               >
                 {active && tabRenameOpen ? (
                   <form
@@ -1526,7 +1813,6 @@ export function LiveRoomWorkspace({
                       submitRename();
                     }}
                   >
-                    <CodeIcon />
                     <input
                       className="live-tab-name-input"
                       ref={tabRenameInputRef}
@@ -1546,23 +1832,27 @@ export function LiveRoomWorkspace({
                         cancelTabRename();
                       }}
                     />
-                    <PencilIcon />
                   </form>
                 ) : (
                   <button
                     className="live-tab-item"
                     type="button"
                     aria-current={active ? "page" : undefined}
-                    onClick={() => {
+                    aria-describedby="live-tab-reorder-help"
+                    aria-keyshortcuts="Alt+Shift+ArrowLeft Alt+Shift+ArrowRight"
+                    onKeyDown={(event) => handleTabKeyDown(event, document.id)}
+                    onClick={(event) => {
+                      if (suppressTabClickRef.current) {
+                        event.preventDefault();
+                        return;
+                      }
                       if (active && !structuralDisabled) renameDocument();
                       else selectDocument(document.id);
                     }}
                   >
-                    <CodeIcon />
                     <span style={{ width: inlineRenameWidth(document.name) }}>
                       {document.name}
                     </span>
-                    {active && !structuralDisabled ? <PencilIcon /> : null}
                   </button>
                 )}
                 <button
@@ -1586,12 +1876,27 @@ export function LiveRoomWorkspace({
           <button
             className="live-add-tab"
             type="button"
-            disabled={structuralDisabled}
+            aria-label="Add tab"
+            disabled={structuralDisabled || tabLimitReached}
+            title={
+              tabLimitReached
+                ? `This room is limited to ${initialRoom.maxTabs} tabs`
+                : undefined
+            }
             onClick={addDocument}
           >
-            + Add tab
+            +
           </button>
         </nav>
+        <div className="live-room-language-control">
+          {activeDocument ? (
+            <LanguageMenu
+              value={activeDocument.language}
+              onChange={updateLanguage}
+              disabled={structuralDisabled}
+            />
+          ) : null}
+        </div>
       </div>
 
       <section className="live-room-editor-frame">
@@ -1618,15 +1923,6 @@ export function LiveRoomWorkspace({
       </section>
 
       <footer className="live-room-toolbar live-room-bottom-toolbar">
-        <div className="live-room-tab-controls">
-          {activeDocument ? (
-            <LanguageMenu
-              value={activeDocument.language}
-              onChange={updateLanguage}
-              disabled={structuralDisabled}
-            />
-          ) : null}
-        </div>
         {recovery ? (
           <span className="live-queue-warning" role="alert">
             {recovery.message}{" "}
@@ -1655,7 +1951,7 @@ export function LiveRoomWorkspace({
         ) : null}
         <div className="toolbar-spacer" />
         <span className="byte-count">
-          {formatLiveMebibytes(roomBytes)} /{" "}
+          {formatLiveBytes(roomBytes)} /{" "}
           {formatLiveMebibytes(initialRoom.maxBytes)}
         </span>
         <div className="live-export-control">
@@ -1712,10 +2008,9 @@ function PencilIcon() {
 
 function LinkIcon() {
   return (
-    <svg viewBox="0 0 20 20" aria-hidden="true">
-      <path d="M8.25 11.75 11.75 8.25" />
-      <path d="M6.5 13.5 5.25 14.75a3.18 3.18 0 0 1-4.5-4.5L4 7a3.18 3.18 0 0 1 4.5 0" />
-      <path d="m13.5 6.5 1.25-1.25a3.18 3.18 0 0 1 4.5 4.5L16 13a3.18 3.18 0 0 1-4.5 0" />
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+      <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
     </svg>
   );
 }
@@ -1763,4 +2058,9 @@ function connectionLabel(connection: LiveConnection): string {
 function formatLiveMebibytes(bytes: number): string {
   const mebibytes = bytes / (1 << 20);
   return `${Number.isInteger(mebibytes) ? mebibytes : mebibytes.toFixed(2)} MiB`;
+}
+
+function formatLiveBytes(bytes: number): string {
+  if (bytes >= 1 << 20) return formatLiveMebibytes(bytes);
+  return bytes < 1024 ? `${bytes} B` : `${(bytes / 1024).toFixed(1)} KiB`;
 }

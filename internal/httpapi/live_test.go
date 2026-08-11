@@ -332,6 +332,7 @@ func TestLiveOperationErrorsClassifyRecoveryPaths(t *testing.T) {
 		{name: "revision conflict resynchronizes", err: livecollab.ErrRevisionConflict, code: "resync_required", status: "resync_required"},
 		{name: "invalid request is terminal", err: live.ErrOperationConflict, code: "invalid_request", status: "validation"},
 		{name: "legacy participant removal is unsupported", err: errLiveUnsupportedOperation, code: "unsupported_operation", status: "validation"},
+		{name: "content or tab limit is overload", err: live.ErrRoomLimit, code: "room_limit_reached", status: "overloaded"},
 		{name: "room limit is overload", err: live.ErrParticipantLimit, code: "room_limit_reached", status: "overloaded"},
 	}
 	for _, test := range tests {

@@ -10,6 +10,8 @@ export type LiveRemoteCursor = {
   active: boolean;
 };
 
+export type LiveTabDropPlacement = "before" | "after";
+
 export function aggregateLiveRoomBytes(
   documents: LiveRoomDocument[],
   contentForDocument: (document: LiveRoomDocument) => string,
@@ -19,6 +21,34 @@ export function aggregateLiveRoomBytes(
       total + new TextEncoder().encode(contentForDocument(document)).length,
     0,
   );
+}
+
+export function nextLiveTabName(
+  documents: Array<Pick<LiveRoomDocument, "name">>,
+): string {
+  let highestIndex = 0;
+  for (const document of documents) {
+    const match = /^tab-?(\d+)$/i.exec(document.name.trim());
+    if (match) highestIndex = Math.max(highestIndex, Number(match[1]));
+  }
+  return `tab${Math.max(documents.length + 1, highestIndex + 1)}`;
+}
+
+export function reorderLiveTabIDs(
+  documentIDs: string[],
+  sourceID: string,
+  targetID: string,
+  placement: LiveTabDropPlacement,
+): string[] {
+  if (sourceID === targetID) return [...documentIDs];
+  const sourceIndex = documentIDs.indexOf(sourceID);
+  const targetIndex = documentIDs.indexOf(targetID);
+  if (sourceIndex < 0 || targetIndex < 0) return [...documentIDs];
+
+  const order = documentIDs.filter((documentID) => documentID !== sourceID);
+  const nextTargetIndex = order.indexOf(targetID);
+  order.splice(nextTargetIndex + (placement === "after" ? 1 : 0), 0, sourceID);
+  return order;
 }
 
 export function formatLiveRoomLifetime(seconds: number): string {

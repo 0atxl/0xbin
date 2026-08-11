@@ -399,6 +399,23 @@ try {
     "copy room link should remain icon-only",
   );
   await assert.equal(
+    await page
+      .getByRole("button", { name: "Copy room link" })
+      .locator("svg")
+      .evaluate((icon) => {
+        const bounds = icon.getBBox();
+        const viewBox = icon.viewBox.baseVal;
+        return (
+          bounds.x > viewBox.x &&
+          bounds.y > viewBox.y &&
+          bounds.x + bounds.width < viewBox.x + viewBox.width &&
+          bounds.y + bounds.height < viewBox.y + viewBox.height
+        );
+      }),
+    true,
+    "copy room link icon should fit inside its view box",
+  );
+  await assert.equal(
     (await page.locator(".live-connection-status").textContent())?.trim(),
     "",
     "connection status should remain dot-only",
@@ -419,29 +436,38 @@ try {
     true,
     "tabs and room actions should share one top row",
   );
+  await assert.equal(
+    await page
+      .locator(".live-room-actions-bar")
+      .evaluate((actions) => getComputedStyle(actions).borderBottomWidth),
+    "0px",
+    "copy and connection controls should not have a second bottom rule",
+  );
   const liveFooter = page.locator(".live-room-bottom-toolbar");
   assert.match(
     (await liveFooter.locator(".byte-count").textContent()) ?? "",
-    /^\d+(?:\.\d+)? MiB \/ \d+(?:\.\d+)? MiB$/,
-    "live room size should use MiB without a tab count",
+    /^\d+(?:\.\d+)? (?:B|KiB|MiB) \/ \d+(?:\.\d+)? MiB$/,
+    "live room size should scale from bytes while keeping the limit in MiB",
   );
-  const languageTrigger = liveFooter.locator(".custom-select > button");
+  const languageTrigger = page.locator(
+    ".live-room-language-control .custom-select > button",
+  );
   await languageTrigger.click();
   const languageList = page.getByRole("listbox", { name: "Language" });
   await languageList.waitFor({ state: "visible" });
   await assert.equal(
     await languageList.evaluate((list) => {
       const trigger = document.querySelector(
-        ".live-room-bottom-toolbar .custom-select > button",
+        ".live-room-language-control .custom-select > button",
       );
       return (
         trigger instanceof HTMLElement &&
-        list.getBoundingClientRect().bottom <=
-          trigger.getBoundingClientRect().top
+        list.getBoundingClientRect().top >=
+          trigger.getBoundingClientRect().bottom
       );
     }),
     true,
-    "the bottom language menu should open upward",
+    "the top language menu should open downward like the creation-page selector",
   );
   await page.keyboard.press("Escape");
   await languageList.waitFor({ state: "hidden" });
@@ -500,6 +526,31 @@ try {
   await participantPopover.waitFor({ state: "hidden" });
   await participantTrigger.click();
   await participantPopover.waitFor({ state: "visible" });
+  await assert.equal(
+    await page.evaluate(() => {
+      const popover = document.querySelector(".live-participant-popover");
+      const language = document.querySelector(
+        ".live-room-language-control .custom-select > button",
+      );
+      const indicator = document.querySelector(".live-connection-status");
+      if (
+        !(popover instanceof HTMLElement) ||
+        !(language instanceof HTMLElement) ||
+        !(indicator instanceof HTMLElement)
+      )
+        return false;
+      const popoverBounds = popover.getBoundingClientRect();
+      const languageBounds = language.getBoundingClientRect();
+      const indicatorBounds = indicator.getBoundingClientRect();
+      return (
+        Math.abs(popoverBounds.right - languageBounds.right) < 1 &&
+        popoverBounds.top >= languageBounds.bottom &&
+        popoverBounds.left <= indicatorBounds.right
+      );
+    }),
+    true,
+    "the participant popover should align beneath the right-side language control",
+  );
   await page.keyboard.press("Escape");
   await participantPopover.waitFor({ state: "hidden" });
   await assertFocused(participantTrigger);
@@ -524,6 +575,31 @@ try {
     "data-participant-id",
   );
   assert.ok(stableParticipantID, "renamed participant should be authoritative");
+  await assert.equal(
+    (
+      await stableParticipantRow
+        .locator(".live-participant-name-button")
+        .textContent()
+    )
+      ?.replace(/\s+/g, " ")
+      .trim(),
+    "Persistent Otter(You)",
+    "the local marker should stay beside the participant name",
+  );
+  await assert.equal(
+    (await stableParticipantRow.locator("small").textContent())
+      ?.replace(/\s+/g, " ")
+      .trim(),
+    "creator · connected",
+    "the compact participant detail should contain only designation and connection",
+  );
+  await assert.equal(
+    await participantPopover
+      .getByRole("button", { name: "Lock", exact: true })
+      .evaluate((button) => button.getBoundingClientRect().height <= 28),
+    true,
+    "the creator lock action should remain compact",
+  );
 
   const sameBrowserTab = await context.newPage();
   await sameBrowserTab.goto(liveRoomURL);
@@ -683,11 +759,11 @@ try {
     { timeout: 15_000 },
   );
   await page.getByRole("button", { name: /Add tab/ }).click();
-  await expectVisible(page, "tab-2");
-  await page.getByRole("button", { name: "tab-2", exact: true }).click();
+  await expectVisible(page, "tab2");
+  await page.getByRole("button", { name: "tab2", exact: true }).click();
   await page
     .locator(".live-tab-shell.is-active")
-    .filter({ hasText: "tab-2" })
+    .filter({ hasText: "tab2" })
     .waitFor({ state: "visible" });
   await page.waitForTimeout(100);
   await page
@@ -715,6 +791,26 @@ try {
     "second tab content",
     "renaming a LiveBin tab should not replace its document state",
   );
+  await assert.equal(
+    await page.locator(".live-tab-shell.is-active").evaluate((tab) => {
+      const pencil = tab.querySelector(".live-pencil-icon");
+      const name = tab.querySelector(".live-tab-item > span");
+      const close = tab.querySelector(".live-tab-close");
+      if (
+        !(pencil instanceof SVGElement) ||
+        !(name instanceof HTMLElement) ||
+        !(close instanceof HTMLElement)
+      )
+        return false;
+      return (
+        pencil.getBoundingClientRect().right <=
+          name.getBoundingClientRect().left &&
+        name.getBoundingClientRect().right <= close.getBoundingClientRect().left
+      );
+    }),
+    true,
+    "the rename pencil should precede the tab name and stay separated from delete",
+  );
   await page.waitForTimeout(500);
   const liveRoomSnapshot = await page.evaluate(async () => {
     const response = await fetch(
@@ -729,14 +825,271 @@ try {
     true,
     "LiveBin edits should reach the server-authoritative document",
   );
+
+  progress("checking the configured LiveBin tab limit and stable top controls");
+  const fixedControlBounds = await page.evaluate(() => {
+    const actions = document.querySelector(".live-room-actions-bar");
+    const language = document.querySelector(".live-room-language-control");
+    if (!(actions instanceof HTMLElement) || !(language instanceof HTMLElement))
+      return undefined;
+    return {
+      actionsLeft: actions.getBoundingClientRect().left,
+      languageLeft: language.getBoundingClientRect().left,
+    };
+  });
+  assert.ok(fixedControlBounds, "fixed live controls should be present");
+  await page.evaluate(() => {
+    const activeTab = document.querySelector(".live-tab-shell.is-active");
+    if (!(activeTab instanceof HTMLElement)) return;
+    window.__liveTabWidthSamples = [activeTab.getBoundingClientRect().width];
+    window.__liveTabWidthObserver = new ResizeObserver(() => {
+      window.__liveTabWidthSamples.push(
+        activeTab.getBoundingClientRect().width,
+      );
+    });
+    window.__liveTabWidthObserver.observe(activeTab);
+  });
+  const addTabButton = page.locator(".live-add-tab");
+  assert.equal(
+    (await addTabButton.textContent())?.trim(),
+    "+",
+    "the visible tab creation control should remain icon-only",
+  );
+  assert.equal(
+    await addTabButton.getAttribute("aria-label"),
+    "Add tab",
+    "the icon-only tab creation control should retain its accessible name",
+  );
+  assert.equal(
+    await addTabButton.evaluate((button) => {
+      const style = getComputedStyle(button);
+      return (
+        Number.parseInt(style.fontWeight, 10) >= 700 &&
+        style.backgroundColor !== "rgba(0, 0, 0, 0)"
+      );
+    }),
+    true,
+    "the tab creation control should use a bold plus and tinted background",
+  );
+  for (let index = 3; index <= 8; index += 1) {
+    await addTabButton.click();
+    await page
+      .getByRole("button", { name: `tab${index}`, exact: true })
+      .waitFor({ state: "visible" });
+  }
+  await assert.equal(
+    await addTabButton.isDisabled(),
+    true,
+    "Add tab should be disabled at the configured eight-tab limit",
+  );
+  await assert.equal(
+    await page.locator(".live-tab-strip").evaluate((tabs) => {
+      const style = getComputedStyle(tabs);
+      return style.overflowX === "auto" && style.overflowY === "hidden";
+    }),
+    true,
+    "the tab strip should scroll horizontally without changing row height",
+  );
+  await assert.deepEqual(
+    await page.evaluate(() => {
+      const actions = document.querySelector(".live-room-actions-bar");
+      const language = document.querySelector(".live-room-language-control");
+      if (
+        !(actions instanceof HTMLElement) ||
+        !(language instanceof HTMLElement)
+      )
+        return undefined;
+      return {
+        actionsLeft: actions.getBoundingClientRect().left,
+        languageLeft: language.getBoundingClientRect().left,
+      };
+    }),
+    fixedControlBounds,
+    "copy, connection, and language controls should not shift as tabs are added",
+  );
+  const limitSnapshot = await page.evaluate(async () => {
+    const response = await fetch(
+      `/api/v1/live/${location.pathname.split("/").pop()}`,
+    );
+    return response.json();
+  });
+  assert.equal(
+    limitSnapshot.documents.length,
+    8,
+    "the authoritative room should stop at eight tabs",
+  );
+  assert.match(
+    (await page
+      .locator(".live-connection-status")
+      .getAttribute("aria-label")) ?? "",
+    /^Connected\./,
+    "reaching the tab limit should not disrupt the connection",
+  );
+  for (let index = 8; index >= 3; index -= 1) {
+    await page
+      .getByRole("button", { name: `Delete tab${index}`, exact: true })
+      .click();
+    await page
+      .getByRole("button", { name: `tab${index}`, exact: true })
+      .waitFor({ state: "detached" });
+  }
+  await assert.equal(
+    await addTabButton.isEnabled(),
+    true,
+    "deleting a tab should re-enable Add tab without moving fixed controls",
+  );
+  const activeTabWidths = await page.evaluate(() => {
+    window.__liveTabWidthObserver?.disconnect();
+    return window.__liveTabWidthSamples ?? [];
+  });
+  assert.ok(
+    activeTabWidths.length > 0,
+    "the active tab should remain measurable",
+  );
+  assert.ok(
+    Math.max(...activeTabWidths) - Math.min(...activeTabWidths) < 0.5,
+    "the active tab should not resize while tabs are added or removed",
+  );
+
+  progress("checking append-after-delete and Chrome-style tab reordering");
+  await page.getByRole("button", { name: "main", exact: true }).click();
+  await page.getByRole("button", { name: "main", exact: true }).click();
+  await page.locator(".live-tab-name-input").fill("tab1");
+  await page.locator(".live-tab-name-input").press("Enter");
+  await page.getByRole("button", { name: "tab1", exact: true }).waitFor();
+  await page.getByRole("button", { name: "notes", exact: true }).click();
+  await page.getByRole("button", { name: "notes", exact: true }).click();
+  await page.locator(".live-tab-name-input").fill("tab2");
+  await page.locator(".live-tab-name-input").press("Enter");
+  await page.getByRole("button", { name: "tab2", exact: true }).waitFor();
+  await addTabButton.click();
+  await page.getByRole("button", { name: "tab3", exact: true }).waitFor();
+  await page.getByRole("button", { name: "Delete tab1", exact: true }).click();
   await page
-    .locator(".live-room-bottom-toolbar .custom-select > button")
+    .getByRole("button", { name: "tab1", exact: true })
+    .waitFor({ state: "detached" });
+  await addTabButton.click();
+  await page.getByRole("button", { name: "tab4", exact: true }).waitFor();
+  await assert.deepEqual(
+    await page
+      .locator(".live-tab-shell .live-tab-item > span")
+      .allTextContents(),
+    ["tab2", "tab3", "tab4"],
+    "a tab created after deleting the first tab should append at the far right",
+  );
+
+  const draggedTab = page
+    .locator(".live-tab-shell")
+    .filter({ has: page.getByRole("button", { name: "tab4", exact: true }) });
+  const firstTab = page
+    .locator(".live-tab-shell")
+    .filter({ has: page.getByRole("button", { name: "tab2", exact: true }) });
+  const draggedBounds = await draggedTab.boundingBox();
+  const firstBounds = await firstTab.boundingBox();
+  assert.ok(draggedBounds && firstBounds, "reorderable tabs should be visible");
+  await page.mouse.move(
+    draggedBounds.x + draggedBounds.width / 2,
+    draggedBounds.y + draggedBounds.height / 2,
+  );
+  await page.mouse.down();
+  await page.mouse.move(
+    firstBounds.x + firstBounds.width * 0.4,
+    firstBounds.y + firstBounds.height / 2,
+  );
+  await assert.deepEqual(
+    await page
+      .locator(".live-tab-shell .live-tab-item > span")
+      .allTextContents(),
+    ["tab2", "tab3", "tab4"],
+    "dragging should not repeatedly reorder live hit targets beneath the pointer",
+  );
+  await assert.equal(
+    await draggedTab.evaluate(
+      (tab) =>
+        tab.classList.contains("is-dragging") &&
+        getComputedStyle(tab).transform !== "none",
+    ),
+    true,
+    "the dragged tab should move visually before its order is committed",
+  );
+  await assert.equal(
+    await page
+      .locator(".live-tab-shell:not(.is-dragging)")
+      .evaluateAll((tabs) =>
+        tabs.some((tab) => getComputedStyle(tab).transform !== "none"),
+      ),
+    true,
+    "adjacent tabs should move into the prospective gap while dragging",
+  );
+  await page.mouse.up();
+  await page.waitForFunction(
+    () =>
+      [...document.querySelectorAll(".live-tab-shell .live-tab-item > span")]
+        .map((name) => name.textContent)
+        .join(",") === "tab4,tab2,tab3",
+  );
+  await page
+    .getByRole("button", { name: "tab4", exact: true })
+    .press("Alt+Shift+ArrowRight");
+  await page.waitForFunction(
+    () =>
+      [...document.querySelectorAll(".live-tab-shell .live-tab-item > span")]
+        .map((name) => name.textContent)
+        .join(",") === "tab2,tab4,tab3",
+  );
+  const reorderedSnapshot = await page.evaluate(async () => {
+    const response = await fetch(
+      `/api/v1/live/${location.pathname.split("/").pop()}`,
+    );
+    return response.json();
+  });
+  assert.deepEqual(
+    reorderedSnapshot.documents.map((document) => document.name),
+    ["tab2", "tab4", "tab3"],
+    "pointer and keyboard tab moves should reach the server-authoritative order",
+  );
+  await page.getByRole("button", { name: "Delete tab4", exact: true }).click();
+  await page
+    .getByRole("button", { name: "tab4", exact: true })
+    .waitFor({ state: "detached" });
+  await page.getByRole("button", { name: "tab2", exact: true }).click();
+  await page.locator(".live-tab-name-input").fill("notes");
+  await page.locator(".live-tab-name-input").press("Enter");
+  await page.getByRole("button", { name: "notes", exact: true }).waitFor();
+  await page.getByRole("button", { name: "tab3", exact: true }).click();
+  await page.getByRole("button", { name: "tab3", exact: true }).click();
+  await page.locator(".live-tab-name-input").fill("main");
+  await page.locator(".live-tab-name-input").press("Enter");
+  await page.getByRole("button", { name: "main", exact: true }).waitFor();
+  await page.getByRole("button", { name: "notes", exact: true }).click();
+
+  await page
+    .locator(".live-room-language-control .custom-select > button")
     .click();
   await page
     .getByRole("listbox", { name: "Language" })
     .getByRole("button", { name: "Go", exact: true })
     .click();
   await expectVisible(page, "Go");
+  await page
+    .getByRole("listbox", { name: "Language" })
+    .waitFor({ state: "hidden" });
+  await page.getByRole("button", { name: "main", exact: true }).click();
+  await assert.match(
+    (await page
+      .locator(".live-room-language-control .custom-select > button")
+      .textContent()) ?? "",
+    /Plain text/,
+    "each LiveBin tab should preserve its own language",
+  );
+  await page.getByRole("button", { name: "notes", exact: true }).click();
+  await assert.match(
+    (await page
+      .locator(".live-room-language-control .custom-select > button")
+      .textContent()) ?? "",
+    /Go/,
+    "returning to a tab should restore that tab's language",
+  );
   await page
     .getByRole("button", { name: "Save as paste", exact: true })
     .click();
@@ -1112,7 +1465,7 @@ try {
   const staleSlug = new URL(staleRoomURL).pathname.split("/").pop();
   await expectLiveConnected(stalePage);
   await stalePage.getByRole("button", { name: "Add tab" }).click();
-  await expectVisible(stalePage, "tab-2");
+  await expectVisible(stalePage, "tab2");
 
   const staleObserver = await staleObserverContext.newPage();
   await staleObserver.goto(staleRoomURL);
@@ -1147,10 +1500,10 @@ try {
   await staleObserverEditor.click();
   await staleObserverEditor.pressSequentially("x");
   await staleObserver
-    .getByRole("button", { name: "tab-2", exact: true })
+    .getByRole("button", { name: "tab2", exact: true })
     .click();
   await staleObserver
-    .getByRole("button", { name: "Delete tab-2", exact: true })
+    .getByRole("button", { name: "Delete tab2", exact: true })
     .click();
   await staleObserver.waitForFunction(async (slug) => {
     const response = await fetch(`/api/v1/live/${slug}`);
@@ -1176,7 +1529,7 @@ try {
         return (
           copy.textContent === "basex" &&
           ![...document.querySelectorAll(".live-tab-strip button")].some(
-            (button) => button.textContent?.includes("tab-2"),
+            (button) => button.textContent?.includes("tab2"),
           )
         );
       },
@@ -1585,8 +1938,6 @@ try {
   await expectLiveConnected(writer);
   await writer.locator(".live-connection-status").click();
   const writerName = await writer
-    .locator(".live-participant-row")
-    .filter({ hasText: "You · collaborator" })
     .getByRole("button", { name: "Rename your participant name" })
     .textContent();
   assert.ok(writerName, "writer should have a participant identity");

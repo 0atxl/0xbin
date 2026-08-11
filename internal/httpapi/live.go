@@ -1255,7 +1255,7 @@ func classifyLiveOperationError(err error) (code, status string) {
 		return "message_too_large", "validation"
 	case errors.Is(err, live.ErrParticipantInactive), errors.Is(err, live.ErrParticipantNotFound), errors.Is(err, live.ErrCreatorRequired), errors.Is(err, live.ErrWatchOnly):
 		return "unauthorized", "auth_required"
-	case errors.Is(err, live.ErrParticipantLimit), errors.Is(err, live.ErrConnectionLimit):
+	case errors.Is(err, live.ErrRoomLimit), errors.Is(err, live.ErrParticipantLimit), errors.Is(err, live.ErrConnectionLimit):
 		return "room_limit_reached", "overloaded"
 	case errors.Is(err, live.ErrNameTaken):
 		return "name_taken", "validation"

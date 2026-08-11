@@ -1126,16 +1126,18 @@ svg {
 }
 
 .live-room-topbar {
+  position: relative;
   display: flex;
   min-width: 0;
+  overflow: visible;
   border-bottom: 1px solid var(--border-subtle);
 }
 
 .live-room-actions-bar {
   flex: 0 0 auto;
   order: 2;
-  padding-right: 20px;
-  padding-left: 8px;
+  padding-right: 8px;
+  padding-left: 6px;
   border: 0;
 }
 
@@ -1149,9 +1151,13 @@ svg {
   border-bottom: 1px solid var(--border-subtle);
 }
 
+.live-room-toolbar.live-room-actions-bar {
+  position: static;
+  border-bottom: 0;
+}
+
 .live-room-identity,
-.live-room-actions,
-.live-room-tab-controls {
+.live-room-actions {
   display: flex;
   align-items: center;
   min-width: 0;
@@ -1176,12 +1182,18 @@ svg {
 }
 
 .live-room-actions {
-  position: relative;
+  position: static;
   margin-left: auto;
 }
 
+.live-room-actions .action-button svg {
+  width: 17px;
+  height: 17px;
+  overflow: visible;
+}
+
 .live-participant-menu {
-  position: relative;
+  position: static;
   display: inline-flex;
 }
 
@@ -1244,11 +1256,11 @@ svg {
 
 .live-participant-popover {
   top: calc(100% + 7px);
-  right: 0;
+  right: 20px;
   display: grid;
-  width: min(300px, calc(100vw - 24px));
-  gap: 7px;
-  padding: 10px;
+  width: min(244px, calc(100vw - 24px));
+  gap: 4px;
+  padding: 7px;
 }
 
 .live-participant-popover > p {
@@ -1260,17 +1272,24 @@ svg {
 .live-participant-row {
   display: flex;
   align-items: flex-start;
-  gap: 8px;
+  gap: 7px;
   min-width: 0;
-  padding: 3px 2px;
+  padding: 2px;
 }
 
 .live-creator-controls {
   display: grid;
-  gap: 0.45rem;
-  margin-top: 0.7rem;
-  padding-top: 0.7rem;
+  justify-items: start;
+  gap: 4px;
+  margin-top: 4px;
+  padding-top: 6px;
   border-top: 1px solid var(--border-subtle);
+}
+
+.live-creator-controls .live-text-button {
+  min-height: 26px;
+  padding-inline: 7px;
+  font-size: 11px;
 }
 
 .live-creator-controls small {
@@ -1321,10 +1340,16 @@ svg {
   cursor: text;
 }
 
-.live-participant-name-button span {
+.live-participant-name-button .live-participant-nickname {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.live-participant-name-button .live-participant-you {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+  font-weight: 500;
 }
 
 .live-participant-name-button:hover {
@@ -1347,6 +1372,7 @@ svg {
 .live-participant-row small {
   color: var(--text-muted);
   font-size: 10px;
+  text-transform: capitalize;
 }
 
 .live-participant-colour {
@@ -1365,7 +1391,12 @@ svg {
   gap: 3px;
   padding: 5px 0 5px 20px;
   overflow-x: auto;
-  scrollbar-width: thin;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+.live-tab-strip::-webkit-scrollbar {
+  display: none;
 }
 
 .live-tab-shell,
@@ -1388,9 +1419,51 @@ svg {
 }
 
 .live-tab-shell {
+  position: relative;
   flex: 0 0 auto;
   gap: 0;
   padding: 0;
+  touch-action: pan-y;
+}
+
+.live-tab-strip.is-reordering .live-tab-shell:not(.is-dragging) {
+  transition: transform 120ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.live-tab-strip.is-reordering,
+.live-tab-strip.is-reordering .live-tab-shell,
+.live-tab-strip.is-reordering .live-tab-item {
+  cursor: grabbing;
+  user-select: none;
+}
+
+.live-tab-shell.is-dragging {
+  z-index: 3;
+  background: var(--surface-raised);
+  box-shadow: 0 5px 14px rgb(20 12 16 / 0.16);
+  opacity: 0.88;
+  will-change: transform;
+}
+
+.live-tab-shell.is-drop-before::before,
+.live-tab-shell.is-drop-after::after {
+  position: absolute;
+  z-index: 2;
+  top: 5px;
+  bottom: 5px;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--accent);
+  content: "";
+  pointer-events: none;
+}
+
+.live-tab-shell.is-drop-before::before {
+  left: -2px;
+}
+
+.live-tab-shell.is-drop-after::after {
+  right: -2px;
 }
 
 .live-tab-shell:hover,
@@ -1473,8 +1546,31 @@ svg {
 }
 
 .live-tab-strip .live-add-tab {
+  position: sticky;
+  z-index: 4;
+  right: 0;
+  flex: 0 0 31px;
+  width: 31px;
   margin-left: 3px;
+  padding-inline: 0;
+  justify-content: center;
+  background: var(--accent-soft);
   color: var(--accent);
+  font-size: 17px;
+  font-weight: 750;
+}
+
+.live-room-language-control {
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  order: 3;
+  flex: 0 0 auto;
+  padding-right: 20px;
+}
+
+.live-room-language-control .custom-select > button {
+  width: 132px;
 }
 
 .live-tab-strip button:disabled,
@@ -1544,21 +1640,6 @@ svg {
   flex-wrap: nowrap;
   border-top: 1px solid var(--border-subtle);
   border-bottom: 0;
-}
-
-.live-room-tab-controls {
-  flex: 0 1 auto;
-  overflow: visible;
-}
-
-.live-room-tab-controls .custom-select > button {
-  width: 132px;
-}
-
-.live-room-bottom-toolbar .custom-select ul {
-  top: auto;
-  bottom: calc(100% + 7px);
-  transform-origin: bottom right;
 }
 
 .live-room-connection-copy {
@@ -1632,10 +1713,6 @@ svg {
 
   .live-room-bottom-toolbar .toolbar-spacer {
     display: none;
-  }
-
-  .live-room-tab-controls {
-    max-width: 100%;
   }
 
   .live-room-connection-copy {
@@ -2130,6 +2207,11 @@ svg {
     justify-content: space-between;
   }
 
+  .live-room-topbar .live-room-actions {
+    flex: 0 0 auto;
+    justify-content: flex-start;
+  }
+
   .live-room-expiry {
     white-space: normal;
   }
@@ -2138,7 +2220,6 @@ svg {
     align-items: stretch;
   }
 
-  .live-room-tab-controls,
   .live-export-control,
   .live-export-control .primary-action {
     max-width: 100%;
@@ -2150,12 +2231,16 @@ svg {
 }
 
 @media (max-width: 390px) {
-  .live-room-tab-controls .custom-select > button {
+  .live-room-language-control {
+    padding-right: 8px;
+  }
+
+  .live-room-language-control .custom-select > button {
     width: 112px;
   }
 
   .live-participant-popover {
-    right: -4px;
+    right: 8px;
   }
 }
 
