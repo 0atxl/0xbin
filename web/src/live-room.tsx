@@ -59,6 +59,7 @@ import { beginLoading } from "./loading";
 import { saveLiveBrowserNickname } from "./live-identity";
 import {
   LiveCollaborativeEditor as WorkspaceEditor,
+  livePresenceSelection,
   makeLiveEditorState,
   safeParticipantColor,
 } from "./live-editor";
@@ -839,14 +840,14 @@ export function LiveRoomWorkspace({
   function sendPresence(state: EditorState) {
     const documentID = activeDocumentRef.current;
     if (!documentID) return;
-    const range = state.selection.main;
+    const selection = livePresenceSelection(state);
     send({
       type: "presence",
       current_tab: documentID,
       document_id: documentID,
-      revision: getSyncedVersion(state),
-      anchor: range.anchor,
-      head: range.head,
+      revision: selection.revision,
+      anchor: selection.anchor,
+      head: selection.head,
     });
   }
 
@@ -1596,11 +1597,10 @@ export function LiveRoomWorkspace({
             participants,
             localParticipantID,
             activeDocument.id,
-            getSyncedVersion(activeState),
             Date.now(),
           )
         : [],
-    [activeDocument, activeState, localParticipantID, participants],
+    [activeDocument?.id, localParticipantID, participants],
   );
 
   const readOnly =
@@ -1666,6 +1666,9 @@ export function LiveRoomWorkspace({
                   className={`live-status-dot is-${connection}`}
                   aria-hidden="true"
                 />
+                <span className="live-participant-count">
+                  {participants.length}
+                </span>
               </button>
               {participantOpen ? (
                 <div

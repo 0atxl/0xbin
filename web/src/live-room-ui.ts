@@ -5,6 +5,7 @@ export type LiveRemoteCursor = {
   id: string;
   nickname: string;
   color: string;
+  revision: number;
   anchor: number;
   head: number;
   active: boolean;
@@ -62,7 +63,6 @@ export function liveRemoteCursors(
   participants: LiveParticipant[],
   localParticipantID: string,
   activeDocumentID: string,
-  syncedRevision: number,
   now: number,
 ): LiveRemoteCursor[] {
   return participants
@@ -84,15 +84,12 @@ export function liveRemoteCursors(
               ]
             : [];
       return cursors
-        .filter(
-          (cursor) =>
-            cursor.documentID === activeDocumentID &&
-            cursor.revision <= syncedRevision,
-        )
+        .filter((cursor) => cursor.documentID === activeDocumentID)
         .map((cursor) => ({
           id: `${participant.id}:${cursor.connectionID}`,
           nickname: participant.nickname,
           color: participant.color,
+          revision: cursor.revision,
           anchor: cursor.anchor,
           head: cursor.head,
           active: now - Date.parse(participant.lastSeenAt) < 5_000,

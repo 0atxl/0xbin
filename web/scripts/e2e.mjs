@@ -417,8 +417,8 @@ try {
   );
   await assert.equal(
     (await page.locator(".live-connection-status").textContent())?.trim(),
-    "",
-    "connection status should remain dot-only",
+    "1",
+    "connection status should place the participant count after its dot",
   );
   await assert.equal(
     await page.locator(".live-room-topbar").evaluate((topbar) => {
@@ -665,7 +665,7 @@ try {
     2,
     "a separate browser context must receive a distinct participant",
   );
-  const rapidText = "shared rapid α🙂 edits";
+  let rapidText = "shared rapid α🙂 edits";
   const collaboratorEditor = collaborator.locator(
     ".live-code-editor .cm-content",
   );
@@ -692,6 +692,169 @@ try {
   await page.waitForFunction(
     () => document.querySelectorAll(".live-remote-caret").length > 0,
   );
+  const remoteCursorLayout = await page
+    .locator(".live-remote-caret")
+    .first()
+    .evaluate((cursor) => {
+      const label = cursor.querySelector(".live-remote-label");
+      const scroller = cursor.closest(".cm-scroller");
+      return {
+        insideContent: cursor.closest(".cm-content") !== null,
+        cursorWidth: cursor.getBoundingClientRect().width,
+        labelTop: label?.getBoundingClientRect().top,
+        scrollerTop: scroller?.getBoundingClientRect().top,
+      };
+    });
+  assert.equal(
+    remoteCursorLayout.insideContent,
+    false,
+    "remote cursors must render in an overlay rather than the document layout",
+  );
+  assert.equal(
+    remoteCursorLayout.cursorWidth,
+    0,
+    "remote cursor overlays must consume no horizontal document space",
+  );
+  assert.ok(
+    remoteCursorLayout.labelTop !== undefined &&
+      remoteCursorLayout.scrollerTop !== undefined &&
+      remoteCursorLayout.labelTop >= remoteCursorLayout.scrollerTop,
+    "a label on the first line must remain inside the visible editor",
+  );
+
+  const caretLeftBeforeTyping = await page
+    .locator(".live-remote-caret-line")
+    .first()
+    .evaluate((caret) => caret.getBoundingClientRect().left);
+  await collaboratorEditor.pressSequentially("!");
+  rapidText += "!";
+  await page.waitForFunction((expected) => {
+    const content = document.querySelector(".live-code-editor .cm-content");
+    return content?.textContent === expected;
+  }, rapidText);
+  await page.waitForFunction((previousLeft) => {
+    const caret = document.querySelector(".live-remote-caret-line");
+    return !!caret && caret.getBoundingClientRect().left > previousLeft;
+  }, caretLeftBeforeTyping);
+  const caretLeftAfterTyping = await page
+    .locator(".live-remote-caret-line")
+    .first()
+    .evaluate((caret) => caret.getBoundingClientRect().left);
+  await page.waitForTimeout(250);
+  const settledCaretLeft = await page
+    .locator(".live-remote-caret-line")
+    .first()
+    .evaluate((caret) => caret.getBoundingClientRect().left);
+  assert.ok(
+    Math.abs(settledCaretLeft - caretLeftAfterTyping) < 0.5,
+    "the authoritative presence update must not pull the cursor behind the last typed character",
+  );
+
+  await collaborator.keyboard.down("Shift");
+  await collaborator.keyboard.press("ArrowLeft");
+  await collaborator.keyboard.up("Shift");
+  await assert.equal(
+    await liveEditorText(collaboratorEditor),
+    rapidText,
+    "moving or extending a cursor must not mutate collaborative text",
+  );
+  await collaboratorEditor.press("End");
+
+  const ownerEditor = page.locator(".live-code-editor .cm-content");
+  const multilineText = `top\n${rapidText}`;
+  await ownerEditor.fill(multilineText);
+  await collaborator.waitForFunction((expected) => {
+    const content = document.querySelector(".live-code-editor .cm-content");
+    return (
+      content &&
+      [...content.querySelectorAll(".cm-line")]
+        .map((line) => line.textContent)
+        .join("\n") === expected
+    );
+  }, multilineText);
+  await page.waitForTimeout(150);
+  await page.evaluate(() => {
+    window.__remoteCaretMotionSamples = [];
+    window.__remoteCaretMotionTimer = window.setInterval(() => {
+      const caret = document.querySelector(".live-remote-caret-line");
+      if (!caret) return;
+      const bounds = caret.getBoundingClientRect();
+      window.__remoteCaretMotionSamples.push({
+        left: bounds.left,
+        top: bounds.top,
+      });
+    }, 5);
+  });
+  await ownerEditor.press("ControlOrMeta+Home");
+  await ownerEditor.press("End");
+  await ownerEditor.pressSequentially(" edits", { delay: 30 });
+  const editedMultilineText = `top edits\n${rapidText}`;
+  await collaborator.waitForFunction((expected) => {
+    const content = document.querySelector(".live-code-editor .cm-content");
+    return (
+      content &&
+      [...content.querySelectorAll(".cm-line")]
+        .map((line) => line.textContent)
+        .join("\n") === expected
+    );
+  }, editedMultilineText);
+  await page.waitForTimeout(250);
+  const lowerCaretMotion = await page.evaluate(() => {
+    window.clearInterval(window.__remoteCaretMotionTimer);
+    return window.__remoteCaretMotionSamples;
+  });
+  assert.ok(
+    lowerCaretMotion.length > 5,
+    "the lower remote cursor should remain measurable during earlier edits",
+  );
+  const lowerCaretLefts = lowerCaretMotion.map((sample) => sample.left);
+  const lowerCaretTops = lowerCaretMotion.map((sample) => sample.top);
+  assert.ok(
+    Math.max(...lowerCaretLefts) - Math.min(...lowerCaretLefts) < 0.5 &&
+      Math.max(...lowerCaretTops) - Math.min(...lowerCaretTops) < 0.5,
+    "editing an earlier line must not jitter a lower remote cursor",
+  );
+  await ownerEditor.fill(rapidText);
+  await collaborator.waitForFunction((expected) => {
+    const content = document.querySelector(".live-code-editor .cm-content");
+    return content?.textContent === expected;
+  }, rapidText);
+  await collaboratorEditor.press("End");
+
+  const secondCollaboratorConnection = await collaboratorContext.newPage();
+  await secondCollaboratorConnection.goto(liveRoomURL);
+  await expectLiveConnected(secondCollaboratorConnection);
+  const secondCollaboratorEditor = secondCollaboratorConnection.locator(
+    ".live-code-editor .cm-content",
+  );
+  await secondCollaboratorEditor.click();
+  await secondCollaboratorEditor.press("End");
+  await page.waitForFunction(() =>
+    [...document.querySelectorAll(".live-remote-labels")].some(
+      (labels) => labels.children.length === 2,
+    ),
+  );
+  const coincidentLabelBounds = await page.evaluate(() => {
+    const labels = [...document.querySelectorAll(".live-remote-labels")].find(
+      (candidate) => candidate.children.length === 2,
+    );
+    return labels
+      ? [...labels.children].map((label) => {
+          const bounds = label.getBoundingClientRect();
+          return { left: bounds.left, right: bounds.right };
+        })
+      : [];
+  });
+  assert.equal(
+    coincidentLabelBounds.length,
+    2,
+    "coincident cursors should retain both participant labels",
+  );
+  assert.ok(
+    coincidentLabelBounds[0].right <= coincidentLabelBounds[1].left,
+    "coincident cursor labels should be laid out side by side",
+  );
+  await secondCollaboratorConnection.close();
   await page.locator(".live-connection-status").click();
   await expectVisible(page, "main");
   await page.locator(".live-connection-status").click();
@@ -796,20 +959,15 @@ try {
       const pencil = tab.querySelector(".live-pencil-icon");
       const name = tab.querySelector(".live-tab-item > span");
       const close = tab.querySelector(".live-tab-close");
-      if (
-        !(pencil instanceof SVGElement) ||
-        !(name instanceof HTMLElement) ||
-        !(close instanceof HTMLElement)
-      )
+      if (!(name instanceof HTMLElement) || !(close instanceof HTMLElement))
         return false;
       return (
-        pencil.getBoundingClientRect().right <=
-          name.getBoundingClientRect().left &&
+        pencil === null &&
         name.getBoundingClientRect().right <= close.getBoundingClientRect().left
       );
     }),
     true,
-    "the rename pencil should precede the tab name and stay separated from delete",
+    "the tab name should remain uncluttered and separated from delete",
   );
   await page.waitForTimeout(500);
   const liveRoomSnapshot = await page.evaluate(async () => {
@@ -1027,6 +1185,11 @@ try {
       [...document.querySelectorAll(".live-tab-shell .live-tab-item > span")]
         .map((name) => name.textContent)
         .join(",") === "tab4,tab2,tab3",
+  );
+  await page.waitForFunction(
+    () =>
+      document.querySelector(".live-add-tab") instanceof HTMLButtonElement &&
+      !document.querySelector(".live-add-tab").disabled,
   );
   await page
     .getByRole("button", { name: "tab4", exact: true })

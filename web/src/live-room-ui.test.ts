@@ -64,7 +64,7 @@ describe("live room UI helpers", () => {
     expect(formatLiveRoomLifetime(90 * 60)).toBe("90m");
   });
 
-  it("renders connection-specific cursors and removes stale or off-tab cursors", () => {
+  it("renders connection-specific cursors with their source revisions", () => {
     expect(
       liveRemoteCursors(
         [
@@ -105,12 +105,12 @@ describe("live room UI helpers", () => {
         ],
         "local",
         "one",
-        1,
         Date.parse("2026-08-08T10:00:06Z"),
       ),
     ).toEqual([
       expect.objectContaining({ id: "other:connection-other", active: true }),
       expect.objectContaining({ id: "multi-tab:tab-one", active: true }),
+      expect.objectContaining({ id: "stale:stale-tab", revision: 3 }),
     ]);
   });
 

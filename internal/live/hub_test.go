@@ -248,6 +248,15 @@ func TestHubGroupsBoundedConnectionsAndKeepsPresenceConnectionScoped(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
+	typingPresence, err := first.Session.UpdatePresence(live.PresenceUpdate{
+		CurrentTab: "main", DocumentID: "main", Revision: 0, Anchor: 5, Head: 5,
+	}, now.Add(1500*time.Millisecond))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if typingPresence.Cursor == nil || typingPresence.Cursor.Anchor != 6 || typingPresence.Cursor.Head != 6 {
+		t.Fatalf("typing cursor = %#v, want collapsed position 6 after accepted insertion", typingPresence.Cursor)
+	}
 	secondEdit, err := second.Session.SubmitDocument(ctx, live.DocumentOperation{
 		OperationID: "second-connection-edit", ClientID: "client-two", DocumentID: "main", BaseVersion: 1,
 		Changes: mustChangeSet(t, `[6,[0,"?"]]`),

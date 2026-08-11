@@ -1,11 +1,13 @@
 import { useEffect, useRef } from "react";
 import {
   Compartment,
+  EditorSelection,
   EditorState,
   StateEffect,
   StateField,
+  type ChangeDesc,
 } from "@codemirror/state";
-import { collab } from "@codemirror/collab";
+import { collab, getSyncedVersion, sendableUpdates } from "@codemirror/collab";
 import {
   defaultKeymap,
   historyKeymap,
@@ -16,10 +18,13 @@ import {
   Decoration,
   EditorView,
   keymap,
+  layer,
   lineNumbers,
   placeholder,
-  WidgetType,
+  RectangleMarker,
   type DecorationSet,
+  type LayerMarker,
+  type ViewUpdate,
 } from "@codemirror/view";
 import {
   HighlightStyle,
@@ -56,6 +61,7 @@ export type RemoteCursor = {
   id: string;
   nickname: string;
   color: string;
+  revision: number;
   anchor: number;
   head: number;
   active: boolean;
@@ -63,78 +69,291 @@ export type RemoteCursor = {
 
 const setRemoteCursors = StateEffect.define<RemoteCursor[]>();
 
-class RemoteCursorWidget extends WidgetType {
+type RemoteCursorState = {
+  sourceCursors: RemoteCursor[];
+  cursors: RemoteCursor[];
+  selections: DecorationSet;
+};
+
+class RemoteCursorMarker implements LayerMarker {
   constructor(
-    private readonly nickname: string,
-    private readonly color: string,
-    private readonly active: boolean,
-  ) {
-    super();
+    readonly left: number,
+    readonly top: number,
+    readonly height: number,
+    readonly cursors: RemoteCursor[],
+  ) {}
+
+  eq(other: RemoteCursorMarker) {
+    return (
+      this.left === other.left &&
+      this.top === other.top &&
+      this.height === other.height &&
+      sameRemoteCursorPresentation(this.cursors, other.cursors)
+    );
   }
 
-  toDOM() {
-    const element = document.createElement("span");
-    element.className = `live-remote-caret${this.active ? " is-active" : ""}`;
-    element.style.setProperty(
-      "--remote-color",
-      safeParticipantColor(this.color),
-    );
+  draw() {
+    const element = document.createElement("div");
+    element.className = "live-remote-caret";
     element.setAttribute("aria-hidden", "true");
-    const label = document.createElement("span");
-    label.className = "live-remote-label";
-    label.textContent = this.nickname;
-    element.append(label);
+    this.position(element);
+
+    const labels = document.createElement("div");
+    labels.className = "live-remote-labels";
+    this.cursors.forEach((cursor, index) => {
+      const color = safeParticipantColor(cursor.color);
+      const caret = document.createElement("span");
+      caret.className = "live-remote-caret-line";
+      caret.style.setProperty("--remote-color", color);
+      caret.style.setProperty("--remote-caret-index", String(index));
+      element.append(caret);
+
+      const label = document.createElement("span");
+      label.className = `live-remote-label${cursor.active ? " is-active" : ""}`;
+      label.style.setProperty("--remote-color", color);
+      label.textContent = cursor.nickname;
+      labels.append(label);
+    });
+    element.append(labels);
     return element;
   }
 
-  ignoreEvent() {
+  update(element: HTMLElement, previous: RemoteCursorMarker) {
+    if (!sameRemoteCursorPresentation(this.cursors, previous.cursors)) {
+      return false;
+    }
+    this.position(element);
     return true;
+  }
+
+  private position(element: HTMLElement) {
+    element.style.left = `${this.left}px`;
+    element.style.top = `${this.top}px`;
+    element.style.height = `${this.height}px`;
   }
 }
 
-const remoteCursorField = StateField.define<DecorationSet>({
-  create: () => Decoration.none,
-  update(decorations, transaction) {
-    let next = decorations.map(transaction.changes);
-    for (const effect of transaction.effects) {
-      if (!effect.is(setRemoteCursors)) continue;
-      const ranges = effect.value.flatMap((cursor) => {
-        const from = clampPosition(
-          Math.min(cursor.anchor, cursor.head),
-          transaction.state.doc.length,
-        );
-        const to = clampPosition(
-          Math.max(cursor.anchor, cursor.head),
-          transaction.state.doc.length,
-        );
-        const result = [];
-        if (from !== to) {
-          result.push(
+function sameRemoteCursorPresentation(
+  left: RemoteCursor[],
+  right: RemoteCursor[],
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every((cursor, index) => {
+      const candidate = right[index];
+      return (
+        cursor.id === candidate.id &&
+        cursor.nickname === candidate.nickname &&
+        cursor.color === candidate.color &&
+        cursor.active === candidate.active
+      );
+    })
+  );
+}
+
+function remoteSelectionDecorations(cursors: RemoteCursor[]): DecorationSet {
+  return Decoration.set(
+    cursors.flatMap((cursor) => {
+      const from = Math.min(cursor.anchor, cursor.head);
+      const to = Math.max(cursor.anchor, cursor.head);
+      return from === to
+        ? []
+        : [
             Decoration.mark({
               class: "live-remote-selection",
               attributes: {
                 style: `--remote-color: ${safeParticipantColor(cursor.color)}`,
               },
             }).range(from, to),
-          );
-        }
-        result.push(
-          Decoration.widget({
-            widget: new RemoteCursorWidget(
-              cursor.nickname,
-              cursor.color,
-              cursor.active,
-            ),
-            side: cursor.head <= cursor.anchor ? -1 : 1,
-          }).range(clampPosition(cursor.head, transaction.state.doc.length)),
-        );
-        return result;
-      });
-      next = Decoration.set(ranges, true);
+          ];
+    }),
+    true,
+  );
+}
+
+export function mapRemoteCursors(
+  cursors: RemoteCursor[],
+  changes: ChangeDesc,
+  documentLength: number,
+): RemoteCursor[] {
+  return cursors.map((cursor) => ({
+    ...cursor,
+    anchor: clampPosition(
+      changes.mapPos(cursor.anchor, cursor.anchor < cursor.head ? -1 : 1),
+      documentLength,
+    ),
+    head: clampPosition(
+      changes.mapPos(cursor.head, cursor.head < cursor.anchor ? -1 : 1),
+      documentLength,
+    ),
+  }));
+}
+
+export function livePresenceSelection(state: EditorState): {
+  revision: number;
+  anchor: number;
+  head: number;
+} {
+  const selection = state.selection.main;
+  const pendingChanges = pendingChangeDescription(state);
+  if (!pendingChanges) {
+    return {
+      revision: getSyncedVersion(state),
+      anchor: selection.anchor,
+      head: selection.head,
+    };
+  }
+  const inverse = pendingChanges.invertedDesc;
+  return {
+    revision: getSyncedVersion(state),
+    anchor: inverse.mapPos(
+      selection.anchor,
+      selection.anchor < selection.head ? -1 : 1,
+    ),
+    head: inverse.mapPos(
+      selection.head,
+      selection.head < selection.anchor ? -1 : 1,
+    ),
+  };
+}
+
+function pendingChangeDescription(state: EditorState): ChangeDesc | undefined {
+  let pendingChanges: ChangeDesc | undefined;
+  for (const update of sendableUpdates(state)) {
+    pendingChanges = pendingChanges
+      ? pendingChanges.composeDesc(update.changes)
+      : update.changes;
+  }
+  return pendingChanges;
+}
+
+export function reconcileRemoteCursors(
+  sourceCursors: RemoteCursor[],
+  existingCursors: RemoteCursor[],
+  state: EditorState,
+): RemoteCursor[] {
+  const syncedRevision = getSyncedVersion(state);
+  const pendingChanges = pendingChangeDescription(state);
+  const existingByID = new Map(
+    existingCursors.map((cursor) => [cursor.id, cursor]),
+  );
+  return sourceCursors.flatMap((source) => {
+    if (source.revision !== syncedRevision) {
+      const existing = existingByID.get(source.id);
+      return existing
+        ? [
+            {
+              ...existing,
+              nickname: source.nickname,
+              color: source.color,
+              active: source.active,
+            },
+          ]
+        : [];
     }
-    return next;
+    return pendingChanges
+      ? mapRemoteCursors([source], pendingChanges, state.doc.length)
+      : [
+          {
+            ...source,
+            anchor: clampPosition(source.anchor, state.doc.length),
+            head: clampPosition(source.head, state.doc.length),
+          },
+        ];
+  });
+}
+
+const remoteCursorField = StateField.define<RemoteCursorState>({
+  create: () => ({
+    sourceCursors: [],
+    cursors: [],
+    selections: Decoration.none,
+  }),
+  update(value, transaction) {
+    let sourceCursors = value.sourceCursors;
+    let sourceChanged = false;
+    for (const effect of transaction.effects) {
+      if (!effect.is(setRemoteCursors)) continue;
+      sourceCursors = effect.value;
+      sourceChanged = true;
+    }
+    const startRevision = getSyncedVersion(transaction.startState);
+    const syncedRevision = getSyncedVersion(transaction.state);
+    if (
+      !transaction.docChanged &&
+      !sourceChanged &&
+      startRevision === syncedRevision
+    ) {
+      return value;
+    }
+    let existingCursors = transaction.docChanged
+      ? mapRemoteCursors(
+          value.cursors,
+          transaction.changes,
+          transaction.state.doc.length,
+        )
+      : value.cursors;
+    if (startRevision !== syncedRevision) {
+      existingCursors = existingCursors.map((cursor) => ({
+        ...cursor,
+        revision: syncedRevision,
+      }));
+    }
+    const cursors = reconcileRemoteCursors(
+      sourceCursors,
+      existingCursors,
+      transaction.state,
+    );
+    return {
+      sourceCursors,
+      cursors,
+      selections: remoteSelectionDecorations(cursors),
+    };
   },
-  provide: (field) => EditorView.decorations.from(field),
+  provide: (field) =>
+    EditorView.decorations.from(field, (value) => value.selections),
+});
+
+const remoteCursorLayer = layer({
+  above: true,
+  class: "live-remote-layer",
+  update(update: ViewUpdate) {
+    return (
+      update.startState.field(remoteCursorField) !==
+      update.state.field(remoteCursorField)
+    );
+  },
+  markers(view) {
+    const groups = new Map<number, RemoteCursor[]>();
+    for (const cursor of view.state.field(remoteCursorField).cursors) {
+      const group = groups.get(cursor.head) ?? [];
+      group.push(cursor);
+      groups.set(cursor.head, group);
+    }
+    return [...groups.entries()].flatMap(([head, cursors]) => {
+      const orderedCursors = [...cursors].sort((left, right) =>
+        left.id.localeCompare(right.id),
+      );
+      const side = orderedCursors.every((cursor) => cursor.head < cursor.anchor)
+        ? -1
+        : 1;
+      const rectangle = RectangleMarker.forRange(
+        view,
+        "live-remote-caret-position",
+        EditorSelection.cursor(head, side),
+      )[0];
+      return rectangle
+        ? [
+            new RemoteCursorMarker(
+              rectangle.left,
+              rectangle.top,
+              rectangle.height,
+              orderedCursors,
+            ),
+          ]
+        : [];
+    });
+  },
 });
 
 export function safeParticipantColor(color: string): string {
@@ -157,6 +376,7 @@ export function makeLiveEditorState(
     extensions: [
       collab({ startVersion: document.revision, clientID }),
       remoteCursorField,
+      remoteCursorLayer,
       lineNumbers(),
       EditorView.lineWrapping,
       placeholder("Write text or code here…"),

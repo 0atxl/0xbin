@@ -2044,6 +2044,13 @@ func (room *room) applyPersistedDocument(document *documentState, change ChangeR
 }
 
 func mapSelection(selection livecollab.SelectionRange, changes livecollab.ChangeSet) (livecollab.SelectionRange, error) {
+	if selection.Anchor == selection.Head {
+		position, err := changes.MapPos(selection.Head, 1)
+		if err != nil {
+			return livecollab.SelectionRange{}, err
+		}
+		return livecollab.SelectionRange{Anchor: position, Head: position}, nil
+	}
 	return selection.Map(changes)
 }
 
