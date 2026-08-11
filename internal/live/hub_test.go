@@ -1407,11 +1407,12 @@ func TestHubEnforcesWriterViewerCapacityAndWatchOnlyRole(t *testing.T) {
 	if _, err := creator.Session.SetWatchOnly(ctx, true, now); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := creator.Session.SubmitDocument(ctx, live.DocumentOperation{
+	lockedCreatorEdit, err := creator.Session.SubmitDocument(ctx, live.DocumentOperation{
 		OperationID: "creator-after-watch-only", ClientID: "creator", DocumentID: "main", BaseVersion: 0,
 		Changes: mustChangeSet(t, `[5,[0,"!"]]`),
-	}, now); !errors.Is(err, live.ErrWatchOnly) {
-		t.Fatalf("watch-only creator edit error = %v", err)
+	}, now)
+	if err != nil || lockedCreatorEdit.Revision != 1 {
+		t.Fatalf("locked creator edit = %#v, %v", lockedCreatorEdit, err)
 	}
 	writableState, err := creator.Session.SetWatchOnly(ctx, false, now)
 	if err != nil {
@@ -1441,6 +1442,155 @@ func TestHubEnforcesWriterViewerCapacityAndWatchOnlyRole(t *testing.T) {
 	}
 	if joinedAfterKick.Participant.Role != live.ParticipantWatchOnly {
 		t.Fatalf("new session role = %q, want watch-only", joinedAfterKick.Participant.Role)
+	}
+}
+
+func TestHubAccessClassAndLockTruthTable(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, time.August, 10, 17, 0, 0, 0, time.UTC)
+	store, err := sqlite.Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	creatorCapability := createTestRoomWithCreator(t, ctx, store, now)
+	options := testHubOptions(nil, nil)
+	options.MaxWriters, options.MaxViewers, options.MaxParticipants = 2, 2, 4
+	hub, err := live.NewHub(store, nil, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer hub.Shutdown(ctx, now.Add(time.Hour))
+
+	creator, err := hub.JoinWithCreator(ctx, "calmbrightotter", "creator-session", creatorCapability, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	locked, err := creator.Session.SetWatchOnly(ctx, true, now.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !locked.WatchOnly {
+		t.Fatal("room did not lock")
+	}
+	collaborator, err := hub.Join(ctx, "calmbrightotter", "collaborator-session", now.Add(2*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	viewerA, err := hub.Join(ctx, "calmbrightotter", "viewer-a-session", now.Add(3*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	viewerB, err := hub.Join(ctx, "calmbrightotter", "viewer-b-session", now.Add(4*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, participant := range map[string]live.ParticipantSnapshot{
+		"creator": creator.Participant, "collaborator": collaborator.Participant,
+		"viewer-a": viewerA.Participant, "viewer-b": viewerB.Participant,
+	} {
+		switch name {
+		case "creator":
+			if participant.AccessClass != live.ParticipantCreator || !participant.CanEdit || participant.Role != live.ParticipantWriter {
+				t.Fatalf("locked creator = %#v", participant)
+			}
+		case "collaborator":
+			if participant.AccessClass != live.ParticipantCollaborator || participant.CanEdit || participant.Role != live.ParticipantWatchOnly {
+				t.Fatalf("locked collaborator = %#v", participant)
+			}
+		default:
+			if participant.AccessClass != live.ParticipantViewer || participant.CanEdit || participant.Role != live.ParticipantWatchOnly {
+				t.Fatalf("locked viewer = %#v", participant)
+			}
+		}
+	}
+
+	creatorEdit, err := creator.Session.SubmitDocument(ctx, live.DocumentOperation{
+		OperationID: "locked-creator-edit", ClientID: "creator", DocumentID: "main", BaseVersion: 0,
+		Changes: mustChangeSet(t, `[5,[0,"!"]]`),
+	}, now.Add(5*time.Second))
+	if err != nil || creatorEdit.Revision != 1 {
+		t.Fatalf("locked creator edit = %#v, %v", creatorEdit, err)
+	}
+	for name, session := range map[string]*live.RoomSession{
+		"collaborator": collaborator.Session, "viewer": viewerA.Session,
+	} {
+		if _, err := session.SubmitDocument(ctx, live.DocumentOperation{
+			OperationID: "locked-" + name + "-edit", ClientID: name, DocumentID: "main", BaseVersion: 1,
+			Changes: mustChangeSet(t, `[6,[0,"?"]]`),
+		}, now.Add(6*time.Second)); !errors.Is(err, live.ErrWatchOnly) {
+			t.Fatalf("locked %s edit error = %v", name, err)
+		}
+	}
+
+	if err := collaborator.Session.Disconnect(now.Add(7 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	reconnected, err := hub.Join(ctx, "calmbrightotter", "collaborator-session", now.Add(8*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reconnected.Reconnected || reconnected.Participant.AccessClass != live.ParticipantCollaborator || reconnected.Participant.CanEdit {
+		t.Fatalf("locked collaborator reconnect = %#v", reconnected.Participant)
+	}
+
+	unlocked, err := creator.Session.SetWatchOnly(ctx, false, now.Add(9*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	participants := make(map[string]live.ParticipantSnapshot, len(unlocked.Participants))
+	for _, participant := range unlocked.Participants {
+		participants[participant.ID] = participant
+	}
+	if unlocked.WatchOnly || !participants[creator.Participant.ID].CanEdit || !participants[reconnected.Participant.ID].CanEdit || participants[viewerA.Participant.ID].CanEdit || participants[creator.Participant.ID].AccessClass != live.ParticipantCreator || participants[reconnected.Participant.ID].AccessClass != live.ParticipantCollaborator || participants[viewerA.Participant.ID].AccessClass != live.ParticipantViewer {
+		t.Fatalf("unlocked truth table = %#v", unlocked.Participants)
+	}
+	collaboratorEdit, err := reconnected.Session.SubmitDocument(ctx, live.DocumentOperation{
+		OperationID: "unlocked-collaborator-edit", ClientID: "collaborator", DocumentID: "main", BaseVersion: 1,
+		Changes: mustChangeSet(t, `[6,[0,"?"]]`),
+	}, now.Add(10*time.Second))
+	if err != nil || collaboratorEdit.Revision != 2 {
+		t.Fatalf("unlocked collaborator edit = %#v, %v", collaboratorEdit, err)
+	}
+}
+
+func TestHubReservesWriterCapacityForLateCreatorJoin(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, time.August, 10, 18, 0, 0, 0, time.UTC)
+	store, err := sqlite.Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	creatorCapability := createTestRoomWithCreator(t, ctx, store, now)
+	options := testHubOptions(nil, nil)
+	options.MaxWriters, options.MaxViewers, options.MaxParticipants = 2, 1, 3
+	hub, err := live.NewHub(store, nil, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer hub.Shutdown(ctx, now.Add(time.Hour))
+
+	first, err := hub.Join(ctx, "calmbrightotter", "first-session", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := hub.Join(ctx, "calmbrightotter", "second-session", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Participant.AccessClass != live.ParticipantCollaborator || second.Participant.AccessClass != live.ParticipantViewer {
+		t.Fatalf("reserved creator capacity = first %#v, second %#v", first.Participant, second.Participant)
+	}
+	creator, err := hub.JoinWithCreator(ctx, "calmbrightotter", "creator-session", creatorCapability, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if creator.Participant.AccessClass != live.ParticipantCreator || !creator.Participant.CanEdit || len(creator.State.Participants) != 3 {
+		t.Fatalf("late creator join = %#v", creator)
+	}
+	if _, err := hub.Join(ctx, "calmbrightotter", "overflow-session", now); !errors.Is(err, live.ErrParticipantLimit) {
+		t.Fatalf("late creator capacity overflow error = %v", err)
 	}
 }
 
@@ -1486,8 +1636,8 @@ func TestHubWatchOnlyModePreservesWriterCapacitySlots(t *testing.T) {
 	if err != nil {
 		t.Fatalf("replacement should use the released writer capacity slot: %v", err)
 	}
-	if replacement.Participant.Role != live.ParticipantWatchOnly {
-		t.Fatalf("replacement role = %q, want watch-only", replacement.Participant.Role)
+	if replacement.Participant.Role != live.ParticipantWatchOnly || replacement.Participant.AccessClass != live.ParticipantCollaborator || replacement.Participant.CanEdit {
+		t.Fatalf("locked replacement participant = %#v", replacement.Participant)
 	}
 	if _, err := hub.Join(ctx, "calmbrightotter", "overflow-session", now); !errors.Is(err, live.ErrParticipantLimit) {
 		t.Fatalf("overflow join error = %v", err)
@@ -1567,7 +1717,7 @@ func TestHubCreatorCapabilityAndLockSurviveRestartWhilePresenceDoesNot(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !joined.Session.IsCreator() || !joined.State.WatchOnly || len(joined.State.Participants) != 1 {
+	if !joined.Session.IsCreator() || !joined.State.WatchOnly || len(joined.State.Participants) != 1 || joined.Participant.AccessClass != live.ParticipantCreator || !joined.Participant.CanEdit || joined.Participant.Role != live.ParticipantWriter {
 		t.Fatalf("durable creator/lock or transient presence after restart = %#v", joined)
 	}
 }
@@ -1645,12 +1795,115 @@ func TestHubLockPersistenceFailureDoesNotChangeAuthorityState(t *testing.T) {
 	}
 }
 
+func TestHubSerializesConcurrentCreatorConnectionLockTransitions(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, time.August, 10, 19, 0, 0, 0, time.UTC)
+	store, err := sqlite.Open(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	capability := createTestRoomWithCreator(t, ctx, store, now)
+	blocking := &blockingLockStore{
+		RoomStore: store, firstEntered: make(chan struct{}), releaseFirst: make(chan struct{}),
+	}
+	hub, err := live.NewHub(blocking, nil, testHubOptions(nil, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer hub.Shutdown(ctx, now.Add(time.Hour))
+	identity := func(connection string) live.JoinIdentity {
+		return live.JoinIdentity{
+			ParticipantCredential: "creator-browser", ConnectionID: connection, ClientID: "client-" + connection,
+		}
+	}
+	first, err := hub.JoinWithIdentity(ctx, "calmbrightotter", identity("first"), capability, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := hub.JoinWithIdentity(ctx, "calmbrightotter", identity("second"), capability, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Participant.ID != second.Participant.ID || second.Participant.ConnectionCount != 2 || second.Participant.AccessClass != live.ParticipantCreator {
+		t.Fatalf("grouped creator connections = %#v", second)
+	}
+
+	firstDone := make(chan error, 1)
+	go func() {
+		_, lockErr := first.Session.SetWatchOnly(ctx, true, now.Add(time.Second))
+		firstDone <- lockErr
+	}()
+	<-blocking.firstEntered
+	secondStarted := make(chan struct{})
+	secondDone := make(chan error, 1)
+	go func() {
+		close(secondStarted)
+		_, lockErr := second.Session.SetWatchOnly(ctx, false, now.Add(2*time.Second))
+		secondDone <- lockErr
+	}()
+	<-secondStarted
+	close(blocking.releaseFirst)
+	if err := <-firstDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-secondDone; err != nil {
+		t.Fatal(err)
+	}
+
+	blocking.mu.Lock()
+	transitions := append([]bool(nil), blocking.transitions...)
+	blocking.mu.Unlock()
+	if !reflect.DeepEqual(transitions, []bool{true, false}) {
+		t.Fatalf("durable transition order = %#v", transitions)
+	}
+	state, err := first.Session.State()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.WatchOnly || len(state.Participants) != 1 || !state.Participants[0].CanEdit || state.Participants[0].AccessClass != live.ParticipantCreator {
+		t.Fatalf("final concurrent lock state = %#v", state)
+	}
+	persisted, err := store.GetRoomSnapshot(ctx, "calmbrightotter", now.Add(3*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.Locked {
+		t.Fatal("last durable unlock did not win")
+	}
+}
+
 type failLockStore struct {
 	live.RoomStore
 }
 
 func (store *failLockStore) SetRoomLocked(context.Context, string, bool, time.Time) error {
 	return errors.New("injected lock persistence failure")
+}
+
+type blockingLockStore struct {
+	live.RoomStore
+	firstEntered chan struct{}
+	releaseFirst chan struct{}
+	mu           sync.Mutex
+	transitions  []bool
+}
+
+func (store *blockingLockStore) SetRoomLocked(ctx context.Context, slug string, locked bool, now time.Time) error {
+	store.mu.Lock()
+	first := len(store.transitions) == 0
+	store.mu.Unlock()
+	if first {
+		close(store.firstEntered)
+		<-store.releaseFirst
+	}
+	if err := store.RoomStore.SetRoomLocked(ctx, slug, locked, now); err != nil {
+		return err
+	}
+	store.mu.Lock()
+	store.transitions = append(store.transitions, locked)
+	store.mu.Unlock()
+	return nil
 }
 
 type recordingStore struct {

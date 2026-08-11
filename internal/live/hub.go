@@ -67,8 +67,8 @@ const (
 	ParticipantOffline        ParticipantStatus = "offline"
 )
 
-// ParticipantRole controls whether a temporary room session may mutate room
-// state. Roles are process-local presence, not durable room metadata.
+// ParticipantRole is the legacy transport representation derived from whether
+// a participant may currently edit the room.
 type ParticipantRole string
 
 const (
@@ -575,8 +575,8 @@ func (session *RoomSession) ClientID() string {
 	return session.clientID
 }
 
-// SetWatchOnly durably changes room mode. Enabling it immediately makes every
-// active writer watch-only; later phases refine creator editing behavior.
+// SetWatchOnly durably changes room mode. The creator remains editable while
+// collaborators follow the room lock and viewers remain read-only.
 func (session *RoomSession) SetWatchOnly(ctx context.Context, enabled bool, now time.Time) (RoomState, error) {
 	if session == nil || session.room == nil {
 		return RoomState{}, ErrParticipantNotFound
@@ -635,8 +635,7 @@ type documentHistory struct {
 type participantState struct {
 	snapshot       ParticipantSnapshot
 	sessionID      string
-	writerSlot     bool
-	creator        bool
+	accessClass    ParticipantAccessClass
 	connections    map[string]*connectionState
 	nextGeneration uint64
 	disconnectedAt time.Time
@@ -844,7 +843,12 @@ func (room *room) join(ctx context.Context, hub *Hub, identity JoinIdentity, cap
 			if len(participant.connections) >= room.options.MaxConnectionsPerParticipant {
 				return JoinResult{}, ErrConnectionLimit
 			}
-			participant.creator = participant.creator || creator
+			if creator && participant.accessClass != ParticipantCreator {
+				if participant.accessClass == ParticipantViewer && room.writerSlotCountLocked() >= room.options.MaxWriters {
+					return JoinResult{}, ErrParticipantLimit
+				}
+				participant.accessClass = ParticipantCreator
+			}
 			connection := room.addConnectionLocked(participant, identity, now)
 			participant.disconnectedAt = time.Time{}
 			room.refreshParticipantLocked(participant)
@@ -855,13 +859,9 @@ func (room *room) join(ctx context.Context, hub *Hub, identity JoinIdentity, cap
 	if len(room.participants) >= room.options.MaxParticipants {
 		return JoinResult{}, ErrParticipantLimit
 	}
-	writerSlot := room.writerSlotCountLocked() < room.options.MaxWriters
-	if !writerSlot && room.viewerSlotCountLocked() >= room.options.MaxViewers {
-		return JoinResult{}, ErrParticipantLimit
-	}
-	role := ParticipantWatchOnly
-	if writerSlot && !room.watchOnly {
-		role = ParticipantWriter
+	accessClass, err := room.accessClassForJoinLocked(creator)
+	if err != nil {
+		return JoinResult{}, err
 	}
 	participantID, err := ParticipantIDForRoom(room.snapshot.Slug, identity.ParticipantCredential)
 	if err != nil {
@@ -887,14 +887,12 @@ func (room *room) join(ctx context.Context, hub *Hub, identity JoinIdentity, cap
 		}
 	}
 	participant := &participantState{
-		sessionID: sessionID, writerSlot: writerSlot, creator: creator,
+		sessionID: sessionID, accessClass: accessClass,
 		connections: make(map[string]*connectionState),
 		snapshot: ParticipantSnapshot{
 			ID: participantID, Nickname: nickname, JoinedAt: now,
 			Color: participantColor(participantID), CurrentTab: room.order[0],
-			Status: ParticipantConnected, AccessClass: participantAccessClass(creator, writerSlot),
-			CanEdit: role == ParticipantWriter, ConnectionCount: 1,
-			Role: role, LastSeenAt: now,
+			Status: ParticipantConnected, ConnectionCount: 1, LastSeenAt: now,
 		},
 	}
 	connection := room.addConnectionLocked(participant, identity, now)
@@ -932,19 +930,14 @@ func (room *room) joinResultLocked(hub *Hub, participant *participantState, conn
 	}
 }
 
-func participantAccessClass(creator, writerSlot bool) ParticipantAccessClass {
-	if creator {
-		return ParticipantCreator
-	}
-	if writerSlot {
-		return ParticipantCollaborator
-	}
-	return ParticipantViewer
-}
-
 func (room *room) refreshParticipantLocked(participant *participantState) {
-	participant.snapshot.AccessClass = participantAccessClass(participant.creator, participant.writerSlot)
-	participant.snapshot.CanEdit = participant.snapshot.Role == ParticipantWriter
+	participant.snapshot.AccessClass = participant.accessClass
+	participant.snapshot.CanEdit = participantCanEdit(participant.accessClass, room.watchOnly)
+	if participant.snapshot.CanEdit {
+		participant.snapshot.Role = ParticipantWriter
+	} else {
+		participant.snapshot.Role = ParticipantWatchOnly
+	}
 	participant.snapshot.ConnectionCount = len(participant.connections)
 	participant.snapshot.Cursors = participant.snapshot.Cursors[:0]
 	participant.snapshot.Cursor = nil
@@ -986,6 +979,17 @@ func (room *room) refreshParticipantLocked(participant *participantState) {
 	}
 }
 
+func participantCanEdit(accessClass ParticipantAccessClass, locked bool) bool {
+	switch accessClass {
+	case ParticipantCreator:
+		return true
+	case ParticipantCollaborator:
+		return !locked
+	default:
+		return false
+	}
+}
+
 func (room *room) markConnectionActivityLocked(participant *participantState, connection *connectionState, now time.Time) {
 	connection.lastSeenAt = now
 	connection.lastActivityAt = now
@@ -995,7 +999,7 @@ func (room *room) markConnectionActivityLocked(participant *participantState, co
 func (room *room) writerSlotCountLocked() int {
 	count := 0
 	for _, participant := range room.participants {
-		if participant.writerSlot {
+		if participant.accessClass == ParticipantCreator || participant.accessClass == ParticipantCollaborator {
 			count++
 		}
 	}
@@ -1005,11 +1009,42 @@ func (room *room) writerSlotCountLocked() int {
 func (room *room) viewerSlotCountLocked() int {
 	count := 0
 	for _, participant := range room.participants {
-		if !participant.writerSlot {
+		if participant.accessClass == ParticipantViewer {
 			count++
 		}
 	}
 	return count
+}
+
+func (room *room) accessClassForJoinLocked(creator bool) (ParticipantAccessClass, error) {
+	writers := room.writerSlotCountLocked()
+	if creator {
+		if writers >= room.options.MaxWriters {
+			return "", ErrParticipantLimit
+		}
+		return ParticipantCreator, nil
+	}
+
+	collaboratorLimit := room.options.MaxWriters
+	if len(room.snapshot.CreatorTokenHash) > 0 && !room.hasCreatorLocked() {
+		collaboratorLimit--
+	}
+	if writers < collaboratorLimit {
+		return ParticipantCollaborator, nil
+	}
+	if room.viewerSlotCountLocked() >= room.options.MaxViewers {
+		return "", ErrParticipantLimit
+	}
+	return ParticipantViewer, nil
+}
+
+func (room *room) hasCreatorLocked() bool {
+	for _, participant := range room.participants {
+		if participant.accessClass == ParticipantCreator {
+			return true
+		}
+	}
+	return false
 }
 
 func (room *room) setWatchOnly(ctx context.Context, participantID, connectionID string, generation uint64, creator, enabled bool, now time.Time) (RoomState, error) {
@@ -1032,12 +1067,6 @@ func (room *room) setWatchOnly(ctx context.Context, participantID, connectionID 
 	room.watchOnly = enabled
 	room.snapshot.Locked = enabled
 	for _, participant := range room.participants {
-		if enabled || !participant.writerSlot {
-			participant.snapshot.Role = ParticipantWatchOnly
-		} else {
-			participant.snapshot.Role = ParticipantWriter
-		}
-		participant.snapshot.CanEdit = participant.snapshot.Role == ParticipantWriter
 		room.refreshParticipantLocked(participant)
 	}
 	return room.stateLocked(), nil
@@ -1080,7 +1109,7 @@ func (room *room) submitDocument(ctx context.Context, participantID, connectionI
 		return AcceptedDocumentOperation{}, err
 	}
 	room.markConnectionActivityLocked(participant, connection, now)
-	if room.participants[participantID].snapshot.Role != ParticipantWriter {
+	if !room.participants[participantID].snapshot.CanEdit {
 		return AcceptedDocumentOperation{}, ErrWatchOnly
 	}
 	if err := room.ensureOperationIDs(operation.OperationID, operation.ClientID); err != nil {
@@ -1177,7 +1206,7 @@ func (room *room) applyMetadata(ctx context.Context, participantID, connectionID
 		return AcceptedMetadataOperation{}, err
 	}
 	room.markConnectionActivityLocked(participant, connection, now)
-	if room.participants[participantID].snapshot.Role != ParticipantWriter {
+	if !room.participants[participantID].snapshot.CanEdit {
 		return AcceptedMetadataOperation{}, ErrWatchOnly
 	}
 	if err := room.ensureOperationIDs(operation.OperationID, operation.ClientID); err != nil {

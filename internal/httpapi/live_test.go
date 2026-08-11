@@ -37,6 +37,14 @@ type failLiveCommitsStore struct {
 	remaining int
 }
 
+type failLiveLockStore struct {
+	live.RoomStore
+}
+
+func (store *failLiveLockStore) SetRoomLocked(context.Context, string, bool, time.Time) error {
+	return errors.New("injected live lock failure")
+}
+
 func (store *failLiveCommitsStore) CommitChange(ctx context.Context, commit live.ChangeCommit, now time.Time) error {
 	store.mu.Lock()
 	fail := store.remaining > 0
@@ -1271,8 +1279,11 @@ func TestLiveCreatorControlsRequireCreatorSession(t *testing.T) {
 	}
 	creatorAfterUnlock := dialLivePeer(t, wsURL, placeholder.URL, cookieNamed(creatorUnlock.Cookies(), liveSessionCookie), cookieNamed(cookies, liveCreatorCookie))
 	defer creatorAfterUnlock.Close(websocket.StatusNormalClosure, "")
-	if joined := joinLivePeer(t, creatorAfterUnlock, "creator-after-unlock"); joined["creator"] != true {
-		t.Fatalf("creator authority was erased by password reauthentication: %s", joined)
+	writeLiveMessage(t, creatorAfterUnlock, `{"type":"join","session_id":"creator-session","connection_id":"creator-tab-two","client_id":"creator-client-two","metadata_revision":0,"document_revisions":[{"document_id":"main","revision":0}]}`)
+	creatorAfterUnlockJoined := readLiveEvent(t, creatorAfterUnlock, "joined")
+	creatorAfterUnlockParticipant, _ := creatorAfterUnlockJoined["participant"].(map[string]any)
+	if creatorAfterUnlockJoined["creator"] != true || creatorAfterUnlockParticipant["id"] != creatorParticipant["id"] || creatorAfterUnlockParticipant["connection_count"] != float64(2) {
+		t.Fatalf("creator authority after password reauthentication = %#v", creatorAfterUnlockJoined)
 	}
 
 	writeLiveMessage(t, writer, `{"type":"room_watch_only","watch_only":true}`)
@@ -1285,26 +1296,132 @@ func TestLiveCreatorControlsRequireCreatorSession(t *testing.T) {
 	}
 
 	writeLiveMessage(t, creator, `{"type":"room_watch_only","watch_only":true}`)
-	mode := readLiveEvent(t, creator, "room_mode_changed")
-	if mode["watch_only"] != true {
-		t.Fatalf("creator room mode response = %#v", mode)
-	}
-	participants, _ := mode["participants"].([]any)
-	for _, item := range participants {
-		participant, _ := item.(map[string]any)
-		if participant["role"] != "watch_only" {
-			t.Fatalf("mode transition left a writer active: %#v", participant)
+	for name, connection := range map[string]*websocket.Conn{"creator-one": creator, "creator-two": creatorAfterUnlock, "collaborator": writer} {
+		mode := readLiveEvent(t, connection, "room_mode_changed")
+		if mode["watch_only"] != true || mode["locked"] != true {
+			t.Fatalf("%s lock response = %#v", name, mode)
+		}
+		participants, _ := mode["participants"].([]any)
+		for _, item := range participants {
+			participant, _ := item.(map[string]any)
+			if participant["id"] == creatorParticipant["id"] {
+				if participant["access_class"] != "creator" || participant["can_edit"] != true || participant["role"] != "writer" {
+					t.Fatalf("%s locked creator = %#v", name, participant)
+				}
+			} else if participant["access_class"] != "collaborator" || participant["can_edit"] != false || participant["role"] != "watch_only" {
+				t.Fatalf("%s locked collaborator = %#v", name, participant)
+			}
 		}
 	}
-	writeLiveMessage(t, writer, `{"type":"push_changes","operation_id":"watcher-edit","document_id":"main","base_version":0,"changes":[[0,"blocked"]]}`)
+	writeLiveMessage(t, creator, `{"type":"push_changes","operation_id":"locked-creator-edit","document_id":"main","base_version":0,"changes":[[0,"allowed"]]}`)
+	if event := readLiveEvent(t, creator, "changes"); event["revision"] != float64(1) {
+		t.Fatalf("locked creator mutation = %#v", event)
+	}
+	writeLiveMessage(t, writer, `{"type":"push_changes","operation_id":"watcher-edit","document_id":"main","base_version":1,"changes":[7,[0,"blocked"]]}`)
 	if event := readLiveEvent(t, writer, "error"); event["code"] != "unauthorized" {
 		t.Fatalf("watch-only mutation response = %#v", event)
+	}
+
+	writeLiveMessage(t, creatorAfterUnlock, `{"type":"room_watch_only","watch_only":false}`)
+	for name, connection := range map[string]*websocket.Conn{"creator-one": creator, "creator-two": creatorAfterUnlock, "collaborator": writer} {
+		mode := readLiveEvent(t, connection, "room_mode_changed")
+		if mode["watch_only"] != false || mode["locked"] != false {
+			t.Fatalf("%s unlock response = %#v", name, mode)
+		}
+		participants, _ := mode["participants"].([]any)
+		for _, item := range participants {
+			participant, _ := item.(map[string]any)
+			if participant["can_edit"] != true || participant["role"] != "writer" {
+				t.Fatalf("%s unlocked writer = %#v", name, participant)
+			}
+		}
+	}
+	writeLiveMessage(t, writer, `{"type":"push_changes","operation_id":"writer-after-unlock","document_id":"main","base_version":1,"changes":[7,[0,"!"]]}`)
+	if event := readLiveEvent(t, writer, "changes"); event["revision"] != float64(2) {
+		t.Fatalf("unlocked collaborator mutation = %#v", event)
 	}
 
 	writeLiveMessage(t, creator, `{"type":"participant_remove","participant_id":"`+writerParticipant["id"].(string)+`"}`)
 	removed := readLiveEvent(t, creator, "participant_removed")
 	if removed["participant_id"] != writerParticipant["id"] {
 		t.Fatalf("removal event = %#v", removed)
+	}
+}
+
+func TestLiveFailedLockPersistenceDoesNotBroadcastOrChangePermissions(t *testing.T) {
+	placeholder := httptest.NewUnstartedServer(http.NotFoundHandler())
+	cfg := testConfig(t)
+	parsed, err := url.Parse("http://" + placeholder.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.BaseURL = parsed
+	store, err := sqlite.Open(context.Background(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	failing := &failLiveLockStore{RoomStore: store}
+	hub, err := live.NewHub(failing, nil, live.DefaultHubOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer hub.Shutdown(context.Background(), time.Now().UTC())
+	api := newLiveAPI(cfg, &LiveDependencies{Store: failing, Hub: hub, Slugs: &testLiveSlugGenerator{}})
+	placeholder.Config.Handler = newHandlerWithAPI(cfg, nil, nil, nil, api)
+	placeholder.Start()
+	defer placeholder.Close()
+
+	created, err := placeholder.Client().Post(placeholder.URL+"/api/v1/live", "application/json", strings.NewReader(`{"documents":[{"name":"main","language":"plaintext","content":""}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	created.Body.Close()
+	if created.StatusCode != http.StatusCreated {
+		t.Fatalf("create status = %d", created.StatusCode)
+	}
+	wsURL := "ws" + strings.TrimPrefix(placeholder.URL, "http") + "/api/v1/live/calmbrightotter/ws"
+	observer := dialLivePeer(t, wsURL, placeholder.URL)
+	defer observer.CloseNow()
+	joinLivePeer(t, observer, "observer-session")
+	creator := dialLivePeer(t, wsURL, placeholder.URL, created.Cookies()...)
+	defer creator.CloseNow()
+	creatorJoined := joinLivePeer(t, creator, "creator-session")
+	creatorParticipant, _ := creatorJoined["participant"].(map[string]any)
+	if creatorJoined["creator"] != true || creatorParticipant["can_edit"] != true {
+		t.Fatalf("creator join = %#v", creatorJoined)
+	}
+	readLiveEvent(t, observer, "presence_joined")
+
+	writeLiveMessage(t, creator, `{"type":"room_watch_only","watch_only":true}`)
+	failure := readLiveEvent(t, creator, "error")
+	if failure["code"] != "service_unavailable" || failure["status"] != "retryable" {
+		t.Fatalf("failed lock response = %#v", failure)
+	}
+	readCtx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	_, data, readErr := observer.Read(readCtx)
+	cancel()
+	if readErr == nil {
+		t.Fatalf("failed lock broadcast unexpected event: %s", data)
+	}
+	state, err := hub.State("calmbrightotter")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.WatchOnly {
+		t.Fatal("failed lock changed in-memory room mode")
+	}
+	for _, participant := range state.Participants {
+		if !participant.CanEdit || participant.Role != live.ParticipantWriter {
+			t.Fatalf("failed lock changed participant permission = %#v", participant)
+		}
+	}
+	persisted, err := store.GetRoomSnapshot(context.Background(), "calmbrightotter", time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.Locked {
+		t.Fatal("failed lock changed durable room mode")
 	}
 }
 

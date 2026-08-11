@@ -2,7 +2,7 @@
 
 ## Status
 
-**Phases 0–3 complete (2026-08-10). Phase 4 is next and has not started.**
+**Phases 0–4 complete (2026-08-10). Phase 5 is next and has not started.**
 
 This plan defines the bounded behavioral foundation, one user-approved final
 live-workspace design pass, and the release gates that must be completed before
@@ -438,9 +438,9 @@ several simultaneous tabs.
   shutdown cases pass. The focused race matrix passes repeatedly, and the full
   repository race, frontend unit, lint, format, and production-build gates
   pass.
-- The Phase 3 gate passes. Phase 4 remains intentionally unstarted; creator
-  editability and reversible collaborator locking still use the pre-Phase-4
-  role behavior.
+- The Phase 3 gate passes. Phase 4 subsequently replaced the transitional
+  participant-wide role behavior with stable access classes and lock-derived
+  editability.
 
 ## Phase 4 — Separate access class and lock state
 
@@ -472,6 +472,30 @@ viewers or disabling the creator.
 ### Gate
 
 - Storage, Hub, HTTP, and WebSocket lock tests pass under race.
+
+### Completion record — 2026-08-10
+
+- Creator, collaborator, and viewer are stable participant access classes.
+  Creator and collaborator classes consume the bounded writer capacity, and a
+  durable room creator capability reserves one writer slot until its creator
+  participant joins.
+- Effective `can_edit` is derived from access class plus the durable room lock:
+  creators remain editable, collaborators follow lock/unlock, and viewers stay
+  read-only. A collaborator joining or reconnecting while locked retains that
+  class and becomes editable again after unlock without reallocation.
+- Lock transitions persist before in-memory permission changes or WebSocket
+  publication. Failed persistence returns a retryable error with no broadcast,
+  partial permission change, or durable-state change.
+- Concurrent transitions from multiple creator tabs serialize through the room
+  and publication locks, so durable state, Hub state, and broadcast order agree
+  and the last committed transition wins. Non-creator lock attempts remain
+  rejected.
+- Truth-table, late-creator capacity, locked join/reconnect, restart,
+  persistence-failure, exact multi-tab broadcast, and concurrent creator-tab
+  tests pass repeatedly under the race detector. The full repository race,
+  frontend unit, format, lint, and production-build gates pass.
+- The Phase 4 gate passes. Phase 5 remains intentionally unstarted; participant
+  kicking and its removal-only state are still present for Phase 5.
 
 ## Phase 5 — Remove participant kicking
 
