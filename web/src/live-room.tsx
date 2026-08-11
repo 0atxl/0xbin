@@ -70,6 +70,7 @@ import {
   formatLiveMebibytes,
   liveInlineRenameWidth,
   liveRemoteCursors,
+  nextLiveRemoteCursorLabelExpiry,
   nextLiveTabName,
   nextLiveMenuItemIndex,
   reorderLiveTabIDs,
@@ -116,6 +117,7 @@ export function LiveRoomWorkspace({
   );
   const activeDocumentRef = useRef(activeDocumentID);
   const [participants, setParticipants] = useState<LiveParticipant[]>([]);
+  const [cursorActivityNow, setCursorActivityNow] = useState(() => Date.now());
   const [localParticipantID, setLocalParticipantID] = useState("");
   const [localCanEdit, setLocalCanEdit] = useState(true);
   const [localAccessClass, setLocalAccessClass] =
@@ -1594,6 +1596,25 @@ export function LiveRoomWorkspace({
   const activeState = activeDocument
     ? getEditorState(activeDocument)
     : undefined;
+  useEffect(() => {
+    setCursorActivityNow(Date.now());
+  }, [activeDocument?.id, localParticipantID, participants]);
+  useEffect(() => {
+    if (!activeDocument) return;
+    const now = Date.now();
+    const expiresAt = nextLiveRemoteCursorLabelExpiry(
+      participants,
+      localParticipantID,
+      activeDocument.id,
+      now,
+    );
+    if (expiresAt === undefined) return;
+    const timer = window.setTimeout(
+      () => setCursorActivityNow(Date.now()),
+      Math.max(0, expiresAt - now) + 1,
+    );
+    return () => window.clearTimeout(timer);
+  }, [activeDocument?.id, cursorActivityNow, localParticipantID, participants]);
   const remoteCursors = useMemo(
     () =>
       activeDocument && activeState
@@ -1601,10 +1622,10 @@ export function LiveRoomWorkspace({
             participants,
             localParticipantID,
             activeDocument.id,
-            Date.now(),
+            cursorActivityNow,
           )
         : [],
-    [activeDocument?.id, localParticipantID, participants],
+    [activeDocument?.id, cursorActivityNow, localParticipantID, participants],
   );
 
   const readOnly =

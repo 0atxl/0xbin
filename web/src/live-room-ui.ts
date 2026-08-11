@@ -13,6 +13,8 @@ export type LiveRemoteCursor = {
 
 export type LiveTabDropPlacement = "before" | "after";
 
+const liveRemoteCursorLabelDurationMs = 2 * 60 * 1_000;
+
 export function aggregateLiveRoomBytes(
   documents: LiveRoomDocument[],
   contentForDocument: (document: LiveRoomDocument) => string,
@@ -106,9 +108,45 @@ export function liveRemoteCursors(
           revision: cursor.revision,
           anchor: cursor.anchor,
           head: cursor.head,
-          active: now - Date.parse(participant.lastSeenAt) < 5_000,
+          active:
+            now - Date.parse(participant.lastSeenAt) <
+            liveRemoteCursorLabelDurationMs,
         }));
     });
+}
+
+export function nextLiveRemoteCursorLabelExpiry(
+  participants: LiveParticipant[],
+  localParticipantID: string,
+  activeDocumentID: string,
+  now: number,
+): number | undefined {
+  let nextExpiry: number | undefined;
+  for (const participant of participants) {
+    if (
+      participant.id === localParticipantID ||
+      participant.status !== "connected"
+    )
+      continue;
+    const hasCursor =
+      participant.cursors.some(
+        (cursor) => cursor.documentID === activeDocumentID,
+      ) ||
+      (participant.cursors.length === 0 &&
+        participant.currentTab === activeDocumentID &&
+        participant.cursor?.documentID === activeDocumentID);
+    if (!hasCursor) continue;
+    const expiresAt =
+      Date.parse(participant.lastSeenAt) + liveRemoteCursorLabelDurationMs;
+    if (
+      !Number.isFinite(expiresAt) ||
+      expiresAt <= now ||
+      (nextExpiry !== undefined && expiresAt >= nextExpiry)
+    )
+      continue;
+    nextExpiry = expiresAt;
+  }
+  return nextExpiry;
 }
 
 export function nextLiveMenuItemIndex(

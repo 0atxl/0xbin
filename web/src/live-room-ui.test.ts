@@ -8,6 +8,7 @@ import {
   formatLiveRoomLifetime,
   liveInlineRenameWidth,
   liveRemoteCursors,
+  nextLiveRemoteCursorLabelExpiry,
   nextLiveTabName,
   nextLiveMenuItemIndex,
   reorderLiveTabIDs,
@@ -122,6 +123,34 @@ describe("live room UI helpers", () => {
       expect.objectContaining({ id: "multi-tab:tab-one", active: true }),
       expect.objectContaining({ id: "stale:stale-tab", revision: 3 }),
     ]);
+  });
+
+  it("keeps cursor labels active for two minutes and exposes the next expiry", () => {
+    const lastSeenAt = Date.parse("2026-08-08T10:00:04Z");
+    expect(
+      liveRemoteCursors(
+        [participant()],
+        "local",
+        "one",
+        lastSeenAt + 2 * 60 * 1_000 - 1,
+      )[0]?.active,
+    ).toBe(true);
+    expect(
+      liveRemoteCursors(
+        [participant()],
+        "local",
+        "one",
+        lastSeenAt + 2 * 60 * 1_000,
+      )[0]?.active,
+    ).toBe(false);
+    expect(
+      nextLiveRemoteCursorLabelExpiry(
+        [participant()],
+        "local",
+        "one",
+        lastSeenAt,
+      ),
+    ).toBe(lastSeenAt + 2 * 60 * 1_000);
   });
 
   it("wraps export menu keyboard navigation and ignores unrelated keys", () => {
