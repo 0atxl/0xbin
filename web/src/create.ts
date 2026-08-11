@@ -1,6 +1,6 @@
 export const maxPasteBytes = 1 << 20;
 export const maxTitleBytes = 200;
-export const maxLanguageBytes = 64;
+const maxLanguageBytes = 64;
 
 export type Lifetime = "once" | "1h" | "24h" | "72h";
 
@@ -11,6 +11,16 @@ export type CreateDraft = {
   lifetime: Lifetime;
   encrypted: boolean;
 };
+
+export function defaultCreateDraft(): CreateDraft {
+  return {
+    title: "",
+    language: "plaintext",
+    content: "",
+    lifetime: "24h",
+    encrypted: false,
+  };
+}
 
 export type CreateValidation = Partial<
   Record<"title" | "language" | "content", string>

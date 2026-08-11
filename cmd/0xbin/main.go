@@ -15,6 +15,7 @@ import (
 	"github.com/0atxl/0xbin/internal/cleanup"
 	"github.com/0atxl/0xbin/internal/config"
 	"github.com/0atxl/0xbin/internal/httpapi"
+	"github.com/0atxl/0xbin/internal/live"
 	"github.com/0atxl/0xbin/internal/paste"
 	"github.com/0atxl/0xbin/internal/slug"
 	"github.com/0atxl/0xbin/internal/storage/sqlite"
@@ -46,7 +47,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	worker, err := cleanup.NewWorker(store, cleanup.DefaultInterval, cleanup.DefaultTimeout, cleanup.DefaultBatchSize, cleanup.DefaultMaxBatches, time.Now, slog.Default())
+	worker, err := cleanup.NewWorkerWithLiveRooms(store, cleanup.DefaultInterval, cleanup.DefaultTimeout, cleanup.DefaultBatchSize, cleanup.DefaultMaxBatches, time.Now, slog.Default(), cfg.LiveEnabled)
 	if err != nil {
 		return err
 	}
@@ -62,12 +63,33 @@ func run() error {
 		<-cleanupDone
 	}()
 
+	var liveDependencies *httpapi.LiveDependencies
+	if cfg.LiveEnabled {
+		hubOptions := live.DefaultHubOptions()
+		hubOptions.MaxTabs = cfg.LiveMaxTabs
+		hubOptions.MaxBytes = cfg.LiveMaxBytes
+		hubOptions.MaxWriters = cfg.LiveMaxWriters
+		hubOptions.MaxViewers = cfg.LiveMaxViewers
+		hubOptions.MaxParticipants = cfg.LiveMaxParticipants
+		hubOptions.MaxMessageBytes = cfg.LiveMaxMessageBytes
+		hubOptions.MaxHistoryRows = cfg.LiveSnapshotLimits.MaxRows
+		hubOptions.MaxHistoryBytes = cfg.LiveSnapshotLimits.MaxBytes
+		hubOptions.HeartbeatInterval = cfg.LiveHeartbeatInterval
+		hubOptions.ReconnectGrace = cfg.LiveReconnectGrace
+		hubOptions.ParticipantTimeout = cfg.LiveParticipantTimeout
+		hub, err := live.NewHub(store, nil, hubOptions)
+		if err != nil {
+			return err
+		}
+		liveDependencies = &httpapi.LiveDependencies{Store: store, Hub: hub, Slugs: slug.NewDefaultGenerator()}
+	}
+
 	listener, err := net.Listen("tcp", cfg.ListenAddr)
 	if err != nil {
 		return fmt.Errorf("listen on %q: %w", cfg.ListenAddr, err)
 	}
 
-	server := httpapi.NewServerWithFrontend(cfg, pastes, webassets.FS(), store.Ping)
+	server := httpapi.NewServerWithFrontendAndLive(cfg, pastes, webassets.FS(), liveDependencies, store.Ping)
 	serveErr := make(chan error, 1)
 	go func() {
 		serveErr <- server.Serve(listener)

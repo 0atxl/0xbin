@@ -17,9 +17,9 @@ make test-e2e
 make build
 ```
 
-`test-e2e` is a documented placeholder until browser flows are introduced in
-the frontend phase. Do not add product behaviour before its implementation-plan
-step.
+`test-e2e` builds temporary local services and runs the browser regression
+journeys, including live-sharing recovery cases. It requires an installed
+Chromium-compatible browser and must remain deterministic and self-contained.
 
 ## Pull requests
 

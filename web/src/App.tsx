@@ -1,33 +1,15 @@
 import {
+  lazy,
+  Suspense,
   useEffect,
-  useId,
   useMemo,
   useRef,
   useState,
   type ReactNode,
 } from "react";
 import { Compartment, EditorState, type Extension } from "@codemirror/state";
-import {
-  defaultKeymap,
-  historyKeymap,
-  indentLess,
-  insertTab,
-} from "@codemirror/commands";
-import {
-  Decoration,
-  EditorView,
-  keymap,
-  lineNumbers,
-  placeholder,
-  type ViewUpdate,
-} from "@codemirror/view";
-import { closeBrackets, closeBracketsKeymap } from "@codemirror/autocomplete";
-import {
-  HighlightStyle,
-  indentUnit,
-  indentOnInput,
-  syntaxHighlighting,
-} from "@codemirror/language";
+import { Decoration, EditorView, lineNumbers } from "@codemirror/view";
+import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
 import { tags } from "@lezer/highlight";
 import {
   createPasteAPI,
@@ -40,6 +22,7 @@ import {
   type RetrievedEncryptedPaste,
   type RetrievedPaste,
 } from "./api";
+import type { CreatedLiveRoom } from "./live-api";
 import {
   decryptPayload,
   encryptPayload,
@@ -53,22 +36,27 @@ import {
   maxTitleBytes,
   utf8Bytes,
   validateDraft,
+  defaultCreateDraft,
   type CreateDraft,
   type Lifetime,
 } from "./create";
 import { resolveRoute, type Route } from "./router";
-import { loadTheme, saveTheme, type Theme } from "./theme";
 import {
-  editorIndentColumns,
-  languages,
-  loadEditorLanguage,
-} from "./languages";
-import { editorHistoryExtensions } from "./editor-history";
+  liveDraftFromCreateDraft,
+  type LiveDraft,
+  blankLiveDraft,
+} from "./live";
+import { beginLoading } from "./loading";
+import { loadTheme, saveTheme, type Theme } from "./theme";
+import { loadEditorLanguage } from "./languages";
+import { CodeEditor, LanguageMenu } from "./editor";
 import { browserShareURL } from "./share-url";
 import { findSearchMatches, type SearchMatch } from "./search";
 import { isHostedService } from "./hosted";
 import { HostedMenu, PolicyPage } from "./policies";
 import "./styles.css";
+
+const LiveRoute = lazy(() => import("./live-page"));
 
 const toastDurationMs = 6000;
 const themeTransitionMs = 450;
@@ -97,8 +85,8 @@ const editorHighlightStyle = HighlightStyle.define([
   { tag: tags.comment, color: "var(--syntax-comment)", fontStyle: "italic" },
 ]);
 
-function currentRoute(hostedService: boolean): Route {
-  return resolveRoute(window.location.pathname, hostedService);
+function currentRoute(hostedService: boolean, liveEnabled: boolean): Route {
+  return resolveRoute(window.location.pathname, hostedService, liveEnabled);
 }
 
 export function App() {
@@ -106,7 +94,10 @@ export function App() {
     window.location.hostname,
     document.documentElement.dataset.hostedService,
   );
-  const [route, setRoute] = useState<Route>(() => currentRoute(hostedService));
+  const liveEnabled = document.documentElement.dataset.liveEnabled !== "false";
+  const [route, setRoute] = useState<Route>(() =>
+    currentRoute(hostedService, liveEnabled),
+  );
   const [theme, setTheme] = useState<Theme>(() =>
     loadTheme(
       localStorage,
@@ -120,12 +111,18 @@ export function App() {
   const themeTransitionTimeout = useRef<number | undefined>(undefined);
   const [shareURL, setShareURL] = useState<string>();
   const [copyFailed, setCopyFailed] = useState(false);
+  const [liveDraft, setLiveDraft] = useState<LiveDraft>(() => blankLiveDraft());
+  const [liveGateOpen, setLiveGateOpen] = useState(false);
+  const [createDraftSeed, setCreateDraftSeed] = useState<CreateDraft>(() =>
+    defaultCreateDraft(),
+  );
+  const createDraftRef = useRef(defaultCreateDraft());
 
   useEffect(() => {
-    const onPopState = () => setRoute(currentRoute(hostedService));
+    const onPopState = () => setRoute(currentRoute(hostedService, liveEnabled));
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
-  }, [hostedService]);
+  }, [hostedService, liveEnabled]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -149,7 +146,25 @@ export function App() {
   function navigate(path: string) {
     setKeyGateOpen(false);
     window.history.pushState({}, "", path);
-    setRoute(currentRoute(hostedService));
+    setRoute(currentRoute(hostedService, liveEnabled));
+  }
+
+  function navigateToNewPaste() {
+    createDraftRef.current = defaultCreateDraft();
+    setCreateDraftSeed(defaultCreateDraft());
+    setLiveDraft(blankLiveDraft());
+    navigate("/");
+  }
+
+  function handleLiveShare() {
+    setCopyFailed(false);
+    setShareURL(undefined);
+    setLiveDraft(
+      route.kind === "create"
+        ? liveDraftFromCreateDraft(createDraftRef.current)
+        : blankLiveDraft(),
+    );
+    navigate("/live");
   }
 
   function showStatus(message: string) {
@@ -197,6 +212,25 @@ export function App() {
     navigate(destination.pathname + destination.hash);
   }
 
+  async function handleLiveCreated(created: CreatedLiveRoom) {
+    const shareURL = browserShareURL(created.url);
+    let copied = true;
+    try {
+      await navigator.clipboard.writeText(shareURL);
+    } catch {
+      copied = false;
+    }
+    setShareURL(shareURL);
+    setCopyFailed(!copied);
+    showStatus(
+      copied
+        ? "LiveBin room link copied"
+        : "LiveBin room created — copy the link manually",
+    );
+    const destination = new URL(shareURL);
+    navigate(destination.pathname + destination.search + destination.hash);
+  }
+
   async function retryCopy() {
     if (!shareURL) return;
     try {
@@ -208,33 +242,75 @@ export function App() {
     }
   }
 
+  function handleLiveSaveAsPaste(draft: {
+    title: string;
+    language: string;
+    content: string;
+  }) {
+    const nextDraft: CreateDraft = {
+      ...defaultCreateDraft(),
+      title: draft.title,
+      language: draft.language,
+      content: draft.content,
+    };
+    createDraftRef.current = nextDraft;
+    setCreateDraftSeed(nextDraft);
+    navigate("/");
+    showStatus("Live room content ready to save");
+  }
+
   return (
-    <div className={keyGateOpen ? "app-shell key-gate-open" : "app-shell"}>
-      {!keyGateOpen ? (
+    <div
+      className={
+        keyGateOpen || liveGateOpen ? "app-shell key-gate-open" : "app-shell"
+      }
+    >
+      {!keyGateOpen && !liveGateOpen ? (
         <header className="site-header">
           <button
             className="icon-button brand-icon"
             type="button"
             aria-label="0xbin: create a new paste"
             title="New paste"
-            onClick={() => navigate("/")}
+            onClick={navigateToNewPaste}
           >
             <LogoIcon />
           </button>
-          <button
-            className="icon-button theme-toggle"
-            type="button"
-            aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} theme`}
-            title={`Switch to ${theme === "dark" ? "light" : "dark"} theme`}
-            onClick={toggleTheme}
-          >
-            {theme === "dark" ? <SunIcon /> : <MoonIcon />}
-          </button>
+          <div className="header-actions">
+            {liveEnabled &&
+            (route.kind === "create" || route.kind === "paste") ? (
+              <button
+                className="header-live-bin"
+                type="button"
+                aria-label="Open LiveBin"
+                title="Open LiveBin"
+                onClick={handleLiveShare}
+              >
+                LiveBin
+              </button>
+            ) : null}
+            <button
+              className="icon-button theme-toggle"
+              type="button"
+              aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} theme`}
+              title={`Switch to ${theme === "dark" ? "light" : "dark"} theme`}
+              onClick={toggleTheme}
+            >
+              {theme === "dark" ? <SunIcon /> : <MoonIcon />}
+            </button>
+          </div>
         </header>
       ) : null}
 
       {route.kind === "create" ? (
-        <CreationCanvas onStatus={showStatus} onCreated={handleCreated} />
+        <CreationCanvas
+          initialDraft={createDraftSeed}
+          onStatus={showStatus}
+          onCreated={handleCreated}
+          onDraftChange={(draft) => {
+            createDraftRef.current = draft;
+          }}
+        />
       ) : route.kind === "paste" ? (
         <PasteViewer
           slug={route.slug}
@@ -242,9 +318,31 @@ export function App() {
           copyFailed={copyFailed}
           onRetryCopy={retryCopy}
           onStatus={showStatus}
-          onNewPaste={() => navigate("/")}
+          onNewPaste={navigateToNewPaste}
           onKeyGateChange={setKeyGateOpen}
         />
+      ) : route.kind === "live-create" ? (
+        <Suspense fallback={<LoadingAnnouncement label="Loading LiveBin…" />}>
+          <LiveRoute
+            mode="create"
+            initialDraft={liveDraft}
+            onStatus={showStatus}
+            onCreated={handleLiveCreated}
+          />
+        </Suspense>
+      ) : route.kind === "live-room" ? (
+        <Suspense fallback={<LoadingAnnouncement label="Loading LiveBin…" />}>
+          <LiveRoute
+            mode="room"
+            slug={route.slug}
+            onSecurityGateChange={setLiveGateOpen}
+            copyFailed={copyFailed}
+            shareURL={shareURL}
+            onRetryCopy={retryCopy}
+            onStatus={showStatus}
+            onSaveAsPaste={handleLiveSaveAsPaste}
+          />
+        </Suspense>
       ) : (
         <PolicyPage page={route.page} />
       )}
@@ -289,25 +387,25 @@ export function App() {
 }
 
 function CreationCanvas({
+  initialDraft,
   onStatus,
   onCreated,
+  onDraftChange,
 }: {
+  initialDraft: CreateDraft;
   onStatus: (message: string) => void;
   onCreated: (created: CreatedPaste) => Promise<void>;
+  onDraftChange: (draft: CreateDraft) => void;
 }) {
-  const [draft, setDraft] = useState<CreateDraft>({
-    title: "",
-    language: "plaintext",
-    content: "",
-    lifetime: "24h",
-    encrypted: false,
-  });
+  const [draft, setDraft] = useState<CreateDraft>(() => initialDraft);
   const [errors, setErrors] = useState<ReturnType<typeof validateDraft>>({});
   const [submitting, setSubmitting] = useState(false);
   const contentBytes = utf8Bytes(draft.content);
 
   function updateDraft(update: Partial<CreateDraft>) {
-    setDraft((current) => ({ ...current, ...update }));
+    const next = { ...draft, ...update };
+    setDraft(next);
+    onDraftChange(next);
   }
 
   async function submit() {
@@ -415,7 +513,7 @@ function CreationCanvas({
             onSelect={(lifetime) => updateDraft({ lifetime })}
           />
         </fieldset>
-        <label className="encrypt-toggle">
+        <label className="encrypt-toggle encrypt-icon-toggle" title="Encrypt">
           <input
             type="checkbox"
             checked={draft.encrypted}
@@ -428,7 +526,7 @@ function CreationCanvas({
             }}
           />
           <LockIcon />
-          <span>Encrypt</span>
+          <span className="sr-only">Encrypt</span>
         </label>
         <button
           className="primary-action"
@@ -437,7 +535,6 @@ function CreationCanvas({
           onClick={() => void submit()}
         >
           {submitting ? "Creating…" : "Create"}
-          <ArrowIcon />
         </button>
       </footer>
     </main>
@@ -463,117 +560,6 @@ async function createEncryptedDraft(
   return { ...created, url: withKeyFragment(created.url, encrypted.key) };
 }
 
-function LanguageMenu({
-  value,
-  onChange,
-}: {
-  value: string;
-  onChange: (value: string) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const [closing, setClosing] = useState(false);
-  const selectRef = useRef<HTMLDivElement>(null);
-  const closeTimeout = useRef<number | undefined>(undefined);
-  const menuID = useId();
-  const selected =
-    languages.find(([language]) => language === value)?.[1] ?? value;
-
-  useEffect(() => {
-    const close = (event: KeyboardEvent) => {
-      if (event.key === "Escape") closeMenu();
-    };
-    window.addEventListener("keydown", close);
-    return () => window.removeEventListener("keydown", close);
-  }, [closing, open]);
-
-  useEffect(() => {
-    const closeOutside = (event: PointerEvent) => {
-      if (
-        event.target instanceof Node &&
-        !selectRef.current?.contains(event.target)
-      ) {
-        closeMenu();
-      }
-    };
-    document.addEventListener("pointerdown", closeOutside);
-    return () => document.removeEventListener("pointerdown", closeOutside);
-  }, [closing, open]);
-
-  useEffect(
-    () => () => {
-      if (closeTimeout.current !== undefined) {
-        window.clearTimeout(closeTimeout.current);
-      }
-    },
-    [],
-  );
-
-  function closeMenu() {
-    if (!open || closing) return;
-    setClosing(true);
-    closeTimeout.current = window.setTimeout(() => {
-      setOpen(false);
-      setClosing(false);
-      closeTimeout.current = undefined;
-    }, 140);
-  }
-
-  function toggleMenu() {
-    if (closing) {
-      if (closeTimeout.current !== undefined) {
-        window.clearTimeout(closeTimeout.current);
-        closeTimeout.current = undefined;
-      }
-      setClosing(false);
-      setOpen(true);
-      return;
-    }
-    if (open) {
-      closeMenu();
-      return;
-    }
-    setOpen(true);
-  }
-
-  return (
-    <div className="custom-select" ref={selectRef}>
-      <button
-        type="button"
-        aria-haspopup="listbox"
-        aria-expanded={open}
-        aria-controls={menuID}
-        onClick={toggleMenu}
-      >
-        <CodeIcon />
-        <span>{selected}</span>
-        <ChevronIcon />
-      </button>
-      {open ? (
-        <ul
-          id={menuID}
-          className={closing ? "is-closing" : undefined}
-          role="listbox"
-          aria-label="Language"
-        >
-          {languages.map(([language, label]) => (
-            <li key={language} role="option" aria-selected={language === value}>
-              <button
-                type="button"
-                onClick={() => {
-                  onChange(language);
-                }}
-              >
-                <span>{label}</span>
-                {language === value ? <CheckIcon /> : null}
-              </button>
-            </li>
-          ))}
-        </ul>
-      ) : null}
-    </div>
-  );
-}
-
 function LifetimeButton({
   lifetime,
   label,
@@ -594,118 +580,6 @@ function LifetimeButton({
     >
       {label}
     </button>
-  );
-}
-
-function CodeEditor({
-  value,
-  language,
-  onChange,
-  onSubmit,
-}: {
-  value: string;
-  language: string;
-  onChange: (value: string) => void;
-  onSubmit: () => void;
-}) {
-  const host = useRef<HTMLDivElement>(null);
-  const view = useRef<EditorView | undefined>(undefined);
-  const languageConfig = useRef(new Compartment());
-  const onChangeRef = useRef(onChange);
-  const onSubmitRef = useRef(onSubmit);
-  onChangeRef.current = onChange;
-  onSubmitRef.current = onSubmit;
-
-  useEffect(() => {
-    if (!host.current) return;
-    try {
-      const editor = new EditorView({
-        state: EditorState.create({
-          doc: value,
-          extensions: [
-            lineNumbers(),
-            EditorView.lineWrapping,
-            placeholder("Write text or code here…"),
-            closeBrackets(),
-            indentOnInput(),
-            editorHistoryExtensions,
-            syntaxHighlighting(editorHighlightStyle, { fallback: true }),
-            EditorState.tabSize.of(editorIndentColumns),
-            indentUnit.of(" ".repeat(editorIndentColumns)),
-            languageConfig.current.of([]),
-            EditorView.contentAttributes.of({
-              "aria-label": "Paste content",
-            }),
-            keymap.of([
-              {
-                key: "Mod-Enter",
-                run: () => {
-                  onSubmitRef.current();
-                  return true;
-                },
-              },
-              { key: "Tab", run: insertTab },
-              { key: "Shift-Tab", run: indentLess },
-              ...historyKeymap,
-              ...closeBracketsKeymap,
-              ...defaultKeymap,
-            ]),
-            EditorView.updateListener.of((update: ViewUpdate) => {
-              if (update.docChanged) {
-                onChangeRef.current(update.state.doc.toString());
-              }
-            }),
-          ],
-        }),
-        parent: host.current,
-      });
-      view.current = editor;
-      return () => {
-        view.current = undefined;
-        editor.destroy();
-      };
-    } catch {
-      return;
-    }
-  }, []);
-
-  useEffect(() => {
-    let active = true;
-    void loadEditorLanguage(language)
-      .then((extension) => {
-        if (!active || !view.current) return;
-        view.current.dispatch({
-          effects: languageConfig.current.reconfigure(extension),
-        });
-      })
-      .catch(() => {
-        if (!active || !view.current) return;
-        view.current.dispatch({
-          effects: languageConfig.current.reconfigure([]),
-        });
-      });
-    return () => {
-      active = false;
-    };
-  }, [language]);
-
-  return (
-    <div className="code-editor" ref={host}>
-      <textarea
-        className="editor-fallback"
-        aria-label="Paste content"
-        placeholder="Write text or code here…"
-        wrap="soft"
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        onKeyDown={(event) => {
-          if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
-            event.preventDefault();
-            onSubmit();
-          }
-        }}
-      />
-    </div>
   );
 }
 
@@ -749,6 +623,11 @@ function PasteViewer({
     onKeyGateChange(state === "key");
     return () => onKeyGateChange(false);
   }, [onKeyGateChange, state]);
+
+  useEffect(() => {
+    if (state !== "loading") return;
+    return beginLoading();
+  }, [state]);
 
   useEffect(() => {
     if (!slug) {
@@ -923,7 +802,9 @@ function PasteViewer({
     }
   }
 
-  if (state === "loading") return <CenteredState label="Loading paste…" />;
+  if (state === "loading") {
+    return <LoadingAnnouncement label="Loading paste…" />;
+  }
   if (state === "unavailable") {
     return (
       <CenteredState
@@ -1161,6 +1042,14 @@ function PasteViewer({
           activeMatch={visibleActiveMatch}
         />
       </div>
+    </main>
+  );
+}
+
+function LoadingAnnouncement({ label }: { label: string }) {
+  return (
+    <main className="sr-only" role="status" aria-live="polite">
+      {label}
     </main>
   );
 }
@@ -1485,27 +1374,6 @@ function MoonIcon() {
   return (
     <svg viewBox="0 0 24 24" aria-hidden="true">
       <path d="M20 15.1A8.4 8.4 0 0 1 8.9 4a8.5 8.5 0 1 0 11.1 11.1Z" />
-    </svg>
-  );
-}
-function ChevronIcon() {
-  return (
-    <svg viewBox="0 0 20 20" aria-hidden="true">
-      <path d="m6 8 4 4 4-4" />
-    </svg>
-  );
-}
-function CheckIcon() {
-  return (
-    <svg viewBox="0 0 20 20" aria-hidden="true">
-      <path d="m4 10 4 4 8-8" />
-    </svg>
-  );
-}
-function CodeIcon() {
-  return (
-    <svg viewBox="0 0 20 20" aria-hidden="true">
-      <path d="m7 5-5 5 5 5M13 5l5 5-5 5" />
     </svg>
   );
 }

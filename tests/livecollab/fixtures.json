@@ -1,0 +1,293 @@
+{
+  "fixtures": [
+    {
+      "name": "insert-insert",
+      "document": "abcd",
+      "updates": [
+        {
+          "clientID": "alice",
+          "changes": [
+            2,
+            [
+              0,
+              "X"
+            ],
+            2
+          ]
+        },
+        {
+          "clientID": "bob",
+          "changes": [
+            2,
+            [
+              0,
+              "Y"
+            ],
+            2
+          ]
+        }
+      ],
+      "selections": [
+        {
+          "anchor": 2,
+          "head": 2
+        },
+        {
+          "anchor": 1,
+          "head": 3
+        }
+      ],
+      "expectedDocument": "abXYcd",
+      "mappedSelections": [
+        {
+          "anchor": 2,
+          "head": 2
+        },
+        {
+          "anchor": 1,
+          "head": 4
+        }
+      ]
+    },
+    {
+      "name": "insert-delete",
+      "document": "abcdef",
+      "updates": [
+        {
+          "clientID": "alice",
+          "changes": [
+            1,
+            [
+              2
+            ],
+            3
+          ]
+        },
+        {
+          "clientID": "bob",
+          "changes": [
+            2,
+            [
+              0,
+              "X"
+            ],
+            4
+          ]
+        }
+      ],
+      "selections": [
+        {
+          "anchor": 2,
+          "head": 2
+        },
+        {
+          "anchor": 1,
+          "head": 4
+        }
+      ],
+      "expectedDocument": "aXdef",
+      "mappedSelections": [
+        {
+          "anchor": 1,
+          "head": 1
+        },
+        {
+          "anchor": 1,
+          "head": 2
+        }
+      ]
+    },
+    {
+      "name": "overlapping-replace",
+      "document": "0123456789",
+      "updates": [
+        {
+          "clientID": "alice",
+          "changes": [
+            2,
+            [
+              4,
+              "AB"
+            ],
+            4
+          ]
+        },
+        {
+          "clientID": "bob",
+          "changes": [
+            4,
+            [
+              4,
+              "xyz"
+            ],
+            2
+          ]
+        }
+      ],
+      "selections": [
+        {
+          "anchor": 3,
+          "head": 7
+        },
+        {
+          "anchor": 4,
+          "head": 4
+        }
+      ],
+      "expectedDocument": "01ABxyz89",
+      "mappedSelections": [
+        {
+          "anchor": 4,
+          "head": 5
+        },
+        {
+          "anchor": 2,
+          "head": 2
+        }
+      ]
+    },
+    {
+      "name": "multi-range",
+      "document": "abcdefghij",
+      "updates": [
+        {
+          "clientID": "alice",
+          "changes": [
+            1,
+            [
+              1,
+              "X"
+            ],
+            3,
+            [
+              2,
+              "YZ"
+            ],
+            3
+          ]
+        },
+        {
+          "clientID": "bob",
+          "changes": [
+            [
+              0,
+              "<"
+            ],
+            8,
+            [
+              2,
+              ">"
+            ]
+          ]
+        }
+      ],
+      "selections": [
+        {
+          "anchor": 0,
+          "head": 10
+        },
+        {
+          "anchor": 6,
+          "head": 6
+        }
+      ],
+      "expectedDocument": "<aXcdeYZh>",
+      "mappedSelections": [
+        {
+          "anchor": 0,
+          "head": 10
+        },
+        {
+          "anchor": 5,
+          "head": 5
+        }
+      ]
+    },
+    {
+      "name": "empty-document",
+      "document": "",
+      "updates": [
+        {
+          "clientID": "alice",
+          "changes": [
+            [
+              0,
+              "🙂"
+            ]
+          ]
+        },
+        {
+          "clientID": "bob",
+          "changes": [
+            [
+              0,
+              "x"
+            ]
+          ]
+        }
+      ],
+      "selections": [
+        {
+          "anchor": 0,
+          "head": 0
+        }
+      ],
+      "expectedDocument": "🙂x",
+      "mappedSelections": [
+        {
+          "anchor": 0,
+          "head": 0
+        }
+      ]
+    },
+    {
+      "name": "unicode",
+      "document": "a🙂b漢c",
+      "updates": [
+        {
+          "clientID": "alice",
+          "changes": [
+            3,
+            [
+              0,
+              "界"
+            ],
+            3
+          ]
+        },
+        {
+          "clientID": "bob",
+          "changes": [
+            1,
+            [
+              2,
+              "😀"
+            ],
+            3
+          ]
+        }
+      ],
+      "selections": [
+        {
+          "anchor": 3,
+          "head": 3
+        },
+        {
+          "anchor": 1,
+          "head": 4
+        }
+      ],
+      "expectedDocument": "a😀界b漢c",
+      "mappedSelections": [
+        {
+          "anchor": 3,
+          "head": 3
+        },
+        {
+          "anchor": 1,
+          "head": 5
+        }
+      ]
+    }
+  ]
+}

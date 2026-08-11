@@ -2,8 +2,18 @@
 
 This document groups the detailed implementation plan into product milestones. A phase is complete only when its exit criteria pass; writing code is not itself completion.
 
-**Current status (2026-07-29):** Phases 0–3 are complete. Phase 4 is in
-progress; its hosted security and operational exit criteria remain open.
+**Current status (2026-08-11):** Phases 0–3 are complete. Phase 4 hosted
+public-beta work remains open. The separate Phase 5 live-sharing extension,
+release hardening, and independent audit are complete. A bounded
+browser-identity and creator-authority evolution is planned in
+[`LIVE_SHARING_IDENTITY_AUTHORITY_PLAN.md`](LIVE_SHARING_IDENTITY_AUTHORITY_PLAN.md)
+through the final live-workspace design pass and release audit. Its contract,
+durable-storage, additive-identity, grouped-connection, lock-authority,
+kick-removal, minimal frontend-wiring, final design,
+compatibility/documentation, and bounded code-quality Phases 0–7A are
+complete; Phase 8, the final independent release audit and focused release-gate
+closure, is also complete. Final-head pull-request verification and user
+approval remain required before merge or deployment.
 
 ## Phase 0 — Foundation
 
@@ -156,22 +166,32 @@ Includes:
 Implementation plan: [`LIVE_SHARING_IMPLEMENTATION_PLAN.md`](LIVE_SHARING_IMPLEMENTATION_PLAN.md),
 Steps 0A–13.
 
+Release hardening and its independent audit are complete. The
+single configured live content budget applies to the room aggregate and every
+individual document; HTTP exposes `max_document_bytes` only as an equal
+semantic alias. The maintainability review and release-candidate gate are also
+complete.
+
 Exit criteria:
 
 - The collaboration authority converges under concurrent edits, Unicode,
   reconnect, and cursor/selection mapping tests.
 - Password, origin, message-size, connection, expiry, and presence boundaries
   pass negative tests.
-- A live room survives restart through durable snapshots, but presence and
-  room sessions do not survive.
+- A live room survives restart through durable snapshots, creator authority,
+  and lock state. Browser identity reconstructs the same participant when tabs
+  reconnect; active connections, cursors, heartbeats, and password-access
+  sessions remain process-local.
 - The existing paste API, encryption, burn, expiry, rendering, and action
   behavior remain unchanged apart from the approved loading-bar visual update.
 - Full repository formatting, lint, unit, race, browser, build, and self-host
   checks pass.
 
 Not included: accounts, media calls, screen sharing, execution, file uploads,
-saved live rooms, user-visible history, view-only roles, or multi-instance
-coordination.
+saved live rooms, user-visible history, per-participant permissions,
+participant kicking, user-selected view-only roles, or multi-instance
+coordination. The creator's reversible room lock is included; it pauses
+collaborators while leaving the creator editable and viewers read-only.
 
 ## Phase 6 — Post-MVP Improvements
 

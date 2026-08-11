@@ -4,6 +4,13 @@ This directory contains internal implementation guidance, design decisions,
 delivery plans, and tooling notes intended for AI coding agents and
 maintainers working on the project.
 
+The live-sharing extension is implemented through Steps 0A–13 of its
+implementation plan, and release-hardening Phases 0–10 are complete. Phases
+0–8 of the bounded browser-identity and creator-authority evolution are
+complete, including final design, compatibility closure, bounded code-quality
+work, and the independent release audit. Final-head pull-request verification
+and user approval remain required before merge or deployment.
+
 The repository-level instructions remain in [`AGENTS.md`](../AGENTS.md) at
 the repository root because agent tools discover that filename there.
 
@@ -20,6 +27,12 @@ the repository root because agent tools discover that filename there.
   work and verification gates.
 - [`LIVE_SHARING_IMPLEMENTATION_PLAN.md`](LIVE_SHARING_IMPLEMENTATION_PLAN.md)
   — comprehensive plan for the optional multi-tab live-sharing extension.
+- [`LIVE_SHARING_IDENTITY_AUTHORITY_PLAN.md`](LIVE_SHARING_IDENTITY_AUTHORITY_PLAN.md)
+  — planned browser-profile identity, durable creator capability, and
+  reversible room-lock foundation.
+- [`LIVE_SHARING_REMEDIATION_PLAN.md`](LIVE_SHARING_REMEDIATION_PLAN.md) —
+  phased, usage-conscious execution plan for findings from the final
+  live-sharing audit.
 - [`PHASES.md`](PHASES.md) — delivery phases and scope boundaries.
 - [`SEARCH_PERFORMANCE.md`](SEARCH_PERFORMANCE.md) — viewer-search performance
   implementation notes.

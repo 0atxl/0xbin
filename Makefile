@@ -1,4 +1,4 @@
-.PHONY: format lint test test-race test-e2e build
+.PHONY: format lint generate-live-fixtures test test-race test-e2e build
 
 format:
 	go fmt ./...
@@ -9,11 +9,15 @@ lint:
 	npm --prefix web run lint
 	npm --prefix web run format:check
 
-test:
+generate-live-fixtures:
+	npm --prefix web run generate:live-fixtures
+	git diff --exit-code -- tests/livecollab/fixtures.json
+
+test: generate-live-fixtures
 	go test ./...
 	npm --prefix web test
 
-test-race:
+test-race: generate-live-fixtures
 	go test -race ./...
 	npm --prefix web test
 

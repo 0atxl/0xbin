@@ -122,20 +122,29 @@ from the initial paste MVP.
 
 ### 6.6 Create and use a live room (post-MVP extension)
 
-1. User selects `Live share` from the existing header.
+1. User selects `LiveBin` from the existing header.
 2. From the create editor, the current unsaved title, language, and content are
    carried into a live draft in browser memory. No room is created until the
    user submits the live form.
 3. From an existing paste viewer, the action opens a blank live draft and does
    not copy viewed or decrypted content.
 4. User creates a room with one initial tab, an optional shared password, and
-   the fixed 24-hour lifetime.
-5. Browser opens the room, receives a temporary adjective+noun participant
-   name, and shares the room URL.
+   the operator-configured lifetime (up to 24 hours).
+5. Browser opens the room, receives a room-scoped browser identity and
+   adjective+noun participant name, and shares the room URL. Reloading,
+   reopening, or opening another normal tab keeps one participant identity;
+   incognito and other browser profiles join separately.
 6. Participants edit tabs together, see active cursors/selections, observe
    connection state, and can rename their temporary participant name.
-7. The room expires, closes active connections, and becomes unavailable after
-   24 hours even if cleanup has not yet run.
+7. The creator can lock or unlock collaboration without losing editing access.
+   Collaborators pause while locked and resume when unlocked; viewers remain
+   read-only. The room supports up to 10 collaborator-capacity participants
+   including the creator, 100 viewers, and 110 total browser participants.
+8. A participant can save either the current tab or every tab appended into a
+   single normal paste, then choose the normal paste's expiry and protection
+   options.
+9. The room expires, closes active connections, and becomes unavailable at its
+   server-configured lifetime (up to 24 hours) even if cleanup has not yet run.
 
 ## 7. Functional Requirements
 
@@ -233,26 +242,67 @@ the paste requirements above.
   deterministic conflict rules; the last tab cannot be deleted.
 - **FR-LIVE-06:** The browser displays mapped temporary participant cursors and
   selections in the active tab.
-- **FR-LIVE-07:** Each participant receives a unique adjective+noun temporary
-  name, can rename it during the session, and sees it in the participant
-  popover with joined time and connection state.
-- **FR-LIVE-08:** Presence, participant colours, cursors, selections, and
-  joined time are session-only and are not stored in SQLite.
+- **FR-LIVE-07:** Each room-scoped browser participant receives a unique
+  adjective+noun name, can rename it, and sees it in the participant popover
+  with joined time and connection state. Its ID and colour remain stable across
+  reload, reopen, multiple normal tabs, and service restart through room expiry.
+  Its last authoritative nickname is shared across normal tabs and reloads and
+  is offered after restart subject to active-room uniqueness. Incognito/private
+  profiles, other profiles, other devices, cleared site data, and other origins
+  join separately.
+- **FR-LIVE-08:** A participant may own several connection-specific active
+  tabs, cursors, and selections but appears once in the roster and capacity
+  count. Heartbeats, cursors, selections, joined time, and connection state are
+  process-local and are not stored in SQLite.
 - **FR-LIVE-09:** Live room content is server-readable plaintext and does not
   use the paste AES-GCM envelope.
 - **FR-LIVE-10:** A room may require one shared password; protected bootstrap,
   unlock, and WebSocket access paths all require the room session.
-- **FR-LIVE-11:** Live rooms expire 24 hours after creation; read, unlock,
-  mutation, WebSocket, and cleanup paths enforce expiry.
+- **FR-LIVE-11:** Live rooms expire at their server-configured lifetime (no
+  longer than 24 hours); read, unlock, mutation, WebSocket, and cleanup paths
+  enforce expiry.
 - **FR-LIVE-12:** A temporary disconnect queues bounded text edits, restores
   them after reconnect, and disables structural tab actions until metadata is
   synchronized.
 - **FR-LIVE-13:** The live frontend uses the existing visual, notification,
   warning, accessibility, and reduced-motion treatment without technical
-  marketing copy or decorative placeholders.
+  marketing copy. The creation screen mirrors the paste creator's compact
+  editor-first layout: its first background tab name defaults internally to
+  `tab1`, while the borderless title treatment shows an `Untitled tab`
+  placeholder during creation; language stays right-aligned, and the byte count
+  uses the paste creator's MiB presentation. Optional
+  password entry is disclosed by an icon-only control, as is paste encryption;
+  both creation actions are text-only. Password entry has a separate compact
+  confirmation action; Enter confirms it and focuses Create without submitting
+  the room. A separate accessible toggle reveals or hides password text, which
+  is hidden by default.
+  Creation errors use the shared toast system; an empty initial tab name is
+  restored to the internal `tab1` default and `Untitled tab` placeholder, and
+  reported as `Tab name cannot be empty`.
 - **FR-LIVE-14:** The shared top progress bar covers static paste loading and
   live bootstrap/connect/reconnect/resync work without becoming keystroke or
   cursor feedback.
+- **FR-LIVE-15:** LiveBin is optional in the same one-service deployment and
+  can be disabled for self-hosted bare-paste installations.
+- **FR-LIVE-16:** The creator's room-scoped HttpOnly capability survives service
+  restart through room expiry using a hash-only SQLite record. It can lock and
+  unlock collaboration without introducing accounts or a recovery path after
+  site-data loss. The creator remains editable; collaborators retain their
+  category while their effective editing ability follows the lock; viewers
+  remain read-only. There is no participant kick or individual role management.
+- **FR-LIVE-17:** A room enforces a maximum of 10 collaborator-capacity browser
+  participants including the creator, 100 viewers, 110 total browser
+  participants, and 8 simultaneous tab connections per participant. Participant
+  limits count the browser identity once; process-wide connection limits still
+  count every WebSocket.
+- **FR-LIVE-18:** A participant can export the current tab or all tabs as one
+  normal paste, with the normal paste flow choosing expiry, encryption, and
+  burn-after-read settings.
+- **FR-LIVE-19:** Live collaboration uses a server-authoritative WebSocket
+  transport; P2P/WebRTC is not required.
+- **FR-LIVE-20:** Live application limits remain configurable for operators;
+  hosted deployments may add an edge rate limiter, while self-hosted
+  installations are not forced to use hosted-service rate-limit values.
 
 ## 8. Frontend Behaviour Requirements
 
@@ -285,8 +335,9 @@ baseline is documented in [`FRONTEND.md`](../agent_docs/FRONTEND.md).
   offline, expired, unavailable, and service-error states
 - The existing top progress bar is used for actual live loading/connectivity
   work; persistent failures do not disappear when it hides
-- The participant popover shows only real participants, their temporary names,
-  active state, joined time, and current tab
+- The compact participant popover shows only real participants, their temporary
+  names, the local `(You)` marker, access designation, and connection state;
+  connection counts and current tabs remain internal presence details
 - Remote cursors and selections remain subtle and do not cover editor content
 - Live screens contain functional labels and concise state copy only; no
   architecture, maturity, encryption, or collaboration slogans are added

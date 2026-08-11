@@ -241,7 +241,10 @@ icon, active encryption state, focus details, and brief success feedback.
 
 - Brand icon: top-left
 - Icon-only theme toggle: top-right; its accessible name describes the action
-- `Live share` control immediately left of the theme toggle
+- `LiveBin` control immediately left of the theme toggle
+- `LiveBin` and the encryption control use a slightly muted grey resting
+  treatment, match the theme toggle's control height, and use the accent colour
+  on hover and keyboard focus.
 - Main page content: fixed to the viewport between the top controls and bottom
   actions; the document itself does not scroll
 - Editor/viewer canvas: the only primary scroll region
@@ -317,13 +320,9 @@ View once    1 hour    1 day    3 days
 
 ### Encryption control
 
-Place the encryption toggle close to the Create action.
-
-Default copy:
-
-```text
-Encrypt this paste
-```
+Place an icon-only lock toggle close to the text-only Create action. Give it
+the accessible name and tooltip `Encrypt`; do not render visible `Encrypt`
+copy or an arrow inside either creation action.
 
 When enabled, show a brief accessible toast:
 
@@ -747,31 +746,68 @@ generically unavailable; encrypted wrong-key risk is clearly presented.
 The live frontend is a normal extension of 0xbin, not a separate dashboard or
 marketing page.
 
-- `Live share` sits immediately left of the theme toggle.
+- `LiveBin` sits immediately left of the theme toggle.
 - From the create editor, carry the current unsaved title, language, and
   content into the live creator in browser memory. Do not upload it until the
   live room is created.
 - From an existing paste viewer, always open a blank live creator. Never copy
   viewed or decrypted content automatically.
-- The live creator has one initial tab, existing language modes, an optional
-  `Require password` control, and the fixed 24-hour room lifetime.
+- The live creator mirrors the paste creator's minimal editor-first layout. Its
+  initial background tab name is `tab1`, but keep that generated name internal
+  during creation. Show an empty borderless title field with the `Untitled tab`
+  placeholder, matching paste creation; custom names remain directly editable.
+  Keep the language menu on the right without an added `Language` heading, show
+  the configured default limit as `1 MiB` beside the byte count, and do not add
+  a separate content header or visible fixed-lifetime label. Both Create actions
+  are text-only.
+- Represent optional password protection with an accessible icon-only lock
+  toggle. Reveal a compact input with the `Password` placeholder using the
+  shared motion treatment and an icon-only `Set password` action. Enter in the
+  password field performs that action, validates through toasts, and focuses
+  Create; it must never create the room directly. Respect reduced-motion
+  preferences. Include an accessible icon-only control to show or hide the
+  entered password; keep it hidden by default.
+- Route every live-creation validation and request failure through the shared
+  toast system rather than adding inline error copy. If the initial tab name is
+  cleared, restore the internal `tab1` default and `Untitled tab` placeholder,
+  show `Tab name cannot be empty`, and do not submit until the user retries.
+- One room-scoped browser profile appears as one participant across reload,
+  reopen, and multiple normal tabs. Incognito/private profiles, other profiles,
+  other devices, cleared site data, and other origins appear separately.
 - Participants receive unique adjective+noun names automatically, can rename
-  themselves from the participant popover, and retain a stable colour.
-- The participant popover shows only real participants, their joined time,
-  current tab, and observable connection state.
+  themselves from the participant popover, and retain their identity, nickname,
+  and colour across normal tabs and reloads. After service restart, the stable
+  identity and colour return and the last nickname is offered subject to
+  active-room uniqueness. Multiple connections share one roster row; its
+  current tab is the most recently active connection.
+- The participant popover shows only real participants in one compact list,
+  with concise `creator`, `collaborator`, or `viewer` labels, joined time,
+  connection count/state, and current tab. Do not add role-management controls
+  or separate management panels.
 - Visible cursors and selections use restrained CodeMirror decorations in the
   active tab. Nickname labels fade while idle, and stale/disconnected
   decorations disappear.
 - Add, rename, delete, and reorder tab controls remain local-looking and
   compact. Structural controls are disabled while room metadata reconnects.
+- The creator-only room control toggles Lock/Unlock. The creator remains
+  editable in both states; collaborators become read-only only while locked;
+  viewers remain read-only. Apply the authoritative broadcast state rather than
+  optimistic local role changes. Do not add participant removal, kicking,
+  banning, promotion, or demotion controls, and do not present creator authority
+  as an account.
+- `Save as paste` offers `Current tab` or `Every tab`; the latter appends tabs
+  into one paste with clear separators and then returns to the normal paste
+  options before uploading.
 - Reuse the existing toast stack, inline validation, warning treatment,
   unavailable states, and top progress bar. Do not add a second feedback style.
 - Do not add technical badges, maturity labels, architecture explanations,
   feature cards, fake participants, sample documents, or decorative
   placeholders. Every visible string must label a function, report useful
   state, or support an immediate decision.
-- Presence, cursors, selections, draft handoff state, and room content are not
-  placed in persistent browser storage.
+- Store only the versioned room-scoped browser resume credential and last
+  authoritative nickname in `localStorage`. Keep passwords, creator/access
+  cookies, room content, cursors, selections, revisions, reconnect queues, and
+  draft handoff state out of script-visible persistent browser storage.
 
 The live route must support full keyboard operation, screen-reader status
 announcements, reduced motion, narrow-screen participant popovers, and safe

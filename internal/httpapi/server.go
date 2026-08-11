@@ -2,11 +2,13 @@
 package httpapi
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"html"
 	"io/fs"
 	"log/slog"
@@ -15,6 +17,7 @@ import (
 	"net/http"
 	"path"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/0atxl/0xbin/internal/config"
@@ -29,6 +32,8 @@ const (
 	defaultPageTitle       = "0xbin — Ephemeral Paste Service"
 	defaultPageDescription = "Create temporary text and code pastes with memorable links, automatic expiry, and optional client-side encryption."
 )
+
+const contentSecurityPolicy = "default-src 'self'; base-uri 'none'; object-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'"
 
 type publicPageSEO struct {
 	Path        string
@@ -52,29 +57,35 @@ var hostedPublicPages = []publicPageSEO{
 
 // Server owns the configured HTTP server lifecycle.
 type Server struct {
-	server *http.Server
+	server           *http.Server
+	live             *liveAPI
+	lifecycleMu      sync.Mutex
+	lifecycleStarted bool
+	lifecycleStopped bool
+	lifecycleCancel  context.CancelFunc
+	lifecycleDone    chan struct{}
 }
 
-// NewServer creates the HTTP server. Database readiness is deliberately not
-// wired until Step 2.
+// NewServer creates the HTTP server with an optional readiness probe.
 func NewServer(cfg config.Config, pastes PasteService, readiness ...func(context.Context) error) *Server {
-	return newServer(cfg, pastes, nil, readiness...)
+	return newServerWithLive(cfg, pastes, nil, nil, readiness...)
 }
 
-// NewServerWithFrontend creates a server that serves the embedded frontend
-// for browser routes while keeping API and health routes separate.
-func NewServerWithFrontend(cfg config.Config, pastes PasteService, frontend fs.FS, readiness ...func(context.Context) error) *Server {
-	return newServer(cfg, pastes, frontend, readiness...)
+// NewServerWithFrontendAndLive creates a server with the live-room transport
+// wired alongside the existing paste API and embedded frontend.
+func NewServerWithFrontendAndLive(cfg config.Config, pastes PasteService, frontend fs.FS, dependencies *LiveDependencies, readiness ...func(context.Context) error) *Server {
+	return newServerWithLive(cfg, pastes, frontend, dependencies, readiness...)
 }
 
-func newServer(cfg config.Config, pastes PasteService, frontend fs.FS, readiness ...func(context.Context) error) *Server {
+func newServerWithLive(cfg config.Config, pastes PasteService, frontend fs.FS, dependencies *LiveDependencies, readiness ...func(context.Context) error) *Server {
 	var ready func(context.Context) error
 	if len(readiness) > 0 {
 		ready = readiness[0]
 	}
-	return &Server{server: &http.Server{
+	live := newLiveAPI(cfg, dependencies)
+	return &Server{live: live, server: &http.Server{
 		Addr:              cfg.ListenAddr,
-		Handler:           newHandler(cfg, pastes, frontend, ready),
+		Handler:           newHandlerWithAPI(cfg, pastes, frontend, ready, live),
 		ReadHeaderTimeout: cfg.ReadHeaderTimeout,
 		ReadTimeout:       cfg.ReadTimeout,
 		WriteTimeout:      cfg.WriteTimeout,
@@ -84,48 +95,125 @@ func newServer(cfg config.Config, pastes PasteService, frontend fs.FS, readiness
 
 // Serve accepts HTTP traffic on listener.
 func (s *Server) Serve(listener net.Listener) error {
+	s.startLiveLifecycle()
+	defer func() { _ = s.stopLiveLifecycle(context.Background()) }()
 	return s.server.Serve(listener)
 }
 
 // Shutdown gracefully stops accepting requests and waits for active requests.
 func (s *Server) Shutdown(ctx context.Context) error {
-	return s.server.Shutdown(ctx)
+	serverErr := s.server.Shutdown(ctx)
+	lifecycleErr := s.stopLiveLifecycle(ctx)
+	var liveErr error
+	if s.live != nil {
+		liveErr = s.live.shutdown(ctx)
+	}
+	return errors.Join(serverErr, lifecycleErr, liveErr)
+}
+
+func (s *Server) startLiveLifecycle() {
+	if s.live == nil {
+		return
+	}
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	if s.lifecycleStarted || s.lifecycleStopped {
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	s.lifecycleStarted = true
+	s.lifecycleCancel = cancel
+	s.lifecycleDone = done
+	go func() {
+		s.live.runLifecycle(ctx)
+		close(done)
+	}()
+}
+
+func (s *Server) stopLiveLifecycle(ctx context.Context) error {
+	s.lifecycleMu.Lock()
+	if !s.lifecycleStarted {
+		s.lifecycleStopped = true
+		s.lifecycleMu.Unlock()
+		return nil
+	}
+	if !s.lifecycleStopped {
+		s.lifecycleStopped = true
+		s.lifecycleCancel()
+	}
+	done := s.lifecycleDone
+	s.lifecycleMu.Unlock()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // NewHandler creates the root router and its foundational middleware.
 func NewHandler(cfg config.Config, pastes PasteService, readiness ...func(context.Context) error) http.Handler {
-	return newHandler(cfg, pastes, nil, readiness...)
+	return newHandlerWithLive(cfg, pastes, nil, nil, readiness...)
 }
 
 // NewHandlerWithFrontend attaches a frontend filesystem to browser routes.
 // It is useful for integration tests and the embedded production bundle.
 func NewHandlerWithFrontend(cfg config.Config, pastes PasteService, frontend fs.FS, readiness ...func(context.Context) error) http.Handler {
-	return newHandler(cfg, pastes, frontend, readiness...)
+	return newHandlerWithLive(cfg, pastes, frontend, nil, readiness...)
 }
 
-func newHandler(cfg config.Config, pastes PasteService, frontend fs.FS, readiness ...func(context.Context) error) http.Handler {
+// NewHandlerWithLive attaches live-room routes to a test or custom handler.
+func NewHandlerWithLive(cfg config.Config, pastes PasteService, dependencies *LiveDependencies, readiness ...func(context.Context) error) http.Handler {
+	return newHandlerWithLive(cfg, pastes, nil, dependencies, readiness...)
+}
+
+func newHandlerWithLive(cfg config.Config, pastes PasteService, frontend fs.FS, dependencies *LiveDependencies, readiness ...func(context.Context) error) http.Handler {
 	var ready func(context.Context) error
 	if len(readiness) > 0 {
 		ready = readiness[0]
 	}
+	return newHandlerWithAPI(cfg, pastes, frontend, ready, newLiveAPI(cfg, dependencies))
+}
+
+func newHandlerWithAPI(cfg config.Config, pastes PasteService, frontend fs.FS, ready func(context.Context) error, liveAPI *liveAPI) http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /health/live", live)
+	mux.HandleFunc("GET /health/live", liveness)
 	mux.HandleFunc("GET /health/ready", func(w http.ResponseWriter, r *http.Request) { notReady(w, r, ready) })
-	if pastes != nil {
-		limits, err := ratelimit.NewRegistry(map[ratelimit.Category]config.Rate{
+	if pastes != nil || liveAPI != nil {
+		rateConfig := map[ratelimit.Category]config.Rate{
 			ratelimit.Create:  cfg.CreateRate,
 			ratelimit.Read:    cfg.ReadRate,
 			ratelimit.Miss:    cfg.MissRate,
 			ratelimit.Consume: cfg.ConsumeRate,
-		}, 10_000, 2*time.Hour, time.Now)
+		}
+		if liveAPI != nil {
+			rateConfig[ratelimit.LiveCreate] = cfg.LiveCreateRate
+			rateConfig[ratelimit.LiveUnlock] = cfg.LiveUnlockRate
+			rateConfig[ratelimit.LiveConnection] = cfg.LiveConnectionRate
+			rateConfig[ratelimit.LiveMessage] = cfg.LiveMessageRate
+			rateConfig[ratelimit.LiveMessageRoom] = scaledLiveRate(cfg.LiveMessageRate, cfg.LiveMaxWriters+max(1, cfg.LiveMaxViewers/20))
+			rateConfig[ratelimit.LiveMessageIP] = scaledLiveRate(rateConfig[ratelimit.LiveMessageRoom], 2)
+		}
+		limits, err := ratelimit.NewRegistry(rateConfig, 10_000, 2*time.Hour, time.Now)
 		if err != nil {
 			panic("validated rate limit configuration is invalid: " + err.Error())
 		}
-		api := pasteAPI{pastes: pastes, baseURL: cfg.BaseURL, maxContentBytes: cfg.MaxPasteBytes, limits: limits}
-		mux.HandleFunc("POST /api/v1/pastes", api.create)
-		mux.HandleFunc("GET /api/v1/pastes/{slug}", api.get)
-		mux.HandleFunc("POST /api/v1/pastes/{slug}/consume", api.consume)
-		mux.HandleFunc("GET /api/v1/pastes/{slug}/raw", api.raw)
+		if pastes != nil {
+			api := pasteAPI{pastes: pastes, baseURL: cfg.BaseURL, maxContentBytes: cfg.MaxPasteBytes, limits: limits}
+			mux.HandleFunc("POST /api/v1/pastes", api.create)
+			mux.HandleFunc("GET /api/v1/pastes/{slug}", api.get)
+			mux.HandleFunc("POST /api/v1/pastes/{slug}/consume", api.consume)
+			mux.HandleFunc("GET /api/v1/pastes/{slug}/raw", api.raw)
+		}
+		if liveAPI != nil {
+			liveAPI.limits = limits
+			mux.HandleFunc("POST /api/v1/live", liveAPI.create)
+			mux.HandleFunc("GET /api/v1/live/config", liveAPI.config)
+			mux.HandleFunc("GET /api/v1/live/{slug}", liveAPI.bootstrap)
+			mux.HandleFunc("POST /api/v1/live/{slug}/unlock", liveAPI.unlock)
+			mux.HandleFunc("GET /api/v1/live/{slug}/ws", liveAPI.websocket)
+		}
 	}
 	mux.HandleFunc("/api/", apiNotFound)
 	mux.HandleFunc("/api", apiNotFound)
@@ -140,12 +228,40 @@ func newHandler(cfg config.Config, pastes PasteService, frontend fs.FS, readines
 		mux.HandleFunc("GET /sitemap.xml", func(w http.ResponseWriter, r *http.Request) {
 			serveSitemap(w, r, publicURL, hostedService)
 		})
-		mux.Handle("/", frontendHandler(frontend, publicURL, hostedService))
+		mux.Handle("/", frontendHandler(frontend, publicURL, hostedService, cfg.LiveEnabled))
 	}
-	return requestID(recoverPanics(clientIP(mux, cfg.TrustedProxies)))
+	return securityHeaders(cfg, requestID(recoverPanics(clientIP(mux, cfg.TrustedProxies))))
 }
 
-func frontendHandler(bundle fs.FS, publicURL string, hostedService bool) http.Handler {
+func securityHeaders(cfg config.Config, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		header := w.Header()
+		header.Set("Content-Security-Policy", contentSecurityPolicy)
+		header.Set("Referrer-Policy", "same-origin")
+		header.Set("Permissions-Policy", "camera=(), geolocation=(), microphone=(), payment=(), usb=()")
+		header.Set("X-Content-Type-Options", "nosniff")
+		header.Set("X-Frame-Options", "DENY")
+		if cfg.BaseURL != nil && strings.EqualFold(cfg.BaseURL.Scheme, "https") {
+			header.Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func scaledLiveRate(rate config.Rate, multiplier int) config.Rate {
+	if multiplier < 1 {
+		multiplier = 1
+	}
+	maxInt := int(^uint(0) >> 1)
+	if rate.Count > maxInt/multiplier {
+		rate.Count = maxInt
+	} else {
+		rate.Count *= multiplier
+	}
+	return rate
+}
+
+func frontendHandler(bundle fs.FS, publicURL string, hostedService, liveEnabled bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -178,7 +294,7 @@ func frontendHandler(bundle fs.FS, publicURL string, hostedService bool) http.Ha
 			http.Error(w, "Frontend bundle is unavailable; run make build.", http.StatusServiceUnavailable)
 			return
 		}
-		contents = injectHostedService(contents, hostedService)
+		contents = injectRuntimeFlags(contents, hostedService, liveEnabled)
 		if page, ok := publicPage(name, hostedService); ok {
 			contents = injectPageSEO(contents, publicURL+page.Path, page)
 		} else {
@@ -204,12 +320,17 @@ func publicPage(name string, hostedService bool) (publicPageSEO, bool) {
 	return publicPageSEO{}, false
 }
 
-func injectHostedService(contents []byte, hostedService bool) []byte {
-	value := "false"
+func injectRuntimeFlags(contents []byte, hostedService, liveEnabled bool) []byte {
+	hostedValue := "false"
 	if hostedService {
-		value = "true"
+		hostedValue = "true"
 	}
-	return bytes.Replace(contents, []byte(`data-hosted-service="false"`), []byte(`data-hosted-service="`+value+`"`), 1)
+	liveValue := "false"
+	if liveEnabled {
+		liveValue = "true"
+	}
+	contents = bytes.Replace(contents, []byte(`data-hosted-service="false"`), []byte(`data-hosted-service="`+hostedValue+`"`), 1)
+	return bytes.Replace(contents, []byte(`data-live-enabled="true"`), []byte(`data-live-enabled="`+liveValue+`"`), 1)
 }
 
 func injectNoindex(contents []byte) []byte {
@@ -302,7 +423,7 @@ func serveFrontendFile(w http.ResponseWriter, r *http.Request, name string, cont
 	_, _ = w.Write(contents)
 }
 
-func live(w http.ResponseWriter, _ *http.Request) {
+func liveness(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -364,6 +485,25 @@ type responseWriter struct {
 	http.ResponseWriter
 	wroteHeader bool
 }
+
+// Hijack preserves WebSocket upgrades through the panic-recovery wrapper.
+// The websocket transport intentionally uses the standard HTTP hijacker so
+// the live route remains compatible with the embedded server and proxies.
+func (w *responseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hijacker, ok := w.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, errors.New("response writer does not support hijacking")
+	}
+	return hijacker.Hijack()
+}
+
+func (w *responseWriter) Flush() {
+	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+func (w *responseWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
 func (w *responseWriter) WriteHeader(status int) {
 	w.wroteHeader = true

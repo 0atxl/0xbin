@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { pastePath, resolveRoute } from "./router";
+import { liveRoomPath, pastePath, resolveRoute } from "./router";
 
 describe("route resolution", () => {
   it("resolves the create route and a clean paste path", () => {
@@ -7,6 +7,31 @@ describe("route resolution", () => {
     expect(resolveRoute("/quietbrightotter")).toEqual({
       kind: "paste",
       slug: "quietbrightotter",
+    });
+  });
+
+  it("resolves the separate live creation and room namespace", () => {
+    expect(resolveRoute("/live")).toEqual({ kind: "live-create" });
+    expect(resolveRoute("/live/quietbrightotter")).toEqual({
+      kind: "live-room",
+      slug: "quietbrightotter",
+    });
+    expect(resolveRoute("/live/not-a-slug")).toEqual({
+      kind: "live-room",
+      slug: "",
+    });
+    expect(liveRoomPath("quietbrightotter")).toBe("/live/quietbrightotter");
+    expect(() => liveRoomPath("not-a-slug")).toThrow("invalid live room slug");
+  });
+
+  it("keeps live paths out of the live route namespace when disabled", () => {
+    expect(resolveRoute("/live", false, false)).toEqual({
+      kind: "paste",
+      slug: "live",
+    });
+    expect(resolveRoute("/live/quietbrightotter", false, false)).toEqual({
+      kind: "paste",
+      slug: "",
     });
   });
 

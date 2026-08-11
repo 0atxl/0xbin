@@ -1,0 +1,601 @@
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  createLiveAPI,
+  createLiveRoom,
+  getLiveServiceConfig,
+  getLiveRoom,
+  LiveAPIError,
+  unlockLiveRoom,
+  type CreatedLiveRoom,
+  type LiveServiceConfig,
+  type LiveRoomSnapshot,
+} from "./live-api";
+import { CodeEditor, LanguageMenu } from "./editor";
+import {
+  defaultLiveDocumentName,
+  fallbackLiveRoomBytes,
+  type LiveCreateValidation,
+  type LiveDraft,
+  validateLiveDraft,
+} from "./live";
+import { beginLoading } from "./loading";
+import { utf8Bytes } from "./create";
+import { LiveRoomWorkspace } from "./live-room";
+import { randomLiveID } from "./live-collab";
+import {
+  resolveLiveBrowserIdentity,
+  type LiveBrowserIdentity,
+} from "./live-identity";
+
+const fallbackLiveServiceConfig: LiveServiceConfig = {
+  maxBytes: fallbackLiveRoomBytes,
+  maxTabs: 8,
+  maxWriters: 10,
+  maxViewers: 100,
+  maxParticipants: 110,
+  roomLifetimeSeconds: 24 * 60 * 60,
+};
+
+export type LiveRouteProps =
+  | {
+      mode: "create";
+      initialDraft: LiveDraft;
+      onStatus: (message: string) => void;
+      onCreated: (created: CreatedLiveRoom) => Promise<void>;
+    }
+  | {
+      mode: "room";
+      slug: string;
+      onSecurityGateChange: (open: boolean) => void;
+      copyFailed: boolean;
+      shareURL?: string;
+      onRetryCopy: () => void;
+      onStatus: (message: string) => void;
+      onSaveAsPaste: (draft: {
+        title: string;
+        language: string;
+        content: string;
+      }) => void;
+    };
+
+export default function LiveRoute(props: LiveRouteProps) {
+  if (props.mode === "create") {
+    return <LiveCreateState {...props} />;
+  }
+  return <LiveRoomPage {...props} />;
+}
+
+function LiveCreateState({
+  initialDraft,
+  onStatus,
+  onCreated,
+}: Extract<LiveRouteProps, { mode: "create" }>) {
+  const [draft, setDraft] = useState(initialDraft);
+  const [usesDefaultDocumentName, setUsesDefaultDocumentName] = useState(
+    initialDraft.document.name === defaultLiveDocumentName,
+  );
+  const [requirePassword, setRequirePassword] = useState(false);
+  const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [errors, setErrors] = useState<LiveCreateValidation>({});
+  const [submitting, setSubmitting] = useState(false);
+  const [limits, setLimits] = useState<LiveServiceConfig>();
+  const [limitsUnavailable, setLimitsUnavailable] = useState(false);
+  const createButtonRef = useRef<HTMLButtonElement>(null);
+  const contentBytes = utf8Bytes(draft.document.content);
+  const effectiveLimits = limits ?? fallbackLiveServiceConfig;
+
+  useEffect(() => {
+    const controller = new AbortController();
+    getLiveServiceConfig(createLiveAPI(), controller.signal)
+      .then((config) => {
+        if (!controller.signal.aborted) setLimits(config);
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setLimitsUnavailable(true);
+      });
+    return () => controller.abort();
+  }, []);
+
+  function updateDocument(update: Partial<LiveDraft["document"]>) {
+    setDraft((current) => ({
+      ...current,
+      document: { ...current.document, ...update },
+    }));
+    setErrors((current) => {
+      const next = { ...current };
+      if ("name" in update) delete next.name;
+      if ("content" in update) delete next.content;
+      return next;
+    });
+  }
+
+  function confirmPassword() {
+    const passwordError = validateLiveDraft(
+      draft,
+      true,
+      password,
+      effectiveLimits.maxBytes,
+    ).password;
+    if (passwordError) {
+      setErrors((current) => ({ ...current, password: passwordError }));
+      onStatus(passwordError);
+      return;
+    }
+    setErrors((current) => {
+      const next = { ...current };
+      delete next.password;
+      return next;
+    });
+    createButtonRef.current?.focus();
+  }
+
+  async function submit() {
+    if (!limits && !limitsUnavailable) return;
+    if (draft.document.name.length === 0) {
+      updateDocument({ name: defaultLiveDocumentName });
+      setUsesDefaultDocumentName(true);
+      setErrors({});
+      onStatus("Tab name cannot be empty");
+      return;
+    }
+    const nextErrors = validateLiveDraft(
+      draft,
+      requirePassword,
+      password,
+      effectiveLimits.maxBytes,
+    );
+    setErrors(nextErrors);
+    if (Object.keys(nextErrors).length > 0) {
+      Object.values(nextErrors).forEach((message) => onStatus(message));
+      return;
+    }
+    setSubmitting(true);
+    const stopLoading = beginLoading();
+    try {
+      const created = await createLiveRoom(createLiveAPI(), {
+        ...(requirePassword ? { password } : {}),
+        documents: [draft.document],
+      });
+      await onCreated(created);
+    } catch (error: unknown) {
+      onStatus(liveCreateFailureMessage(error));
+    } finally {
+      stopLoading();
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <form
+      className="create-canvas live-create-canvas"
+      aria-labelledby="live-create-heading"
+      onSubmit={(event) => {
+        event.preventDefault();
+        void submit();
+      }}
+    >
+      <h1 className="sr-only" id="live-create-heading">
+        Create LiveBin room
+      </h1>
+      <div className="metadata-bar live-metadata-bar">
+        <label className="title-field live-tab-name-field">
+          <span className="sr-only">Tab name</span>
+          <input
+            value={usesDefaultDocumentName ? "" : draft.document.name}
+            placeholder="Untitled tab"
+            aria-invalid={Boolean(errors.name)}
+            onChange={(event) => {
+              setUsesDefaultDocumentName(false);
+              updateDocument({ name: event.target.value });
+            }}
+          />
+        </label>
+        <LanguageMenu
+          value={draft.document.language}
+          onChange={(language) => updateDocument({ language })}
+        />
+      </div>
+
+      <CodeEditor
+        value={draft.document.content}
+        language={draft.document.language}
+        ariaLabel="Live room content"
+        onChange={(content) => updateDocument({ content })}
+        onSubmit={() => void submit()}
+      />
+
+      <footer className="creation-toolbar live-creation-toolbar">
+        <div className="toolbar-spacer" />
+        <span
+          className={
+            contentBytes > effectiveLimits.maxBytes
+              ? "byte-count over-limit"
+              : "byte-count"
+          }
+        >
+          {limits || limitsUnavailable
+            ? `${formatBytes(contentBytes)} / ${formatBytes(effectiveLimits.maxBytes)}`
+            : "Loading room limits…"}
+        </span>
+        <div
+          className="live-password-reveal"
+          data-open={requirePassword}
+          aria-hidden={!requirePassword}
+        >
+          <div className="live-password-control">
+            <label className="sr-only" htmlFor="live-create-password">
+              Password
+            </label>
+            <input
+              id="live-create-password"
+              type={showPassword ? "text" : "password"}
+              placeholder="Password"
+              value={password}
+              disabled={!requirePassword}
+              aria-invalid={Boolean(errors.password)}
+              onChange={(event) => {
+                setPassword(event.target.value);
+                setErrors((current) => {
+                  const next = { ...current };
+                  delete next.password;
+                  return next;
+                });
+              }}
+              onKeyDown={(event) => {
+                if (event.key !== "Enter") return;
+                event.preventDefault();
+                event.stopPropagation();
+                confirmPassword();
+              }}
+            />
+            <button
+              type="button"
+              disabled={!requirePassword}
+              aria-label={showPassword ? "Hide password" : "Show password"}
+              aria-pressed={showPassword}
+              title={showPassword ? "Hide password" : "Show password"}
+              onClick={() => setShowPassword((visible) => !visible)}
+            >
+              <EyeIcon revealed={showPassword} />
+            </button>
+            <button
+              type="button"
+              disabled={!requirePassword}
+              aria-label="Set password"
+              title="Set password"
+              onClick={confirmPassword}
+            >
+              <CheckIcon />
+            </button>
+          </div>
+        </div>
+        <label
+          className="encrypt-toggle live-password-toggle"
+          title="Require password"
+        >
+          <input
+            type="checkbox"
+            checked={requirePassword}
+            onChange={(event) => {
+              const required = event.target.checked;
+              setRequirePassword(required);
+              if (!required) {
+                setPassword("");
+                setShowPassword(false);
+                setErrors((current) => {
+                  const next = { ...current };
+                  delete next.password;
+                  return next;
+                });
+              }
+            }}
+          />
+          <LockIcon />
+          <span className="sr-only">Require password</span>
+        </label>
+        <button
+          ref={createButtonRef}
+          className="primary-action"
+          type="submit"
+          disabled={submitting || (!limits && !limitsUnavailable)}
+        >
+          {submitting ? "Creating…" : "Create"}
+        </button>
+      </footer>
+    </form>
+  );
+}
+
+type LiveRoomState =
+  "loading" | "password" | "ready" | "unavailable" | "expired" | "error";
+
+function LiveRoomPage({
+  slug,
+  onSecurityGateChange,
+  copyFailed,
+  shareURL,
+  onRetryCopy,
+  onStatus,
+  onSaveAsPaste,
+}: Extract<LiveRouteProps, { mode: "room" }>) {
+  const [room, setRoom] = useState<LiveRoomSnapshot>();
+  const [state, setState] = useState<LiveRoomState>("loading");
+  const [password, setPassword] = useState("");
+  const [passwordError, setPasswordError] = useState(false);
+  const [unlocking, setUnlocking] = useState(false);
+  const [reauthenticationGeneration, setReauthenticationGeneration] =
+    useState(0);
+  const clientID = useRef(randomLiveID("client-")).current;
+  const connectionID = useRef(randomLiveID("connection-")).current;
+  const [browserIdentity, setBrowserIdentity] = useState<LiveBrowserIdentity>();
+
+  useEffect(() => {
+    let active = true;
+    setBrowserIdentity(undefined);
+    void resolveLiveBrowserIdentity(slug).then((identity) => {
+      if (active) setBrowserIdentity(identity);
+    });
+    return () => {
+      active = false;
+    };
+  }, [slug]);
+
+  useEffect(() => {
+    onSecurityGateChange(state === "password");
+    return () => onSecurityGateChange(false);
+  }, [onSecurityGateChange, state]);
+
+  useEffect(() => {
+    if (!slug) {
+      setState("unavailable");
+      return;
+    }
+    const controller = new AbortController();
+    const stopLoading = beginLoading();
+    setRoom(undefined);
+    setPassword("");
+    setPasswordError(false);
+    setState("loading");
+    getLiveRoom(createLiveAPI(), slug, controller.signal)
+      .then((nextRoom) => {
+        if (controller.signal.aborted) return;
+        setRoom(nextRoom);
+        setState("ready");
+      })
+      .catch((error: unknown) => {
+        if (controller.signal.aborted) return;
+        if (!(error instanceof LiveAPIError)) {
+          setState("error");
+          return;
+        }
+        switch (error.code) {
+          case "password_required":
+            setState("password");
+            break;
+          case "room_expired":
+            setState("expired");
+            break;
+          case "not_found":
+            setState("unavailable");
+            break;
+          default:
+            setState("error");
+        }
+      })
+      .finally(stopLoading);
+    return () => {
+      controller.abort();
+      stopLoading();
+    };
+  }, [slug]);
+
+  async function unlock() {
+    const renewingExistingWorkspace = room !== undefined;
+    setUnlocking(true);
+    setPasswordError(false);
+    const stopLoading = beginLoading();
+    try {
+      const nextRoom = await unlockLiveRoom(createLiveAPI(), slug, password);
+      setPassword("");
+      if (renewingExistingWorkspace) {
+        setReauthenticationGeneration((generation) => generation + 1);
+      } else {
+        setRoom(nextRoom);
+      }
+      setState("ready");
+    } catch (error: unknown) {
+      if (error instanceof LiveAPIError && error.code === "invalid_password") {
+        setPasswordError(true);
+        return;
+      }
+      if (error instanceof LiveAPIError && error.code === "room_expired") {
+        setState("expired");
+        return;
+      }
+      if (renewingExistingWorkspace) {
+        onStatus("Could not renew the room session — try again");
+        return;
+      }
+      setState("error");
+    } finally {
+      stopLoading();
+      setUnlocking(false);
+    }
+  }
+
+  if (state === "loading") {
+    return <LoadingAnnouncement label="Loading live room…" />;
+  }
+  if (state === "unavailable") {
+    return (
+      <CenteredState
+        label="Live room unavailable"
+        accentLabel
+        detail="It may have expired, been deleted, or never existed."
+      />
+    );
+  }
+  if (state === "expired") {
+    return (
+      <CenteredState
+        label="Live room expired"
+        accentLabel
+        detail="This room is no longer available."
+      />
+    );
+  }
+  if (state === "error") {
+    return (
+      <CenteredState
+        label="Service unavailable"
+        detail="Try again in a moment."
+      />
+    );
+  }
+
+  const passwordGate =
+    state === "password" ? (
+      <main className="key-gate live-password-gate">
+        <form
+          className="live-password-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void unlock();
+          }}
+        >
+          <label htmlFor="live-room-password">Room password</label>
+          <div className="key-entry-form">
+            <input
+              id="live-room-password"
+              type="password"
+              autoFocus
+              aria-invalid={passwordError}
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+            />
+            <button type="submit" disabled={unlocking}>
+              Unlock
+            </button>
+          </div>
+          {passwordError ? <p role="alert">Password not accepted.</p> : null}
+        </form>
+      </main>
+    ) : null;
+
+  if (!room) return passwordGate;
+  if (!browserIdentity) {
+    return <LoadingAnnouncement label="Loading live identity…" />;
+  }
+
+  return (
+    <>
+      <div hidden={state === "password"}>
+        <LiveRoomWorkspace
+          initialRoom={room}
+          clientID={clientID}
+          connectionID={connectionID}
+          sessionID={browserIdentity.credential}
+          preferredName={browserIdentity.nickname}
+          onStatus={onStatus}
+          onSaveAsPaste={onSaveAsPaste}
+          authenticationRequired={state === "password"}
+          reauthenticationGeneration={reauthenticationGeneration}
+          onReauthenticate={() => {
+            setPassword("");
+            setPasswordError(false);
+            setState("password");
+          }}
+        />
+      </div>
+      {passwordGate}
+      {state !== "password" && copyFailed && shareURL ? (
+        <button className="copy-link-retry" type="button" onClick={onRetryCopy}>
+          LiveBin room created — copy link
+        </button>
+      ) : null}
+    </>
+  );
+}
+
+function LoadingAnnouncement({ label }: { label: string }) {
+  return (
+    <main className="sr-only" role="status" aria-live="polite">
+      {label}
+    </main>
+  );
+}
+
+function CenteredState({
+  label,
+  detail,
+  action,
+  accentLabel = false,
+}: {
+  label: string;
+  detail?: string;
+  action?: ReactNode;
+  accentLabel?: boolean;
+}) {
+  return (
+    <main className="centered-state">
+      <h1 className={accentLabel ? "accent-label" : undefined}>{label}</h1>
+      {detail ? <p>{detail}</p> : null}
+      {action}
+    </main>
+  );
+}
+
+function liveCreateFailureMessage(error: unknown): string {
+  if (!(error instanceof LiveAPIError)) {
+    return "Could not create LiveBin room — try again";
+  }
+  switch (error.code) {
+    case "message_too_large":
+    case "room_limit_reached":
+      return "LiveBin room content is too large";
+    case "rate_limited":
+      return "Too many requests — try again later";
+    case "service_unavailable":
+      return "LiveBin is unavailable on this service";
+    case "invalid_request":
+      return "Check the LiveBin room details and try again";
+    default:
+      return "Could not create LiveBin room — try again";
+  }
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes >= 1 << 20) {
+    const mebibytes = bytes / (1 << 20);
+    return `${Number.isInteger(mebibytes) ? mebibytes : mebibytes.toFixed(1)} MiB`;
+  }
+  return bytes < 1024 ? `${bytes} B` : `${(bytes / 1024).toFixed(1)} KiB`;
+}
+
+function LockIcon() {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden="true">
+      <rect x="4" y="8" width="12" height="9" rx="2" />
+      <path d="M7 8V6a3 3 0 0 1 6 0v2" />
+    </svg>
+  );
+}
+
+function CheckIcon() {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden="true">
+      <path d="m4 10 4 4 8-9" />
+    </svg>
+  );
+}
+
+function EyeIcon({ revealed }: { revealed: boolean }) {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden="true">
+      <path d="M2.5 10s2.8-4.5 7.5-4.5 7.5 4.5 7.5 4.5-2.8 4.5-7.5 4.5S2.5 10 2.5 10Z" />
+      <circle cx="10" cy="10" r="2" />
+      {!revealed ? <path d="m4 4 12 12" /> : null}
+    </svg>
+  );
+}

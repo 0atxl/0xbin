@@ -5,15 +5,17 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "tsc -b && vite build && node ./scripts/restore-embed-marker.mjs",
     "lint": "tsc -b --pretty false",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
+    "generate:live-fixtures": "node --experimental-strip-types ./scripts/generate-live-collab-fixtures.ts",
     "test": "vitest run",
     "test:e2e": "node ./scripts/crypto-network-test.mjs && node ./scripts/e2e.mjs"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.3",
+    "@codemirror/collab": "^6.1.1",
     "@codemirror/commands": "^6.10.4",
     "@codemirror/lang-cpp": "^6.0.3",
     "@codemirror/lang-go": "^6.0.1",
@@ -26,20 +28,19 @@
     "@codemirror/state": "^6.7.1",
     "@codemirror/view": "^6.43.6",
     "@lezer/highlight": "^1.2.3",
-    "@vitejs/plugin-react": "latest",
     "react": "latest",
     "react-dom": "latest",
-    "vite": "latest"
+    "topbar": "^3.0.1"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.12.1",
-    "@emnapi/core": "1.11.2",
-    "@emnapi/runtime": "1.11.2",
     "@playwright/test": "^1.61.1",
     "@types/react": "latest",
     "@types/react-dom": "latest",
+    "@vitejs/plugin-react": "latest",
     "prettier": "latest",
     "typescript": "latest",
+    "vite": "latest",
     "vitest": "latest"
   }
 }

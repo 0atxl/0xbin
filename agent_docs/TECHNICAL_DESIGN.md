@@ -1,7 +1,7 @@
 # 0xbin Technical Design
 
-**Status:** Implemented MVP baseline; live-sharing extension design aligned;
-hosted operational hardening remains pending
+**Status:** Implemented MVP baseline and live-sharing extension; hosted
+operational hardening remains pending
 **Source of product truth:** `../spec.md`
 
 ## 1. System Context
@@ -95,26 +95,49 @@ OXBIN_READ_TIMEOUT
 OXBIN_WRITE_TIMEOUT
 OXBIN_IDLE_TIMEOUT
 OXBIN_SHUTDOWN_TIMEOUT
+OXBIN_LIVE_ENABLED
 OXBIN_LIVE_ROOM_LIFETIME
 OXBIN_LIVE_MAX_TABS
 OXBIN_LIVE_MAX_BYTES
+OXBIN_LIVE_MAX_WRITERS
+OXBIN_LIVE_MAX_VIEWERS
 OXBIN_LIVE_MAX_PARTICIPANTS
 OXBIN_LIVE_MAX_MESSAGE_BYTES
 OXBIN_LIVE_HEARTBEAT_INTERVAL
+OXBIN_LIVE_RECONNECT_GRACE
+OXBIN_LIVE_PARTICIPANT_TIMEOUT
+OXBIN_LIVE_CREATE_RATE
 OXBIN_LIVE_UNLOCK_RATE
+OXBIN_LIVE_CONNECTION_RATE
+OXBIN_LIVE_MESSAGE_RATE
 OXBIN_LIVE_MAX_CONNECTIONS
 OXBIN_LIVE_SNAPSHOT_LIMITS
 ```
 
-Fail startup on unsafe or incoherent values. Do not log secrets.
+Set `OXBIN_LIVE_ENABLED=false` for bare-paste deployments; the process then
+does not construct the live hub, register live routes, or expose the LiveBin
+entry point, and ordinary paste cleanup skips live-room cleanup queries. When
+live mode is enabled, fail startup on unsafe or incoherent
+values. Writer, viewer, and total limits must satisfy
+`writers + viewers = total`. Do not log secrets.
+`OXBIN_LIVE_MAX_BYTES` is the single content-size setting: it limits aggregate
+UTF-8 document bytes across the room and, as a consequence, every individual
+document. The HTTP `max_document_bytes` field is an equal semantic alias for
+clients and is not independently configurable.
+The participant timeout must be at least twice the heartbeat interval and
+longer than the reconnect grace period.
+`OXBIN_LIVE_SNAPSHOT_LIMITS` uses `rows/bytes` syntax. The fixed validation
+limits are 32 UTF-8 bytes for nicknames, 64 bytes for tab names, 64 bytes for
+language identifiers, and 64 bytes for document identifiers.
 
 ### 3.2 HTTP server
 
 - Go `net/http` with the standard-library `http.ServeMux`
 - Explicit header, read, write, idle, and shutdown timeouts
 - Request ID, recovery, and client-IP resolution wrap the root handler
-- API handlers apply body limits and rate limits; additional security-header
-  hardening remains part of pending Step 17 work
+- API handlers apply body limits and rate limits; root middleware applies the
+  shared CSP, referrer, permissions, framing, content-type, and HTTPS HSTS
+  headers
 - Frontend fallback must not turn unknown API routes into HTML 200 responses
 
 ### 3.3 Paste service
@@ -165,18 +188,99 @@ process:
 
 - Live HTTP handlers own room creation, bootstrap, unlock, and WebSocket
   upgrade boundaries; handlers remain thin.
+- Live transport support keeps snake-case codecs, shared response mapping,
+  publication serialization, and process-local password sessions in focused
+  files around the transport coordinator. The session store is not a durable
+  authority boundary.
 - The live room hub serializes room operations and orders document changes,
   tab metadata changes, presence, cursor/selection updates, reconnects, and
   expiry transitions.
+- Public Hub limits, snapshots, operations, and errors are separated from the
+  mutable serialized authority implementation. The authority remains cohesive
+  where document, metadata, presence, rollback, and reconnect paths share the
+  room mutex and persist-before-publish invariant.
+- The process-local `live.Hub` lazily loads rooms, exposes session-scoped
+  document and metadata operations, and keeps bounded rebase history. Each
+  accepted operation identity/result, retained change, and current snapshot are
+  one atomic durable commit, so a failed commit is not acknowledged or
+  broadcast. A bounded recent operation ledger reloads with room authority so
+  acknowledgement-loss retries remain idempotent across eviction, restart, and
+  change-history compaction. A stale reorder returns
+  the current room state for resynchronization; deletion wins over a later
+  rename/language update, and the final document cannot be deleted.
 - The collaboration authority uses independent metadata/document revisions,
   persists accepted changes before acknowledging them, and keeps bounded
   history for reconnect/rebase.
-- Presence and short-lived room password sessions remain process memory only.
+- Retained delta history is process-local authority state after it is loaded.
+  Following a service restart, a client whose known revision trails the current
+  durable snapshot receives `http_resync_required` and reloads that snapshot.
+  Cross-restart delta bridging is not an MVP guarantee; the resync fallback is
+  the correctness boundary and does not discard acknowledged edits.
+- Room capacity distinguishes up to 10 collaborator-capacity browser
+  participants including the creator, 100 viewers, and 110 total browser
+  participants. Each participant may own at most eight simultaneous tab
+  connections, while the process-wide ceiling continues to count every socket.
+- Access class (`creator`, `collaborator`, or `viewer`) is separate from
+  effective editing ability. A durable room lock pauses collaborators without
+  changing their class, keeps viewers read-only, and leaves the creator
+  editable. The creator can commit either lock state; individual role changes,
+  removal, and bans do not exist.
+- Ordinary protected-room access uses a short-lived, room-scoped HttpOnly
+  session. Creation also sets a separate HttpOnly creator-capability cookie
+  that is valid through the room expiry. After ordinary access expires, a
+  protected creator must reauthenticate with the shared password; that renewal
+  does not replace the still-valid creator capability. SQLite stores only a
+  domain-separated SHA-256 hash of the random 256-bit creator token; the raw
+  token remains solely in the room-scoped cookie. Constant-time validation
+  therefore preserves creator authority across service restart through room
+  expiry. A password unlock restores ordinary room access only, and losing the
+  creator cookie has no recovery flow.
+- A browser can hide the HTTP status from a rejected pre-upgrade WebSocket
+  request. After an abnormal reconnect close, the frontend therefore probes the
+  authenticated HTTP bootstrap once before each bounded retry. A
+  `password_required` response opens the password gate; room unavailability or
+  removal stops reconnecting; transient network and overload failures use the
+  capped backoff. During access renewal, the existing collaborative workspace
+  remains mounted but hidden and read-only behind the password gate, retaining
+  its bounded pending CodeMirror state. A successful unlock runs an
+  authenticated HTTP resynchronization before reconnecting. The browser
+  participant credential and per-page connection/client IDs survive the gate
+  so the renewed connection reclaims its participant, replays pending edits,
+  and preserves creator authority.
+- One room-scoped, random browser credential in `localStorage` identifies the
+  participant across normal tabs, reload, reopen, and service restart. The raw
+  credential is never logged, broadcast, or stored in SQLite. A
+  domain-separated room/credential hash produces the stable public participant
+  ID and colour. Each mounted page owns a separate connection ID and operation
+  client ID.
+- The Hub groups connections under the browser participant. Heartbeat, current
+  tab, cursor, selection, generation, and last activity are per connection; the
+  nickname and access class are participant-wide. Reconnect grace begins only
+  after the final connection is lost. A stale connection cannot disconnect the
+  group or overwrite another connection's cursor.
+- Active presence and ordinary room password sessions remain process memory
+  only. The browser retains only the resume credential and last authoritative
+  nickname. A reconnect-grace expiry releases active participant capacity and
+  removes process-local cursor state without invalidating the browser identity.
 - Passwords use an adaptive Argon2id hash; the password itself never enters
   URLs, logs, SQLite, or telemetry.
 - The frontend uses a small native WebSocket client and React hooks with
   Phoenix-style join/rejoin/heartbeat behavior, but does not add Phoenix or
   LiveView runtime dependencies or protocols.
+- HTTP authority resynchronization is owned by one bounded controller per room.
+  It cancels or ignores superseded generations, retries false reconciliation
+  and transient request failures with capped exponential backoff, limits the
+  entire cycle to four attempts and ten seconds, and retains at most 128
+  authority events. Each attempt starts after clearing its event buffer: the
+  snapshot covers every earlier durable publication, while later WebSocket
+  events replay once in wire order. Buffer overflow starts a newer snapshot
+  instead of growing memory. Outbound document and metadata operations remain
+  paused until snapshot reconciliation and retained-event replay both succeed;
+  exhaustion stops the socket in visible recovery with local tab text
+  available to copy.
+- The complete version-1 WebSocket envelope, revision ordering, close behavior,
+  transient presence lifecycle, and creator-capability boundary are specified
+  in [`docs/live-sharing-websocket.md`](../docs/live-sharing-websocket.md).
 - The existing shared top progress bar handles static paste loading and live
   bootstrap/connect/reconnect/resync states.
 
@@ -211,11 +315,23 @@ The server parses plaintext payloads for validation and raw responses. It treats
 
 The live extension adds separate `live_rooms`, `live_documents`, and bounded
 `live_changes` tables. Live room documents are server-readable text. Room
-metadata and each document have independent revision streams. Presence,
-participant names/colours, cursors, selections, joined times, and room-session
-cookies are not durable database data. The complete migration direction and
-limits are defined in
+metadata and each document have independent revision streams. `live_rooms`
+also stores the creator-token hash and durable lock flag. Raw creator tokens,
+browser credentials, participant records, names/colours, cursors, selections,
+joined times, active connections, and room-session cookies are not database
+data. The complete fresh-install schema direction and limits are defined in
 [`LIVE_SHARING_IMPLEMENTATION_PLAN.md`](LIVE_SHARING_IMPLEMENTATION_PLAN.md).
+
+The SQLite implementation exposes a focused `live.RoomStore` boundary with
+room creation, active snapshot reads/writes, atomic change-and-snapshot commits,
+per-stream history loading and compaction, and bounded expired-room cleanup.
+Document edits update one document row rather than replacing every room
+document. Retained changes compact only after the configured row or byte
+threshold. Snapshot writes use optimistic revision checks; accepted changes
+update the affected metadata/document revision and snapshot in the same
+transaction as their history row. Reads and mutations treat expired rooms as
+not found. Loading before a compacted revision returns a resynchronization
+signal rather than silently returning an incomplete history.
 
 Creation accepts an expiry identifier, not a timestamp. The default policy maps
 `1h`, `24h`, and `72h` to their durations and calculates `created_at` and `expires_at`
@@ -228,6 +344,7 @@ from the server clock, normalized to UTC Unix seconds.
 - Configure busy timeout.
 - Limit open connections appropriately for SQLite; start with one writer-oriented connection policy and benchmark.
 - Use short transactions.
+- Keep the max-room WAL benchmark and physical-write regression as the write-amplification baseline; checkpoint setup writes before measuring edit traffic.
 - Do not run `VACUUM` during ordinary cleanup.
 - Consider incremental vacuum only after observing file-growth behaviour.
 
@@ -408,16 +525,32 @@ Live endpoints are separate from paste endpoints:
 
 ```text
 POST /api/v1/live
+GET  /api/v1/live/config
 GET  /api/v1/live/{slug}
 POST /api/v1/live/{slug}/unlock
 GET  /api/v1/live/{slug}/ws
 ```
 
-The HTTP bootstrap returns the bounded full room snapshot. The WebSocket then
+The public config response exposes the configured lifetime, the single
+aggregate content limit, its equal `max_document_bytes` semantic alias, and
+room capacity limits without operational or secret configuration. The HTTP
+bootstrap and unlock responses return the bounded full room snapshot and omit
+transient participants before WebSocket join.
+During resynchronization, a browser may send its stable client ID in the
+`X-0xbin-Live-Client-ID` header; the response then includes that client's
+bounded recent accepted-operation IDs so already committed local work is
+acknowledged instead of applied again as a synthetic remote edit.
+The WebSocket then
 carries join, document changes, tab metadata changes, presence, cursors,
 selections, acknowledgements, reconnect/resync status, and expiry events. A
 protected room requires a short-lived `HttpOnly`, `SameSite=Strict`, `Secure`
 room session under HTTPS. Live responses use `no-store` and no-index headers.
+Origin, expiry, authorization, connection-rate, and process-wide connection
+checks occur before upgrade. The mandatory `join` supplies one room-scoped
+browser participant credential, a per-page connection ID, and a per-page
+operation client ID. Per-room collaborator/viewer/total participant capacity
+and the eight-connection participant bound are enforced after upgrade; a full
+room or browser participant closes without a `joined` event.
 The detailed message contract is maintained in the live-sharing implementation
 plan rather than mixed into the paste API contract.
 
@@ -468,6 +601,13 @@ In-memory limiting resets on restart and can be bypassed using distributed IPs. 
 
 API routes remain under `/api/v1`; health routes are reserved.
 
+The embedded HTML shell uses `Cache-Control: no-store` and points only to the
+content-hashed JavaScript and CSS emitted by Vite. Those hashed assets use a
+long immutable cache lifetime. The binary and embedded frontend are one release
+unit, so a reload selects a mutually compatible shell and asset set. A reverse
+proxy must not override the shell or live API cache policy and must preserve
+live `Set-Cookie` headers.
+
 Search discovery is route-aware at the Go HTTP boundary. The configured public
 base URL supplies canonical URLs. Self-hosted instances advertise only their
 homepage; when the configured origin is `0xbin.app`, the sitemap also advertises
@@ -485,8 +625,10 @@ compliant bots can observe those response directives.
 - No paste body or key in persistent browser storage
 - Server state fetched through a small typed API client
 - Live room state is owned by the live-room hook/socket client and CodeMirror;
-  presence, cursors, selections, reconnect queues, and room revisions remain
-  out of persistent browser storage.
+  one versioned room-scoped browser resume credential and the last authoritative
+  nickname may use `localStorage`. Passwords, creator capabilities, access
+  sessions, room content, cursors, selections, reconnect queues, and room
+  revisions remain out of script-visible persistent storage.
 - Avoid a global state library until demonstrated necessary
 
 ### 10.3 CodeMirror
@@ -529,19 +671,30 @@ progress bar. It must not add technical badges, marketing panels, fake
 participants, decorative placeholders, or persistent encryption/storage
 explanations.
 
-The create-page Live Share handoff carries only the unsaved draft in memory.
+The create-page LiveBin handoff carries only the unsaved draft in memory.
 The paste viewer action always starts a blank live draft and never copies
 plaintext or decrypted encrypted-paste content automatically.
 
 ## 11. Observability
 
-The following metrics are planned for hosted operational hardening; the current
-service emits structured logs but does not yet expose a metrics system.
+The default observability model is aggregate and privacy-preserving; client IP
+may be held ephemerally for rate limiting but is not persisted as an access
+log. The current service emits startup, shutdown, error, and cleanup logs but
+does not emit a per-request access log or expose a metrics system.
 
-Structured server logs:
+Default structured logs:
 
-- Timestamp, level, request ID, route template, status, duration, response bytes
-- No raw URL query/fragment, paste slug where avoidable, payload, title, language, or key
+- Timestamp, level, safe error category, and bounded cleanup/health counts
+- Request IDs only where needed for an error response, without a request log
+- No raw URL query/fragment, paste slug where avoidable, payload, title,
+  language, client IP, cookie, password, or key
+
+An incident-only access mode may be added later, disabled by default and
+explicitly time-bounded. It may record route template, method, status,
+duration, response bytes, client-IP class, and request ID, but never full URLs,
+request bodies, WebSocket frames, cookies, passwords, fragments, or paste
+content. Temporary access logs must be deleted after the incident and use
+bounded rotation.
 
 Metrics:
 
@@ -568,6 +721,9 @@ Metrics:
 - One instance initially.
 - Persistent disk in one region.
 - TLS/reverse proxy in front.
+- The current public single-host topology uses Cloudflare Tunnel in front of
+  the loopback-published Docker port; its rate-limit runbook is maintained in
+  the public deployment section of `README.md`.
 - Automated database backup with restore test.
 - Do not horizontally scale multiple independent SQLite copies.
 
@@ -603,14 +759,16 @@ Metrics:
 - Fuzz tests for slug parsing, payload/envelope decoding, and client-IP header parsing
 - Performance tests for 1 MiB and 10,000-line payloads
 - Live room authority, reconnect, cursor mapping, presence, password, expiry,
-  and WebSocket abuse tests, including race and malformed-message cases
+  browser-profile identity, grouped multi-connection presence, durable creator
+  authority, lock/unlock, and WebSocket abuse tests, including race and
+  malformed-message cases
 
 ## 15. Deferred Architecture
 
 - PostgreSQL adapter and multi-instance coordination
 - Redis/distributed limits
 - Object storage and attachments
-- User identity and authorization
+- Accounts, cross-device identity, and individual participant permissions
 - MCP product interface; it must reuse the companion CLI library rather than
   introducing another protocol implementation
 - Permanent records

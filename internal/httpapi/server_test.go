@@ -16,7 +16,7 @@ import (
 	"github.com/0atxl/0xbin/internal/config"
 )
 
-const testIndexHTML = `<html lang="en" data-hosted-service="false"><head>
+const testIndexHTML = `<html lang="en" data-hosted-service="false" data-live-enabled="true"><head>
 <meta name="description" content="Create temporary text and code pastes with memorable links, automatic expiry, and optional client-side encryption." />
 <meta name="robots" content="index, follow" />
 <meta property="og:title" content="0xbin — Ephemeral Paste Service" />
@@ -82,6 +82,22 @@ func TestFrontendRoutesAndAssets(t *testing.T) {
 	if got := homepage.Header().Get("X-Robots-Tag"); got != "" {
 		t.Errorf("homepage X-Robots-Tag = %q, want empty", got)
 	}
+	if got := homepage.Header().Get("Content-Security-Policy"); got != contentSecurityPolicy {
+		t.Errorf("homepage CSP = %q", got)
+	}
+	for header, want := range map[string]string{
+		"Referrer-Policy":        "same-origin",
+		"Permissions-Policy":     "camera=(), geolocation=(), microphone=(), payment=(), usb=()",
+		"X-Content-Type-Options": "nosniff",
+		"X-Frame-Options":        "DENY",
+	} {
+		if got := homepage.Header().Get(header); got != want {
+			t.Errorf("homepage %s = %q, want %q", header, got, want)
+		}
+	}
+	if got := homepage.Header().Get("Strict-Transport-Security"); got != "" {
+		t.Errorf("HTTP homepage HSTS = %q, want empty", got)
+	}
 	for _, expected := range []string{
 		`rel="canonical" href="http://localhost:8080/"`,
 		`property="og:url" content="http://localhost:8080/"`,
@@ -126,6 +142,39 @@ func TestFrontendRoutesAndAssets(t *testing.T) {
 	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/index.html", nil))
 	if recorder.Code != http.StatusPermanentRedirect || recorder.Header().Get("Location") != "/" {
 		t.Errorf("index redirect = %d %q, want 308 /", recorder.Code, recorder.Header().Get("Location"))
+	}
+}
+
+func TestSecurityHeadersEnableHSTSOnlyForHTTPS(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.BaseURL.Scheme = "https"
+	recorder := httptest.NewRecorder()
+	NewHandler(cfg, nil).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
+	if got := recorder.Header().Get("Strict-Transport-Security"); got != "max-age=31536000; includeSubDomains" {
+		t.Errorf("HTTPS HSTS = %q", got)
+	}
+}
+
+func TestBarePasteModeOmitsLiveRoutesAndFrontendEntry(t *testing.T) {
+	t.Parallel()
+	bundle := fstest.MapFS{
+		"index.html": &fstest.MapFile{Data: []byte(testIndexHTML)},
+	}
+	cfg := testConfig(t)
+	cfg.LiveEnabled = false
+	handler := newHandlerWithLive(cfg, nil, bundle, nil)
+
+	api := httptest.NewRecorder()
+	handler.ServeHTTP(api, httptest.NewRequest(http.MethodPost, "/api/v1/live", nil))
+	assertError(t, api, http.StatusNotFound, "not_found")
+
+	room := httptest.NewRecorder()
+	handler.ServeHTTP(room, httptest.NewRequest(http.MethodGet, "/live/calmbrightotter", nil))
+	if room.Code != http.StatusOK {
+		t.Fatalf("live browser route status = %d, want application unavailable boundary", room.Code)
+	}
+	if !strings.Contains(room.Body.String(), `data-live-enabled="false"`) {
+		t.Fatalf("bare-paste shell still enables LiveBin: %s", room.Body.String())
 	}
 }
 

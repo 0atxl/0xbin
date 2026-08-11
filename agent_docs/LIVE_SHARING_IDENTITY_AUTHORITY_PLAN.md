@@ -1,0 +1,965 @@
+# Live-Sharing Identity and Authority Plan
+
+## Status
+
+**Phases 0–8 complete (2026-08-11). Awaiting final-head pull-request
+verification and user approval before merge or deployment.**
+
+This plan defines the bounded behavioral foundation, one user-approved final
+live-workspace design pass, and the release gates that must be completed before
+merge. It does not reopen the general LiveBin feature scope.
+
+The existing live-sharing implementation and release-hardening work are
+complete. Phase 0 reconciled the former process-local creator authority,
+one-connection participant model, creator session removal, and one-way
+room-wide watch-only behavior across the normative documents. `spec.md`
+remains the repository authority.
+
+## 1. Objective
+
+Provide predictable browser identity and creator controls without accounts:
+
+- One browser profile represents one participant in a given live room.
+- Normal tabs in that profile share the participant, nickname, colour, access
+  class, and creator authority while retaining separate live connections.
+- Reloading, closing, and reopening the room in that profile preserves the
+  participant identity through room expiry.
+- Incognito/private profiles, different browser profiles, different devices,
+  cleared site data, and different origins receive different identities.
+- Creator authority survives service restart through room expiry without
+  becoming an account or transferable ownership record.
+- Locking is reversible. The creator remains editable; collaborators are
+  temporarily read-only; capacity viewers remain read-only.
+- The roster remains one compact list with `creator`, `collaborator`, or
+  `viewer` labels. There is no individual role-management interface.
+- Active-participant removal is deleted from the product and wire contract.
+
+## 2. Scope Boundary
+
+### Included
+
+- Room-scoped browser resume credentials
+- Multiple simultaneous WebSocket connections for one participant
+- Stable participant ID, generated nickname, renamed nickname, and colour
+- Connection-aware heartbeat, reconnect grace, cursor presence, and cleanup
+- Participant capacity counted per browser identity rather than per tab
+- Durable hashed creator capability
+- Durable room lock state
+- Stable access class separated from effective editing ability
+- Backward-compatible WebSocket rollout for already-open frontend tabs
+- Minimal frontend wiring needed to exercise the new behavior
+- One user-approved final live-workspace design pass after the Phase 6
+  behavioral gate
+- Removal of creator kick controls and participant-removal transport handling
+- Documentation, negative tests, concurrency tests, and release verification
+
+### Excluded
+
+- Accounts, login, ownership transfer, or creator recovery after site-data loss
+- Individual promotion, demotion, banning, or per-user permissions
+- A second participant list or separate management dashboard
+- Durable cursor, heartbeat, connection, active-tab, or online/offline state
+- Cross-device identity synchronization
+- Shared active tab or shared scroll position
+- New product behavior, backend semantics, or protocol changes introduced under
+  cover of the visual design pass
+- Changes to paste routes, encryption, burn-after-read, expiry choices, slugs,
+  or the companion CLI's existing paste contract
+
+## 3. Settled Behavioral Contract
+
+### 3.1 Identity
+
+- Identity is scoped to one live-room slug and one browser storage profile.
+- The frontend keeps a random 256-bit browser resume credential in
+  `localStorage`. It is not creator authority, password authorization, or an
+  account credential.
+- Concurrent first-time tabs must converge on one stored credential before
+  joining. Identity initialization uses a cross-tab critical section when
+  available and a storage-event/re-read fallback; it never lets two competing
+  initial values remain active for the same browser profile.
+- Each mounted room page creates a separate random connection ID. A connection
+  ID remains stable across automatic WebSocket reconnects for that mount, but a
+  reload may create a new connection ID without creating a new participant.
+- The server never broadcasts, logs, or persists the raw resume credential.
+  It derives the stable public participant ID from a domain-separated hash of
+  the room slug and resume credential.
+- The last authoritative nickname is retained in browser storage. A reconnect
+  reclaims the active participant. Following a process restart, the browser may
+  offer that nickname as a validated preference; the authority resolves any
+  active-room collision before broadcasting it.
+- Colour is derived from the stable public participant ID, so it remains stable
+  without durable presence storage.
+- Clearing site data creates a new participant. Copying a room URL does not
+  copy identity or creator authority.
+
+### 3.2 Multiple tabs and presence
+
+- A participant owns one or more active connections.
+- A participant owns at most eight simultaneous connections. The ninth is
+  rejected with a stable, non-destructive connection-limit result; an existing
+  connection is never evicted to admit a newer tab.
+- Capacity counts the participant once, even when it owns several connections.
+  Global WebSocket connection limits still count every socket.
+- A participant is connected while at least one connection is healthy.
+- Reconnect grace begins only after the final connection is lost. Reopening the
+  room with the browser credential during grace reclaims the participant.
+- Each connection tracks its own heartbeat, active document, cursor, selection,
+  and operation client ID.
+- The roster contains one participant row and an authoritative connection
+  count. Its displayed current tab is the most recently active connection's
+  tab.
+- Remote cursor events carry an internal connection ID. Multiple simultaneous
+  cursors from one browser may render with the same participant colour and
+  nickname without creating extra roster rows.
+- A stale connection cannot mark the participant offline, erase a newer
+  cursor, release its capacity slot, or invalidate another healthy connection.
+
+### 3.3 Access class and editing ability
+
+Every active participant has one stable access class:
+
+- `creator`: the browser presents the valid room creator capability.
+- `collaborator`: the participant owns one of the remaining writer-capacity
+  slots.
+- `viewer`: the participant uses viewer capacity because collaborator capacity
+  is full.
+
+Editing ability is derived separately:
+
+| Access class | Room unlocked | Room locked |
+| --- | --- | --- |
+| Creator | editable | editable |
+| Collaborator | editable | read-only |
+| Viewer | read-only | read-only |
+
+- Locking never changes an access class.
+- Disconnecting beyond grace releases a collaborator capacity slot, but not the
+  browser identity. A later rejoin keeps its identity and nickname while
+  receiving the currently available access class.
+- The creator does not promote or demote individual participants.
+
+### 3.4 Creator capability and room lock
+
+- Room creation generates a random 256-bit creator token.
+- The browser receives the raw token only through the existing room-scoped,
+  `HttpOnly`, `SameSite=Strict` cookie, with `Secure` in HTTPS deployments.
+- SQLite stores only a domain-separated SHA-256 token hash. Random high-entropy
+  capability tokens do not use password hashing; room passwords remain
+  Argon2id.
+- Creator validation uses constant-time hash comparison and the room expiry.
+- The creator token remains valid across service restart until room expiry.
+- Losing or clearing the cookie has no recovery path. Knowing the room password
+  restores protected-room access, not creator authority.
+- Room lock state is stored in SQLite. The authority commits a lock transition
+  before broadcasting it.
+- Lock and unlock messages are serialized with other room authority changes.
+  All connected clients receive the resulting authoritative state; reconnecting
+  clients receive it in bootstrap/join state.
+
+### 3.5 Participant removal
+
+- Remove the creator-only participant-removal button.
+- Remove `participant_remove` client handling and the corresponding
+  `participant_removed` kick semantics.
+- The version-1 wire decoder has no participant-removal request. The natural
+  `participant_removed` expiry event remains distinct and cannot be triggered
+  by a participant.
+- Normal disconnect, heartbeat timeout, reconnect grace, room expiry, and
+  capacity cleanup remain.
+
+## 4. Target Wire Model
+
+The `join` message evolves additively:
+
+```json
+{
+  "type": "join",
+  "session_id": "room-scoped-browser-resume-credential",
+  "connection_id": "connection-for-this-mounted-page",
+  "client_id": "operation-client-for-this-mounted-page",
+  "preferred_name": "Quiet Otter",
+  "metadata_revision": 4,
+  "document_revisions": [
+    { "document_id": "doc-1", "revision": 12 }
+  ]
+}
+```
+
+- Keep `session_id` during the transition; its clarified meaning becomes the
+  browser participant credential.
+- `connection_id` is required and identifies one mounted page.
+- `preferred_name` is optional and is accepted only through the existing
+  nickname validation and uniqueness rules.
+- `client_id` remains connection-scoped operation identity and never grants
+  participant or creator authority.
+- `joined` and roster events expose `access_class`, `can_edit`, and
+  `connection_count`; no derived role alias remains.
+- Connection-specific presence events add `connection_id`; durable document and
+  metadata events remain unchanged.
+- Replace the one-way UI action with the existing `room_watch_only` message
+  carrying either `true` or `false`. The server response remains authoritative.
+
+## 5. Storage Changes
+
+This branch is an unreleased local-development schema. Update the existing
+`002_live_rooms.sql` baseline directly; do not add an upgrade migration:
+
+- `live_rooms.creator_token_hash BLOB NULL`, constrained to the selected hash
+  length when present.
+- `live_rooms.locked INTEGER NOT NULL DEFAULT 0`, constrained to `0` or `1`.
+
+Do not store browser resume credentials, participant IDs, nicknames, colours,
+cursors, heartbeats, active tabs, or connection state in SQLite. Stable browser
+identity is reconstructed from the high-entropy browser credential; active
+presence remains process-local.
+
+All automated verification uses fresh databases created from the revised
+baseline. Local preview data created with the old schema is disposable and must
+be recreated before running the revised binary. Never delete the user's current
+local database without explicit approval; use a fresh temporary data directory
+until the user requests a reset.
+
+## 6. Execution Rules
+
+1. Work only on `feature/live-sharing` and inspect the worktree before every
+   phase.
+2. Phase 0 changes the normative contract before code. Stop on any unresolved
+   conflict with `spec.md`.
+3. Inspect the companion `0xbin-cli` contract before editing the public HTTP or
+   WebSocket surface. Do not introduce CLI or MCP dependencies.
+4. Make schema and wire changes additive before changing frontend assumptions.
+5. Preserve durable-before-broadcast behavior for lock transitions.
+6. Bound credentials, connections per participant, aggregate connections,
+   cursor entries, preferred-name input, and reconnect state.
+7. Never log or return raw creator tokens, browser resume credentials, access
+   cookies, or password material.
+8. Add tests with each backend phase and run focused Go and race verification.
+9. Add and run focused frontend tests with foundational frontend behavior. Run
+   the Phase 6 behavioral browser gate once before visual work and the complete
+   frontend/browser release gate in Phase 8.
+10. Do not begin Phase 6A until the user supplies or approves the final design
+    list. Batch its visual verification at the end instead of interrupting each
+    cosmetic edit with a full test run.
+11. Do not commit, push, merge, or deploy unless explicitly requested.
+
+## 7. Implementation Phases
+
+## Phase 0 — Reconcile the contract
+
+**Objective:** Make the approved behavior authoritative and remove conflicting
+requirements before implementation.
+
+### Work
+
+- Update `spec.md` with browser-profile identity, durable creator capability,
+  creator-editable reversible locking, role categories, and kick removal.
+- Update `docs/PRD.md` with observable acceptance criteria.
+- Update `agent_docs/TECHNICAL_DESIGN.md` with the two-level
+  participant/connection model, token boundary, storage fields, and restart
+  behavior.
+- Update `agent_docs/FRONTEND.md`,
+  `agent_docs/LIVE_SHARING_IMPLEMENTATION_PLAN.md`, and
+  `agent_docs/PHASES.md` to remove the superseded one-connection, process-local
+  creator, one-way lock, and kick behavior.
+- Update `docs/live-sharing-websocket.md` with the additive transition contract.
+- Inspect `docs/openapi.yaml` and the companion CLI contract; record explicitly
+  whether either consumes a live endpoint.
+
+### Gate
+
+- No normative document still requires process-local creator invalidation,
+  creator read-only locking, or active participant removal.
+- The plan has no unresolved product or security choice.
+
+### Completion record — 2026-08-09
+
+- Reconciled `spec.md`, the PRD, technical and frontend designs, delivery and
+  implementation plans, WebSocket contract, and OpenAPI description.
+- Confirmed the sibling `0xbin-cli` repository consumes only the paste API and
+  encrypted-envelope contracts. It has no LiveBin endpoint or WebSocket
+  consumer, so Phase 0 requires no companion change.
+- Preserved the existing paste routes, encrypted envelope, URL-fragment key
+  handling, expiry, and burn-after-read contracts.
+- The Phase 0 gate passes. Phase 1 remains intentionally unstarted.
+
+## Phase 1 — Add durable creator and lock storage
+
+**Objective:** Establish the revised fresh-install persistence baseline without
+changing participant behavior yet.
+
+### Work
+
+- Revise and embed `002_live_rooms.sql`; do not add an upgrade migration.
+- Extend live room snapshots, insert, load, expiry, and cleanup paths.
+- Generate the creator token before room insertion and atomically insert its
+  hash with the room.
+- Replace the bounded process-local creator registry with database-backed hash
+  validation. Preserve generic public errors and cookie attributes.
+- Load and persist the room lock flag without exposing the creator hash.
+- Use fresh temporary databases for tests and previews until an explicit local
+  data reset is requested.
+
+### Required backend verification
+
+- Fresh schema creation, schema constraints, and foreign-key cleanup
+- Creator survives close/reopen and a service restart
+- Wrong, missing, cross-room, expired, and malformed creator tokens fail
+- Raw creator tokens never appear in SQLite, responses, or logs
+- Concurrent room creation cannot cross-bind tokens
+
+### Gate
+
+- Storage and HTTP creator tests pass, including race-enabled concurrent cases.
+- Paste schema and paste API behavior remain unchanged.
+
+### Completion record — 2026-08-10
+
+- Revised the embedded fresh-install `002_live_rooms.sql` baseline with a
+  constrained creator-token hash and durable lock flag; no upgrade migration
+  or existing local database reset was added.
+- Creator tokens are generated before room insertion, bound to the selected
+  room slug with a domain-separated SHA-256 hash, and validated from the
+  HttpOnly cookie without either former process-local creator registry.
+- Room snapshots load the hash and lock state without exposing the hash through
+  HTTP responses. Lock changes commit to SQLite before changing or broadcasting
+  in-memory authority.
+- Fresh-schema, constraint, expiry, cascade, reopen/restart, malformed/wrong/
+  missing/cross-room/expired token, failed lock write, raw-token boundary, and
+  concurrent room-creation cases pass. The focused live/storage/HTTP race suite,
+  full Go suite, and Go vet pass.
+- The Phase 1 gate passes. Phase 2 remains intentionally unstarted.
+
+## Phase 2 — Introduce browser and connection identity
+
+**Objective:** Accept the new join model while old clients still connect.
+
+### Work
+
+- Add bounded `connection_id` and optional `preferred_name` decoding.
+- Clarify `session_id` as the browser participant credential.
+- Derive the stable participant ID through a reviewed, domain-separated hash.
+- Keep `client_id` connection-scoped for operation recovery.
+- Add `access_class`, `can_edit`, and `connection_count` response fields while
+  retaining the derived legacy role.
+- Add stable protocol errors for malformed identifiers and unsupported removed
+  operations.
+
+### Required backend verification
+
+- Old join messages retain one-connection behavior
+- New joins distinguish participant, connection, and operation identities
+- Participant IDs are stable per room but different across rooms
+- Public participant IDs do not expose the resume credential
+- Identifier lengths, encodings, control characters, and empty values fail
+  safely
+
+### Gate
+
+- Wire decoder and HTTP/WebSocket compatibility tests pass without changing
+  document-edit semantics.
+
+### Completion record — 2026-08-10
+
+- Added bounded browser participant credentials, connection IDs, operation
+  client IDs, and optional preferred-name validation while retaining the old
+  join shape and its one-connection behavior.
+- Public participant IDs are now deterministic, room-scoped, domain-separated
+  hashes. Raw participant credentials are neither returned nor persisted.
+- Join and roster payloads expose stable access class, effective editability,
+  and connection count while retaining the derived legacy role. Presence
+  payloads identify the originating connection.
+- Malformed identifiers, mismatched operation client IDs, and unsupported
+  operations receive stable validation errors without changing document state.
+- Identity, Hub, wire-decoder, HTTP/WebSocket compatibility, full Go, focused
+  race, Go vet, frontend unit, and production-build checks pass. The existing
+  document-edit behavior and old-client fallback remain intact.
+- The Phase 2 gate passes. Phase 3 remains intentionally unstarted; a repeated
+  participant credential still permits only one active connection until that
+  phase changes the Hub model.
+
+## Phase 3 — Refactor the Hub for multiple connections
+
+**Objective:** Count and display one participant per browser while supporting
+several simultaneous tabs.
+
+### Work
+
+- Replace the single connection generation on each participant with a bounded
+  connection map.
+- Track heartbeat, current tab, cursor, selection, last activity, and generation
+  per connection.
+- Aggregate participant connected state, connection count, latest active tab,
+  nickname, colour, access class, and capacity ownership.
+- Start reconnect grace only when the final connection is lost.
+- Make stale disconnect/heartbeat/presence events connection-specific.
+- Release capacity only after the participant's final connection exceeds grace.
+- Preserve operation ordering and replay per `client_id`.
+- Keep presence process-local and remove every participant connection cleanly on
+  shutdown or room expiry.
+
+### Required backend verification
+
+- Two, three, and maximum bounded connections share one participant row
+- Closing one tab leaves the participant connected
+- Closing the final tab starts grace; reopening reclaims identity
+- Reload overlap cannot create a duplicate participant
+- A stale connection cannot erase a current cursor or disconnect the group
+- Different browser credentials and incognito-style profiles remain distinct
+- Capacity counts participants while the global connection bound counts sockets
+- Server restart reconstructs stable ID/colour and accepts the preferred name
+- Hub shutdown and expiry terminate every grouped connection without leaks
+- Focused multi-connection tests pass repeatedly under the race detector
+
+### Gate
+
+- Hub and transport concurrency matrices pass with no participant, cursor,
+  capacity, or goroutine leak.
+
+### Completion record — 2026-08-10
+
+- Replaced the participant-wide connection generation with a bounded map of
+  up to eight mounted-page connections. Duplicate connection IDs and a ninth
+  connection fail without replacing or invalidating an existing connection.
+- Heartbeat, operation client, current tab, cursor/selection, last activity,
+  and generation are connection-scoped. Roster status, connection count,
+  latest active tab, nickname, colour, access class, and capacity remain
+  participant-scoped.
+- Closing or timing out one connection removes only that connection and its
+  cursor. Reconnect grace and participant-capacity release begin only after the
+  final connection is gone; stale generations cannot affect a replacement or
+  another healthy connection.
+- WebSocket presence joins, updates, and leaves carry the originating
+  connection ID and authoritative aggregate participant state. Responses
+  expose the bounded connection-specific cursor list while retaining the
+  transitional single-cursor field.
+- Sequential, maximum-bound, concurrent admission/disconnect, capacity,
+  per-connection timeout, reload overlap, restart reconstruction, expiry, and
+  shutdown cases pass. The focused race matrix passes repeatedly, and the full
+  repository race, frontend unit, lint, format, and production-build gates
+  pass.
+- The Phase 3 gate passes. Phase 4 subsequently replaced the transitional
+  participant-wide role behavior with stable access classes and lock-derived
+  editability.
+
+## Phase 4 — Separate access class and lock state
+
+**Objective:** Make locking reversible without converting collaborators into
+viewers or disabling the creator.
+
+### Work
+
+- Allocate creator, collaborator, and viewer classes per active participant.
+- Count the creator within the writer-capacity limit.
+- Derive `can_edit` from access class and durable room lock.
+- Persist lock/unlock before broadcasting `room_mode_changed`.
+- Keep the creator editable in both states.
+- Restore collaborator editing on unlock without reallocating their class.
+- Assign participants joining a locked room to collaborator/viewer capacity
+  normally, while applying read-only behavior until unlock.
+- Serialize concurrent creator-tab toggles; the last committed transition wins.
+
+### Required backend verification
+
+- The access/editability truth table passes in unlocked and locked rooms
+- Every connected tab receives lock/unlock exactly once in authority order
+- Offline/reconnecting clients receive current state on join
+- Persistence failure produces no broadcast or partial role change
+- Restart preserves the lock
+- Concurrent creator tabs converge on the last committed state
+- Non-creators cannot change the lock
+
+### Gate
+
+- Storage, Hub, HTTP, and WebSocket lock tests pass under race.
+
+### Completion record — 2026-08-10
+
+- Creator, collaborator, and viewer are stable participant access classes.
+  Creator and collaborator classes consume the bounded writer capacity, and a
+  durable room creator capability reserves one writer slot until its creator
+  participant joins.
+- Effective `can_edit` is derived from access class plus the durable room lock:
+  creators remain editable, collaborators follow lock/unlock, and viewers stay
+  read-only. A collaborator joining or reconnecting while locked retains that
+  class and becomes editable again after unlock without reallocation.
+- Lock transitions persist before in-memory permission changes or WebSocket
+  publication. Failed persistence returns a retryable error with no broadcast,
+  partial permission change, or durable-state change.
+- Concurrent transitions from multiple creator tabs serialize through the room
+  and publication locks, so durable state, Hub state, and broadcast order agree
+  and the last committed transition wins. Non-creator lock attempts remain
+  rejected.
+- Truth-table, late-creator capacity, locked join/reconnect, restart,
+  persistence-failure, exact multi-tab broadcast, and concurrent creator-tab
+  tests pass repeatedly under the race detector. The full repository race,
+  frontend unit, format, lint, and production-build gates pass.
+- The Phase 4 gate passes. Phase 5 remains intentionally unstarted; participant
+  kicking and its removal-only state are still present for Phase 5.
+
+## Phase 5 — Remove participant kicking
+
+**Objective:** Remove a weak moderation action without disturbing normal
+presence cleanup.
+
+### Work
+
+- Remove the frontend control and creator-only row action.
+- Remove participant-removal authority methods and peer termination paths.
+- Reject the legacy wire operation without mutating participant state.
+- Remove removed-session registries and limits that exist only for kicking.
+- Preserve heartbeat timeout, reconnect grace, capacity release, expiry, and
+  shutdown cleanup.
+- Update tests and documentation so no acceptance gate expects kicking.
+
+### Required backend verification
+
+- A legacy kick message cannot remove or disconnect a participant
+- Normal disconnect and stale-participant cleanup still work
+- Removing kick state reduces rather than increases retained in-memory state
+
+### Gate
+
+- No reachable participant-removal product or transport path remains.
+
+### Completion record — 2026-08-11
+
+- Removed the creator-only participant-removal authority method, the
+  removed-session registry and cap, and peer-termination behavior. Normal
+  disconnect, heartbeat timeout, reconnect grace, capacity release, expiry,
+  and shutdown cleanup remain the only participant-lifecycle paths.
+- Removed the workspace participant-row action and all client-side
+  kicked/removed-state handling. `participant_removed` remains solely as the
+  natural presence-expiry event defined by the WebSocket contract.
+- During the bounded compatibility window, the server decodes a legacy
+  `participant_remove` message only to return the stable
+  `unsupported_operation` / `validation` error. It does not mutate the roster,
+  disconnect a peer, or broadcast an event.
+- Hub lifecycle tests now release collaborator capacity through ordinary final
+  disconnect plus reconnect-grace expiry. Focused Hub, frontend, and
+  HTTP/WebSocket checks pass; the full repository race and verification gates
+  pass below.
+- The Phase 5 gate passes. Phase 6 remains intentionally unstarted; browser
+  identity persistence and the minimal authority UI wiring are still pending.
+
+## Phase 6 — Wire the minimal frontend behavior
+
+**Objective:** Exercise the new foundation without beginning the cosmetic
+workspace redesign.
+
+### Work
+
+- Add a versioned, room-scoped browser identity helper using `localStorage`.
+- Coordinate concurrent first-use tabs so they settle on one browser credential
+  before opening their WebSockets.
+- Keep one connection ID and operation client ID per mounted page.
+- Save only the stable participant credential and last authoritative nickname;
+  never save passwords, access cookies, or creator tokens in script-visible
+  storage.
+- Handle storage denial/corruption by creating an in-memory identity and showing
+  no technical failure copy.
+- Render one roster row per participant with concise creator/collaborator/viewer
+  labels and connection-aware cursor state.
+- Replace the one-way action with Lock/Unlock. Keep the creator editor enabled
+  while collaborators become read-only.
+- Remove all kick UI.
+- Preserve minimal layout and existing accessibility behavior; defer broader
+  styling requests.
+- Add and run focused frontend unit cases. Add browser cases for the final batch
+  gate.
+
+### Gate
+
+- Code review shows no secret in local or session storage.
+- Manual inspection confirms no cosmetic scope expansion.
+- Focused frontend type, format, unit, and production-build checks pass.
+- A same-profile two-tab browser journey produces one participant with two
+  independent connections and cursors; closing one tab leaves the other active.
+- Reload and close/reopen preserve participant ID and nickname, while a separate
+  browser context produces a distinct participant.
+- Creator, collaborator, and viewer behavior matches the lock truth table;
+  reconnect grace begins only after the final connection closes.
+- This is the behavioral integration gate before visual work, not the final
+  release audit. Any failure is fixed before Phase 6A begins.
+
+### Completion record — 2026-08-11
+
+- Added a versioned, room-scoped browser identity stored in `localStorage`,
+  with per-page connection and operation IDs. Concurrent first-use tabs are
+  serialized with the browser lock manager; storage denial or corruption falls
+  back silently to an in-memory identity.
+- Persisted only the opaque browser credential and the last authoritative
+  nickname. Browser coverage confirms creator/session capabilities remain in
+  room-scoped HttpOnly cookies and do not enter local or session storage.
+- Wired the grouped participant roster to show creator, collaborator, or viewer
+  access plus connection-aware cursor state. Closing one of two same-profile
+  tabs now applies the authoritative aggregate participant snapshot instead of
+  incorrectly marking the remaining connection lost.
+- Replaced the one-way workspace mode action with Lock/Unlock. The creator
+  remains editable while locked, collaborators become read-only until unlock,
+  and viewers remain read-only. No participant-removal control is present.
+- Added focused identity, wire-decoding, cursor, and connection cases. The
+  browser gate covers same-profile grouping, independent per-tab cursors,
+  reload/reopen identity and nickname persistence, distinct browser contexts,
+  final-connection lifecycle behavior, and the creator/collaborator/viewer lock
+  truth table.
+- `make format`, `make lint`, `make test-race`, `make build`, and
+  `make test-e2e` pass. Phase 6A remains intentionally unstarted pending the
+  final live-workspace design pass.
+
+## Phase 6A — Final live-workspace design pass
+
+**Objective:** Apply the user's final visual and interaction design to the
+already-correct workspace without changing authority, identity, or wire
+semantics.
+
+### Work
+
+- Freeze the passing Phase 6 behavioral baseline and implement only the
+  user-approved workspace design list.
+- Preserve the established minimal, editor-first philosophy and reuse existing
+  paste-page patterns where they improve consistency.
+- Refine layout, spacing, typography, responsive behavior, transitions, and
+  compact controls without adding explanatory clutter or hidden product
+  behavior.
+- Preserve semantic HTML, keyboard-complete operation, focus visibility,
+  screen-reader labels, reduced-motion behavior, and usable touch targets.
+- Keep errors in the shared toast treatment and keep participant, lock,
+  connection, and editor state server-authoritative.
+- Do not change the public API, WebSocket contract, storage model, role model,
+  reconnect semantics, or capacity rules as part of visual work.
+- Batch focused visual, responsive, accessibility, and browser checks after the
+  approved design list is complete rather than rerunning the full suite after
+  every cosmetic edit.
+
+### Gate
+
+- The user confirms the approved design list is represented accurately.
+- Desktop and narrow-viewport journeys remain usable in supported themes and
+  reduced-motion mode.
+- Keyboard, focus, toast, participant-roster, lock, tab, and editor interactions
+  pass focused browser review.
+- The Phase 6 identity, multi-tab, reconnect, cursor, capacity, and lock journeys
+  still pass with no backend or protocol change.
+- No unapproved feature or user-facing explanatory clutter was introduced.
+
+### Completion record — 2026-08-11
+
+- Completed the user-approved compact creation and workspace design: inline
+  naming, fixed utility controls, horizontally scrollable and reorderable tabs,
+  compact participant details, responsive editor-first layout, toast errors,
+  and paste-page-consistent language and byte controls.
+- Moved remote cursors and side-by-side labels into non-layout-affecting editor
+  decorations, including first-line visibility and revision-aware mapping, so
+  presence does not split text or displace the document during remote edits.
+- Preserved focus visibility, keyboard and touch completion paths, accessible
+  labels, reduced-motion behavior, server-authoritative state, and the Phase 6
+  identity, capacity, lock, reconnect, and multi-connection contract.
+- The user accepted the final workspace presentation. Frontend unit, full
+  browser, Go, race, and embedded production-build gates passed during the
+  batched design work; the completed pass is checkpointed through `a905c7c`.
+
+## Phase 7 — Compatibility and documentation closure
+
+**Objective:** Finish the transition without stranding open tabs or stale
+documents.
+
+### Work
+
+- Review whether the legacy role alias and missing-connection fallback must ship
+  for one release or can be removed before the first public deployment.
+- Verify cache headers and hashed assets cannot indefinitely retain an
+  incompatible frontend.
+- Update self-hosting, WebSocket proxy, privacy, and restart documentation.
+- Document that the unreleased baseline requires a fresh local database rather
+  than an upgrade path.
+- Review the complete diff for accidental paste, encryption, CLI, or MCP scope.
+
+### Gate
+
+- One explicit compatibility policy is documented; no indefinite dual protocol
+  remains by accident.
+- Normative and operational documentation matches the implementation.
+
+### Compatibility policy and completion record — 2026-08-11
+
+- No identity-and-authority client or schema version has been publicly
+  released. The first public release will therefore require `connection_id`,
+  omit the derived legacy `role` response alias, and reject the removed
+  `participant_remove` type as unknown instead of shipping transitional paths.
+  Phase 7A removed their code and compatibility behavior tests before the
+  release candidate; there is no indefinite dual protocol or post-release
+  deadline.
+- Verified the HTML application shell is served with `Cache-Control: no-store`
+  and references content-hashed Vite JavaScript/CSS assets served immutable.
+  The frontend is embedded in the same Go binary, so a reload selects a
+  compatible shell and bundle. No service worker can pin an earlier shell.
+- Updated self-hosting and proxy guidance for live enablement, one-instance
+  operation, WebSocket headers/timeouts/cookies, cache boundaries, restart
+  behavior, and the fresh-database requirement for unreleased development
+  builds.
+- Corrected the hosted privacy page to disclose the room-scoped browser
+  credential, last nickname, and functional room cookies while confirming that
+  content, passwords, and encryption keys are not persistently stored there.
+- Reviewed the complete `main...HEAD` diff. Changes remain within the LiveBin
+  extension and its required shared configuration, packaging, documentation,
+  and verification surfaces; paste API, AES-GCM envelope, burn semantics, CLI
+  contract, and the separate MCP boundary were not expanded.
+- `make format`, `make lint`, `make test` (including 123 frontend tests), and
+  `make build` pass at the Phase 7 documentation boundary. The existing Vite
+  main-chunk size advisory remains non-blocking and is deferred to the bounded
+  Phase 7A concentration review rather than changing bundling in this phase.
+
+## Phase 7A — Bounded code-quality and concentration pass
+
+**Objective:** Remove implementation debt after behavior and compatibility are
+settled, without changing product semantics or starting another open-ended
+audit cycle.
+
+### Work
+
+- Inventory stale, unreachable, duplicated, and superseded live-sharing code in
+  the Go authority, WebSocket transport, frontend, tests, and documentation.
+- Remove obsolete one-connection helpers and any retired participant-removal,
+  removed-session, role-alias, or fallback paths that are no longer required by
+  the explicit Phase 7 compatibility policy. Time-bounded compatibility paths
+  that must ship remain documented with a removal condition.
+- Inspect concentrated files, especially `internal/live/hub.go`,
+  `internal/httpapi/live.go`, and `web/src/live-room.tsx`. Split only along
+  established responsibilities such as connection lifecycle, presence,
+  authority operations, and wire translation; file length alone is not a
+  reason to introduce abstractions.
+- Consolidate repeated invariant checks, participant aggregation, public error
+  mapping, and event construction where doing so makes behavior easier to
+  verify. Preserve room locking, edit ordering, reconnect, expiry, and secret
+  boundaries exactly.
+- Remove unused exports, dead branches, stale comments, obsolete fixtures, and
+  tests that only assert deleted behavior. Retain negative and regression tests
+  that protect current boundaries.
+- Review dependency and generated-asset changes. Do not add a framework,
+  datastore, deployment component, account model, or speculative abstraction.
+- Record material refactors and any deliberately retained concentration or
+  compatibility debt with a concrete reason and removal condition.
+
+### Verification
+
+- Review the complete diff for behavioral changes before accepting a cleanup.
+- Run repository formatting, static analysis, unit/integration tests, the full
+  Go race suite, frontend tests, and production/embedded builds.
+- Repeat the focused multi-connection, final-disconnect, creator-lock, expiry,
+  and stale-generation matrices after responsibility-moving refactors.
+- Confirm paste, encryption, burn, slug, CLI, and one-service deployment
+  contracts remain untouched.
+
+### Gate
+
+- No known stale, unreachable, duplicated, or superseded live-sharing path
+  remains unless Phase 7 explicitly requires it for a bounded compatibility
+  window.
+- Every reviewed concentrated file is either split along a clear responsibility
+  boundary or retained with a documented cohesion reason; arbitrary line-count
+  targets are not used.
+- Full verification passes with no race, behavior, fixture, or build regression.
+- The pass ends when its recorded findings are resolved or explicitly accepted;
+  it does not trigger another general audit.
+
+### Completion record — 2026-08-11
+
+- Removed the pre-release one-connection Hub entry points, omitted
+  `connection_id`/`client_id` fallback, derived `role` domain and JSON alias,
+  and retired `participant_remove` request field/dispatch path. The natural
+  `participant_removed` reconnect-grace expiry event remains and cannot be
+  triggered by a participant.
+- Ran the official Go `deadcode` reachability analysis with and without test
+  executables. Removed the superseded prototype `livecollab.Authority`, the
+  unreachable immediate-leave path, unused constructor wrappers, and their
+  obsolete tests. The test-inclusive scan is clean; production-only findings
+  are retained test seams and invariant helpers used by the test suite.
+- Ran Knip across the full Vite/Vitest project and separately reviewed its
+  production-only graph. Removed the unused `projectName` scaffold and its
+  tautological test, removed unnecessary exports from internally scoped values
+  and types, and retained scripts, generated collaboration fixtures, and
+  test-facing exports as deliberate tooling/test entry points. The full-project
+  Knip scan is clean.
+- Tightened the frontend participant decoder to require `access_class`,
+  `can_edit`, and `connection_count`. It now accepts the authoritative zero
+  connection count for `connection_lost`/`offline` participants while rejecting
+  a connected participant with zero sockets or a disconnected participant with
+  active sockets.
+- Split public Hub contracts and limits into `internal/live/hub_contract.go`,
+  HTTP/WebSocket response translation into
+  `internal/httpapi/live_response.go`, and process-local password/creator
+  session handling into `internal/httpapi/live_session.go`. Consolidated pure
+  snapshot and display helpers into the existing frontend collaboration/UI
+  modules with focused tests.
+- Retained the remaining `internal/live/hub.go` as the single serialized room
+  authority: document, metadata, presence, persistence rollback, and reconnect
+  operations share one room mutex and persist-before-publish boundary. Revisit
+  a participant-lifecycle extraction only when it can move as one tested unit
+  without crossing that boundary.
+- Retained the remaining `internal/httpapi/live.go` as the live transport
+  coordinator after extracting wire codecs, publication locking, response
+  mapping, and sessions. Retained `web/src/live-room.tsx` as the per-room
+  synchronization controller because its refs and generation checks jointly
+  order HTTP snapshots, WebSocket events, editor state, and pending operations;
+  connection, reconciliation, resync, editor, operations, and pure UI helpers
+  already live in focused modules. A future behavior change that materially
+  expands controller state must first introduce a tested state boundary.
+- Reviewed dependency changes: WebSocket, Argon2id, CodeMirror collaboration,
+  and the progress indicator are all used directly; `go.mod` now identifies
+  direct Go imports accurately. `go mod tidy` changed only direct/indirect
+  classification and required transitive checksums, and `go mod verify`
+  passes. Removed unused direct frontend declarations for `@emnapi/core` and
+  `@emnapi/runtime`, and classified Vite and its React plugin as development
+  tooling. `npm audit --omit=dev` reports zero shipped dependency
+  vulnerabilities; the full audit retains one moderate PostCSS and one high
+  nanoid advisory in Vite's development-only toolchain, with no compatible
+  lockfile-only update proposed by `npm audit fix --dry-run`. No framework,
+  datastore, service, or runtime dependency was added in this pass.
+- Kept the visible Vite advisory as an accepted size risk rather than hiding
+  it. The live page is already a separate 66.25 kB minified / 19.90 kB gzip
+  chunk; the shared entry is 547.75 kB minified / 175.23 kB gzip and contains the core paste
+  editor/viewer dependencies. Revisit only if measured initial-load performance
+  fails its release target or another feature grows the shared entry.
+- `make format`, `make lint`, `make test`, `make test-race`, `make test-e2e`,
+  and `make build` pass. This includes 125 frontend tests, the full Go race
+  suite, unchanged collaboration fixtures, the complete browser journey, and
+  the embedded Go binary. The browser gate now waits for the asynchronously
+  loaded LiveBin byte limit before asserting its value, removing a reproduced
+  timing race without weakening the assertion. No paste, encryption, burn,
+  slug, CLI, MCP, or one-service deployment contract changed.
+
+## Phase 8 — Final independent release audit and behavioral review
+
+**Objective:** Independently prove the exact finished release candidate once,
+issue a release recommendation, and then stop before merge or deployment.
+
+### Audit method
+
+- Begin as a read-only review of the complete branch diff and deployed behavior.
+- Report findings in severity order with file/line references and verification
+  evidence. Do not silently implement audit findings.
+- Confirm that every Phase 7A refactor preserved observable behavior and that no
+  compatibility or cleanup exception lacks an owner, reason, and removal
+  condition.
+- Finish with an explicit `release`, `release with accepted risks`, or `do not
+  release` recommendation. A clean result closes the audit sequence; do not add
+  another general audit without a concrete new regression or scope change.
+
+### Backend verification
+
+- Formatting and static analysis
+- Full Go unit and integration suite
+- Full Go race suite
+- Repeated multi-connection, final-disconnect, creator-restart, and lock race
+  matrices
+- Migration tests from a pre-change database and a fresh database
+
+### Frontend/browser verification
+
+- Frontend type, format, and unit checks
+- Production frontend and embedded Go build
+- Full browser suite
+- Same browser with one, two, and several tabs
+- Simultaneous first open in two tabs with no existing browser credential
+- Reload overlap and close/reopen
+- Normal versus incognito browser contexts
+- Creator restart recovery
+- Lock, unlock, collaborator read-only, creator edit, and late join
+- Viewer overflow and capacity release
+- Protected-room unlock after service restart
+- Stored-XSS payloads in nickname, tab name, and content
+- No raw credentials in DOM, URLs, browser storage beyond the scoped participant
+  credential, logs, screenshots, or error messages
+
+### Gate
+
+- The authoritative snapshot, every connected editor, roster, roles, and lock
+  state converge in every required journey.
+- No unresolved release blocker remains.
+- The independent audit reports its evidence and explicit release
+  recommendation; a green result requires no further audit.
+- Stop and obtain user approval before merge or deployment.
+
+### Completion record — 2026-08-11
+
+- The independent read-only audit found no critical or high-severity LiveBin
+  code defect. It identified one intermittent browser assertion and bounded
+  release-evidence gaps for simultaneous first use, several same-browser tabs,
+  restart recovery, capacity release, and upgrade migration.
+- The intermittent assertion was isolated to Playwright's bulk `fill()`
+  interaction with CodeMirror after collaborative cursor activity. The browser
+  journey now uses keyboard-equivalent editing and separately proves local
+  editor state, authoritative SQLite-backed HTTP state, and remote convergence.
+- The browser gate now covers two simultaneous first-open tabs with no stored
+  identity, three connections grouped under one browser participant, protected
+  creator authority and durable lock state across service restart, password
+  reauthentication after restart, viewer overflow, and capacity release after
+  reconnect grace.
+- SQLite integration coverage now starts from a populated version-1 paste
+  database, applies the live migrations, proves the paste is unchanged, and
+  verifies all live tables. The existing fresh-database and reopen checks remain.
+- The expanded browser gate passed twice consecutively before the final
+  repository gate. Focused multi-connection, final-disconnect, creator/lock,
+  persistence, and shutdown race matrices passed ten consecutive race-enabled
+  runs during the audit.
+- The final recommendation is `release with accepted risks` once the required
+  final-head pull-request `verify` job is green. Accepted risks remain the
+  documented Vite shared-chunk advisory and two development-only dependency
+  advisories; the shipped dependency audit is clean. No further general audit
+  is required without a concrete regression or scope change.
+
+## 8. Recommended Checkpoint Sequence
+
+Commits are created only when explicitly requested. Recommended boundaries:
+
+1. `docs: define live identity and authority behavior`
+2. `feat: persist live creator and lock state`
+3. `feat: support browser participants across connections`
+4. `fix: make live room locking reversible`
+5. `refactor: remove participant removal controls`
+6. `feat: restore live browser identity`
+7. `style: finish live workspace design`
+8. `refactor: simplify live identity and connection code`
+9. `test: cover live identity and authority boundaries`
+
+Push only the feature branch. Before merge, require a green pull-request
+`verify` check on the final head and review the complete branch diff.
+
+## 9. Principal Risks and Controls
+
+| Risk | Control |
+| --- | --- |
+| One stale tab disconnects the whole participant | Per-connection generations and final-connection grace |
+| Tabs duplicate roster entries | Cross-tab credential initialization and a participant key derived only from that credential |
+| Multiple tabs consume writer capacity | Capacity is participant-scoped |
+| Creator token leaks | HttpOnly cookie, hash-only SQLite storage, no response/log echo |
+| Restart silently unlocks a room | Persist lock before broadcast |
+| Lock converts collaborators into viewers | Separate access class from `can_edit` |
+| A future wire change strands open tabs | Require an explicit additive or versioned rollout after version 1 ships |
+| Browser storage is unavailable | In-memory identity fallback |
+| Unbounded browser identities or connections | Existing room bounds plus a new per-participant connection cap |
+| Multiple cursors overwrite each other | Cursor state keyed by participant and connection |
+| Identity token is mistaken for room authorization | Keep password and creator checks independent on every protected path |
+| Change destabilizes paste service | Keep the baseline schema change limited to live rooms and keep live packages/routes isolated |
+
+## 10. Completion Definition
+
+This plan is complete only when:
+
+- One normal browser profile appears once in a room across reload, reopen, and
+  multiple tabs.
+- Incognito, another profile, another device, cleared storage, and another
+  origin appear as separate participants.
+- Nickname and colour remain stable while active and after service restart.
+- Multiple tabs maintain independent connection and cursor state without
+  duplicating participant capacity.
+- Creator authority and room lock survive service restart through room expiry.
+- Lock and unlock converge for every client; the creator stays editable,
+  collaborators pause/resume, and viewers remain read-only.
+- No participant-kick UI or reachable authority path remains.
+- Active presence remains process-local and bounded.
+- Paste, encryption, burn, slug, expiry, CLI, and one-service deployment
+  contracts remain unchanged.
+- Backend, frontend, and browser gates pass.
+- The user approves the final audit recommendation before merge or deployment.
