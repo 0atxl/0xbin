@@ -107,7 +107,6 @@ export function LiveRoomWorkspace({
   const [localRole, setLocalRole] = useState<LiveParticipant["role"]>("writer");
   const [creator, setCreator] = useState(false);
   const [roomWatchOnly, setRoomWatchOnly] = useState(false);
-  const [kicked, setKicked] = useState(false);
   const [roomFull, setRoomFull] = useState(false);
   const [connection, setConnection] = useState<LiveConnection>("connecting");
   const connectionRef = useRef<LiveConnection>("connecting");
@@ -157,7 +156,6 @@ export function LiveRoomWorkspace({
   const metadataOperationRef = useRef("");
   const localParticipantIDRef = useRef("");
   const localRoleRef = useRef<LiveParticipant["role"]>("writer");
-  const kickedRef = useRef(false);
   const queueFullRef = useRef(false);
   const reauthenticationGenerationRef = useRef(reauthenticationGeneration);
   const statusRef = useRef(onStatus);
@@ -195,18 +193,6 @@ export function LiveRoomWorkspace({
   function setLocalParticipantRole(role: LiveParticipant["role"]) {
     localRoleRef.current = role;
     setLocalRole(role);
-  }
-
-  function markRemoved() {
-    fatalRef.current = true;
-    kickedRef.current = true;
-    setKicked(true);
-    setLocalParticipantRole("watch_only");
-    setConnectionState("offline");
-    operationTrackerRef.current.clear();
-    statusRef.current(
-      "You were removed from this room. Reopen the link to join again.",
-    );
   }
 
   function setQueueBlocked(blocked: boolean) {
@@ -627,8 +613,6 @@ export function LiveRoomWorkspace({
         setLocalParticipantRole(event.participant.role);
         setCreator(event.creator);
         setRoomWatchOnly(event.watchOnly);
-        kickedRef.current = false;
-        setKicked(false);
         setRoomFull(false);
         const pendingMetadata = operationTrackerRef.current.get(
           metadataOperationRef.current,
@@ -684,8 +668,6 @@ export function LiveRoomWorkspace({
             (participant) => participant.id !== event.participantID,
           ),
         );
-        if (event.participantID === localParticipantIDRef.current)
-          markRemoved();
         return;
       case "error":
         if (event.code === "room_expired" || event.status === "expired") {
@@ -729,8 +711,7 @@ export function LiveRoomWorkspace({
       connectionRef.current !== "connected" ||
       resyncingRef.current ||
       recoveryRef.current ||
-      localRoleRef.current !== "writer" ||
-      kickedRef.current
+      localRoleRef.current !== "writer"
     )
       return;
     const generation = connectionGenerationRef.current;
@@ -806,8 +787,7 @@ export function LiveRoomWorkspace({
       connection !== "connected" ||
       metadataBusy ||
       recoveryRef.current ||
-      localRoleRef.current !== "writer" ||
-      kickedRef.current
+      localRoleRef.current !== "writer"
     )
       return;
     const operationID = randomLiveID("meta-");
@@ -1113,7 +1093,6 @@ export function LiveRoomWorkspace({
   useEffect(() => {
     disposedRef.current = false;
     fatalRef.current = false;
-    kickedRef.current = false;
     recoveryRef.current = false;
     setRecovery(undefined);
     const resyncController = new LiveResyncController<
@@ -1193,7 +1172,6 @@ export function LiveRoomWorkspace({
         }
       },
       onAuthenticationRequired: () => reauthenticateRef.current(),
-      onRemoved: markRemoved,
       onRoomFull: () => {
         fatalRef.current = true;
         setRoomFull(true);
@@ -1273,7 +1251,7 @@ export function LiveRoomWorkspace({
       return;
     }
     reauthenticationGenerationRef.current = reauthenticationGeneration;
-    if (fatalRef.current || kickedRef.current || recoveryRef.current) return;
+    if (fatalRef.current || recoveryRef.current) return;
     refreshSnapshot();
   }, [authenticationRequired, reauthenticationGeneration]);
 
@@ -1301,7 +1279,6 @@ export function LiveRoomWorkspace({
     authenticationRequired ||
     queueFull ||
     localRole !== "writer" ||
-    kicked ||
     roomFull ||
     !!recovery;
   const structuralDisabled =
@@ -1310,7 +1287,6 @@ export function LiveRoomWorkspace({
     metadataBusy ||
     resyncing ||
     localRole !== "writer" ||
-    kicked ||
     roomFull ||
     !!recovery;
   const currentIndex = activeDocument
@@ -1413,27 +1389,10 @@ export function LiveRoomWorkspace({
                           {new Date(participant.joinedAt).toLocaleTimeString()}
                         </small>
                       </span>
-                      {creator &&
-                      !kicked &&
-                      participant.id !== localParticipantID &&
-                      participant.status === "connected" ? (
-                        <button
-                          className="live-text-button"
-                          type="button"
-                          onClick={() =>
-                            send({
-                              type: "participant_remove",
-                              participant_id: participant.id,
-                            })
-                          }
-                        >
-                          Remove {participant.nickname}
-                        </button>
-                      ) : null}
                     </div>
                   ))
                 )}
-                {creator && !kicked ? (
+                {creator ? (
                   <div className="live-creator-controls">
                     <strong>Room controls</strong>
                     <small>
@@ -1624,11 +1583,7 @@ export function LiveRoomWorkspace({
             Editor paused while queued changes replay
           </span>
         ) : null}
-        {kicked ? (
-          <span className="live-queue-warning" role="status">
-            You were removed from this room. Reopen the link to join again.
-          </span>
-        ) : roomFull ? (
+        {roomFull ? (
           <span className="live-queue-warning" role="status">
             Room is full. Ask someone to leave and reopen the link.
           </span>

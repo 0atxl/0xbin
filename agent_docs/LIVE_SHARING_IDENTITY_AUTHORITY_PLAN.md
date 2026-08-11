@@ -2,7 +2,7 @@
 
 ## Status
 
-**Phases 0–4 complete (2026-08-10). Phase 5 is next and has not started.**
+**Phases 0–5 complete (2026-08-11). Phase 6 is next and has not started.**
 
 This plan defines the bounded behavioral foundation, one user-approved final
 live-workspace design pass, and the release gates that must be completed before
@@ -521,6 +521,26 @@ presence cleanup.
 ### Gate
 
 - No reachable participant-removal product or transport path remains.
+
+### Completion record — 2026-08-11
+
+- Removed the creator-only participant-removal authority method, the
+  removed-session registry and cap, and peer-termination behavior. Normal
+  disconnect, heartbeat timeout, reconnect grace, capacity release, expiry,
+  and shutdown cleanup remain the only participant-lifecycle paths.
+- Removed the workspace participant-row action and all client-side
+  kicked/removed-state handling. `participant_removed` remains solely as the
+  natural presence-expiry event defined by the WebSocket contract.
+- During the bounded compatibility window, the server decodes a legacy
+  `participant_remove` message only to return the stable
+  `unsupported_operation` / `validation` error. It does not mutate the roster,
+  disconnect a peer, or broadcast an event.
+- Hub lifecycle tests now release collaborator capacity through ordinary final
+  disconnect plus reconnect-grace expiry. Focused Hub, frontend, and
+  HTTP/WebSocket checks pass; the full repository race and verification gates
+  pass below.
+- The Phase 5 gate passes. Phase 6 remains intentionally unstarted; browser
+  identity persistence and the minimal authority UI wiring are still pending.
 
 ## Phase 6 — Wire the minimal frontend behavior
 

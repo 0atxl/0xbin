@@ -1363,7 +1363,7 @@ func TestHubEnforcesWriterViewerCapacityAndWatchOnlyRole(t *testing.T) {
 	}
 	defer store.Close()
 	creatorCapability := createTestRoomWithCreator(t, ctx, store, now)
-	options := testHubOptions([]string{"creator", "viewer-a", "viewer-b", "after-kick"}, nil)
+	options := testHubOptions([]string{"creator", "viewer-a", "viewer-b"}, nil)
 	options.MaxWriters = 1
 	options.MaxViewers = 2
 	options.MaxParticipants = 3
@@ -1401,9 +1401,6 @@ func TestHubEnforcesWriterViewerCapacityAndWatchOnlyRole(t *testing.T) {
 	if _, err := viewerA.Session.SetWatchOnly(ctx, true, now); !errors.Is(err, live.ErrCreatorRequired) {
 		t.Fatalf("non-creator mode error = %v", err)
 	}
-	if err := viewerA.Session.RemoveParticipant(creator.Participant.ID, now); !errors.Is(err, live.ErrCreatorRequired) {
-		t.Fatalf("non-creator removal error = %v", err)
-	}
 	if _, err := creator.Session.SetWatchOnly(ctx, true, now); err != nil {
 		t.Fatal(err)
 	}
@@ -1426,22 +1423,6 @@ func TestHubEnforcesWriterViewerCapacityAndWatchOnlyRole(t *testing.T) {
 	}
 	if creatorRole != live.ParticipantWriter {
 		t.Fatalf("creator role after restoring writable mode = %q", creatorRole)
-	}
-	if err := creator.Session.RemoveParticipant(viewerA.Participant.ID, now); err != nil {
-		t.Fatal(err)
-	}
-	if err := viewerA.Session.Heartbeat(now); !errors.Is(err, live.ErrParticipantNotFound) {
-		t.Fatalf("removed session heartbeat error = %v", err)
-	}
-	if _, err := hub.Join(ctx, "calmbrightotter", "viewer-a-session", now); !errors.Is(err, live.ErrSessionRemoved) {
-		t.Fatalf("removed session rejoin error = %v", err)
-	}
-	joinedAfterKick, err := hub.Join(ctx, "calmbrightotter", "new-session", now)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if joinedAfterKick.Participant.Role != live.ParticipantWatchOnly {
-		t.Fatalf("new session role = %q, want watch-only", joinedAfterKick.Participant.Role)
 	}
 }
 
@@ -1629,10 +1610,13 @@ func TestHubWatchOnlyModePreservesWriterCapacitySlots(t *testing.T) {
 	if _, err := creator.Session.SetWatchOnly(ctx, true, now); err != nil {
 		t.Fatal(err)
 	}
-	if err := creator.Session.RemoveParticipant(writer.Participant.ID, now); err != nil {
+	if err := writer.Session.Disconnect(now.Add(time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	replacement, err := hub.Join(ctx, "calmbrightotter", "replacement-session", now)
+	if _, err := hub.Sweep(ctx, now.Add(time.Second+options.ReconnectGrace+time.Nanosecond)); err != nil {
+		t.Fatal(err)
+	}
+	replacement, err := hub.Join(ctx, "calmbrightotter", "replacement-session", now.Add(time.Second+options.ReconnectGrace+time.Nanosecond))
 	if err != nil {
 		t.Fatalf("replacement should use the released writer capacity slot: %v", err)
 	}

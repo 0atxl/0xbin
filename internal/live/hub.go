@@ -32,7 +32,6 @@ const (
 	defaultHubParticipantTimeout = 60 * time.Second
 	maxOperationIDBytes          = 128
 	documentIDGenerationTries    = 8
-	maxRemovedSessionRecords     = 1024
 )
 
 var (
@@ -43,7 +42,6 @@ var (
 	ErrConnectionLimit     = errors.New("live participant connection limit reached")
 	ErrParticipantNotFound = errors.New("live participant not found")
 	ErrParticipantInactive = errors.New("live participant is not connected")
-	ErrSessionRemoved      = errors.New("live participant session was removed")
 	ErrSessionActive       = errors.New("live session is already connected")
 	ErrCreatorRequired     = errors.New("live creator capability is required")
 	ErrWatchOnly           = errors.New("live participant is watch-only")
@@ -584,15 +582,6 @@ func (session *RoomSession) SetWatchOnly(ctx context.Context, enabled bool, now 
 	return session.room.setWatchOnly(ctx, session.participant, session.connectionID, session.generation, session.creator, enabled, normalizedNow(now))
 }
 
-// RemoveParticipant invalidates an active temporary session. A removed person
-// may later join only with a new session identifier.
-func (session *RoomSession) RemoveParticipant(participantID string, now time.Time) error {
-	if session == nil || session.room == nil {
-		return ErrParticipantNotFound
-	}
-	return session.room.removeParticipant(session.participant, session.connectionID, session.generation, session.creator, participantID, normalizedNow(now))
-}
-
 type room struct {
 	mu                        sync.Mutex
 	store                     RoomStore
@@ -602,7 +591,6 @@ type room struct {
 	order                     []string
 	participants              map[string]*participantState
 	sessions                  map[string]string
-	removedSessions           map[string]time.Time
 	names                     map[string]string
 	watchOnly                 bool
 	operations                map[string]operationRecord
@@ -674,7 +662,6 @@ func newRoom(ctx context.Context, store RoomStore, snapshot RoomSnapshot, option
 		documents:                 make(map[string]*documentState, len(snapshot.Documents)),
 		participants:              make(map[string]*participantState),
 		sessions:                  make(map[string]string),
-		removedSessions:           make(map[string]time.Time),
 		names:                     make(map[string]string),
 		watchOnly:                 snapshot.Locked,
 		operations:                make(map[string]operationRecord),
@@ -830,10 +817,6 @@ func (room *room) join(ctx context.Context, hub *Hub, identity JoinIdentity, cap
 	sessionID := identity.ParticipantCredential
 	room.expireConnectionsLocked(now)
 	room.pruneDisconnectedLocked(now)
-	room.pruneRemovedSessionsLocked(now)
-	if removedUntil, removed := room.removedSessions[sessionID]; removed && removedUntil.After(now) {
-		return JoinResult{}, ErrSessionRemoved
-	}
 	if existingID, exists := room.sessions[sessionID]; exists {
 		participant := room.participants[existingID]
 		if participant != nil {
@@ -1070,35 +1053,6 @@ func (room *room) setWatchOnly(ctx context.Context, participantID, connectionID 
 		room.refreshParticipantLocked(participant)
 	}
 	return room.stateLocked(), nil
-}
-
-func (room *room) removeParticipant(actorID, connectionID string, generation uint64, creator bool, targetID string, now time.Time) error {
-	room.mu.Lock()
-	defer room.mu.Unlock()
-	actor, connection, err := room.ensureConnectionLocked(actorID, connectionID, generation, now)
-	if err != nil {
-		return err
-	}
-	room.markConnectionActivityLocked(actor, connection, now)
-	if !creator {
-		return ErrCreatorRequired
-	}
-	if targetID == actorID {
-		return ErrOperationConflict
-	}
-	target := room.participants[targetID]
-	if target == nil || target.snapshot.Status != ParticipantConnected {
-		return ErrParticipantNotFound
-	}
-	delete(room.participants, targetID)
-	delete(room.sessions, target.sessionID)
-	delete(room.names, NameKey(target.snapshot.Nickname))
-	// A kicked session cannot immediately reclaim its presence. Keep the
-	// invalidation only for reconnect grace, with a hard cap, because session
-	// identities are untrusted browser input and rooms can live for 24 hours.
-	room.removedSessions[target.sessionID] = now.Add(room.options.ReconnectGrace)
-	room.pruneRemovedSessionsLocked(now)
-	return nil
 }
 
 func (room *room) submitDocument(ctx context.Context, participantID, connectionID string, generation uint64, operation DocumentOperation, now time.Time) (AcceptedDocumentOperation, error) {
@@ -1570,7 +1524,6 @@ func (room *room) sweep(ctx context.Context, now time.Time, publish func(slug, p
 	}
 	room.expireConnectionsLocked(now)
 	room.pruneDisconnectedLocked(now, publish)
-	room.pruneRemovedSessionsLocked(now)
 	return nil
 }
 
@@ -1665,34 +1618,6 @@ func (room *room) expireConnectionsLocked(now time.Time) {
 	}
 }
 
-func (room *room) pruneRemovedSessionsLocked(now time.Time) {
-	for sessionID, expiresAt := range room.removedSessions {
-		if !expiresAt.After(now) {
-			delete(room.removedSessions, sessionID)
-		}
-	}
-	if len(room.removedSessions) <= maxRemovedSessionRecords {
-		return
-	}
-	type removedSession struct {
-		id        string
-		expiresAt time.Time
-	}
-	sessions := make([]removedSession, 0, len(room.removedSessions))
-	for sessionID, expiresAt := range room.removedSessions {
-		sessions = append(sessions, removedSession{id: sessionID, expiresAt: expiresAt})
-	}
-	sort.Slice(sessions, func(left, right int) bool {
-		if sessions[left].expiresAt.Equal(sessions[right].expiresAt) {
-			return sessions[left].id < sessions[right].id
-		}
-		return sessions[left].expiresAt.Before(sessions[right].expiresAt)
-	})
-	for _, session := range sessions[:len(sessions)-maxRemovedSessionRecords] {
-		delete(room.removedSessions, session.id)
-	}
-}
-
 func (room *room) shouldEvict(now time.Time) bool {
 	room.mu.Lock()
 	defer room.mu.Unlock()
@@ -1700,7 +1625,6 @@ func (room *room) shouldEvict(now time.Time) bool {
 		return true
 	}
 	room.pruneDisconnectedLocked(now)
-	room.pruneRemovedSessionsLocked(now)
 	return len(room.participants) == 0
 }
 

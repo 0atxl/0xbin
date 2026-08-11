@@ -331,7 +331,7 @@ func TestLiveOperationErrorsClassifyRecoveryPaths(t *testing.T) {
 		{name: "persistence is retryable", err: live.ErrPersistence, code: "service_unavailable", status: "retryable"},
 		{name: "revision conflict resynchronizes", err: livecollab.ErrRevisionConflict, code: "resync_required", status: "resync_required"},
 		{name: "invalid request is terminal", err: live.ErrOperationConflict, code: "invalid_request", status: "validation"},
-		{name: "session failure requires authentication", err: live.ErrSessionRemoved, code: "unauthorized", status: "auth_required"},
+		{name: "legacy participant removal is unsupported", err: errLiveUnsupportedOperation, code: "unsupported_operation", status: "validation"},
 		{name: "room limit is overload", err: live.ErrParticipantLimit, code: "room_limit_reached", status: "overloaded"},
 	}
 	for _, test := range tests {
@@ -930,6 +930,9 @@ func TestDecodeLiveWireMessageRejectsMalformedAndUnknownFields(t *testing.T) {
 	if _, err := decodeLiveWireMessage([]byte(`{"type":"heartbeat"}`)); err != nil {
 		t.Fatalf("valid heartbeat rejected: %v", err)
 	}
+	if message, err := decodeLiveWireMessage([]byte(`{"type":"participant_remove","participant_id":"p-1"}`)); err != nil || message.ParticipantID != "p-1" {
+		t.Fatalf("legacy participant removal decode = %#v, %v", message, err)
+	}
 }
 
 func FuzzDecodeLiveWireMessage(f *testing.F) {
@@ -1291,8 +1294,8 @@ func TestLiveCreatorControlsRequireCreatorSession(t *testing.T) {
 		t.Fatalf("non-creator room mode response = %#v", event)
 	}
 	writeLiveMessage(t, writer, `{"type":"participant_remove","participant_id":"`+creatorParticipant["id"].(string)+`"}`)
-	if event := readLiveEvent(t, writer, "error"); event["code"] != "unauthorized" {
-		t.Fatalf("non-creator removal response = %#v", event)
+	if event := readLiveEvent(t, writer, "error"); event["code"] != "unsupported_operation" || event["status"] != "validation" {
+		t.Fatalf("legacy removal response = %#v", event)
 	}
 
 	writeLiveMessage(t, creator, `{"type":"room_watch_only","watch_only":true}`)
@@ -1342,9 +1345,21 @@ func TestLiveCreatorControlsRequireCreatorSession(t *testing.T) {
 	}
 
 	writeLiveMessage(t, creator, `{"type":"participant_remove","participant_id":"`+writerParticipant["id"].(string)+`"}`)
-	removed := readLiveEvent(t, creator, "participant_removed")
-	if removed["participant_id"] != writerParticipant["id"] {
-		t.Fatalf("removal event = %#v", removed)
+	if event := readLiveEvent(t, creator, "error"); event["code"] != "unsupported_operation" || event["status"] != "validation" {
+		t.Fatalf("creator legacy removal response = %#v", event)
+	}
+	state, err := hub.State("calmbrightotter")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Participants) != 2 {
+		t.Fatalf("legacy removal mutated roster = %#v", state.Participants)
+	}
+	readCtx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	_, data, readErr := writer.Read(readCtx)
+	cancel()
+	if readErr == nil {
+		t.Fatalf("legacy removal broadcast unexpected event: %s", data)
 	}
 }
 

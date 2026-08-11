@@ -1209,20 +1209,7 @@ func (api *liveAPI) handleWireMessage(ctx context.Context, peer *livePeer, messa
 		}), nil)
 		return nil
 	case "participant_remove":
-		unlockPublication := api.publications.lock(peer.slug)
-		defer unlockPublication()
-		err := peer.session.RemoveParticipant(message.ParticipantID, now)
-		if err != nil {
-			return err
-		}
-		event := encodeLiveWireEvent(liveParticipantRemovedEvent{Type: "participant_removed", ParticipantID: message.ParticipantID})
-		api.broadcast(peer.slug, event, nil)
-		for _, target := range api.peers.list(peer.slug) {
-			if target.participantID == message.ParticipantID {
-				target.stop(websocket.StatusPolicyViolation, "removed from room")
-			}
-		}
-		return nil
+		return fmt.Errorf("%w: %s", errLiveUnsupportedOperation, message.Type)
 	case "presence":
 		participant, err := peer.session.UpdatePresence(live.PresenceUpdate{CurrentTab: message.CurrentTab, DocumentID: message.DocumentID, Revision: message.Revision, Anchor: message.Anchor, Head: message.Head}, now)
 		if err != nil {
@@ -1256,6 +1243,8 @@ func (api *liveAPI) sendOperationError(peer *livePeer, operationID string, err e
 // reconciliation, or must be retained for manual recovery.
 func classifyLiveOperationError(err error) (code, status string) {
 	switch {
+	case errors.Is(err, errLiveUnsupportedOperation):
+		return "unsupported_operation", "validation"
 	case errors.Is(err, live.ErrRoomExpired):
 		return "room_expired", "expired"
 	case errors.Is(err, live.ErrDocumentResync), errors.Is(err, live.ErrMetadataResync):
@@ -1264,7 +1253,7 @@ func classifyLiveOperationError(err error) (code, status string) {
 		return "resync_required", "resync_required"
 	case errors.Is(err, live.ErrOperationLimit):
 		return "message_too_large", "validation"
-	case errors.Is(err, live.ErrParticipantInactive), errors.Is(err, live.ErrParticipantNotFound), errors.Is(err, live.ErrSessionRemoved), errors.Is(err, live.ErrCreatorRequired), errors.Is(err, live.ErrWatchOnly):
+	case errors.Is(err, live.ErrParticipantInactive), errors.Is(err, live.ErrParticipantNotFound), errors.Is(err, live.ErrCreatorRequired), errors.Is(err, live.ErrWatchOnly):
 		return "unauthorized", "auth_required"
 	case errors.Is(err, live.ErrParticipantLimit), errors.Is(err, live.ErrConnectionLimit):
 		return "room_limit_reached", "overloaded"

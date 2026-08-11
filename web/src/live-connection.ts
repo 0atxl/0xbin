@@ -2,11 +2,7 @@ export type LiveConnectionState =
   "connecting" | "connected" | "reconnecting" | "offline" | "recovery";
 
 export type LiveReconnectProbeResult =
-  | "authorized"
-  | "authentication_required"
-  | "room_unavailable"
-  | "removed"
-  | "retry";
+  "authorized" | "authentication_required" | "room_unavailable" | "retry";
 
 export type LiveSocketEvent = {
   data?: unknown;
@@ -32,7 +28,6 @@ export type LiveConnectionOptions = {
   onState: (state: LiveConnectionState) => void;
   onCloseStatus: (code: number, reason: string) => void;
   onAuthenticationRequired: () => void;
-  onRemoved?: () => void;
   onRoomFull?: () => void;
   onRoomUnavailable?: () => void;
   onReconnectExhausted?: () => void;
@@ -207,11 +202,6 @@ export class LiveConnectionController {
       this.options.onAuthenticationRequired();
       return;
     }
-    if (code === policyViolation && /removed|kicked/i.test(reason)) {
-      this.setState("offline");
-      this.options.onRemoved?.();
-      return;
-    }
     if (code === tryAgainLater && /room (limit|full)/i.test(reason)) {
       this.setState("offline");
       this.options.onRoomFull?.();
@@ -253,10 +243,6 @@ export class LiveConnectionController {
           case "room_unavailable":
             this.setState("offline");
             this.options.onRoomUnavailable?.();
-            return;
-          case "removed":
-            this.setState("offline");
-            this.options.onRemoved?.();
             return;
           case "authorized":
           case "retry":

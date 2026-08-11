@@ -63,7 +63,6 @@ function controllerHarness(options?: {
   let nextTimer = 1;
   let online = true;
   let authenticationRequired = 0;
-  let removed = 0;
   let roomFull = 0;
   let roomUnavailable = 0;
   let reconnectExhausted = 0;
@@ -79,7 +78,6 @@ function controllerHarness(options?: {
     onState: (state) => states.push(state),
     onCloseStatus: (code, reason) => closeStatuses.push([code, reason]),
     onAuthenticationRequired: () => authenticationRequired++,
-    onRemoved: () => removed++,
     onRoomFull: () => roomFull++,
     onRoomUnavailable: () => roomUnavailable++,
     onReconnectExhausted: () => reconnectExhausted++,
@@ -109,7 +107,6 @@ function controllerHarness(options?: {
       online = value;
     },
     authenticationRequired: () => authenticationRequired,
-    removed: () => removed,
     roomFull: () => roomFull,
     roomUnavailable: () => roomUnavailable,
     reconnectExhausted: () => reconnectExhausted,
@@ -176,14 +173,7 @@ describe("LiveConnectionController", () => {
     expect(harness.timers.size).toBe(0);
   });
 
-  it("keeps removed and room-full sessions offline without retrying", () => {
-    const removed = controllerHarness();
-    removed.controller.start();
-    removed.sockets[0].closed(1008, "removed from room");
-    expect(removed.removed()).toBe(1);
-    expect(removed.timers.size).toBe(0);
-    expect(removed.states.at(-1)).toBe("offline");
-
+  it("keeps room-full sessions offline without retrying", () => {
     const full = controllerHarness();
     full.controller.start();
     full.sockets[0].closed(1013, "room limit reached");
@@ -210,7 +200,7 @@ describe("LiveConnectionController", () => {
     expect(harness.states.at(-1)).toBe("offline");
   });
 
-  it("distinguishes unavailable and removed protected sessions", async () => {
+  it("distinguishes unavailable protected sessions", async () => {
     const unavailable = controllerHarness({
       probeReconnect: async () => "room_unavailable",
     });
@@ -219,15 +209,6 @@ describe("LiveConnectionController", () => {
     await Promise.resolve();
     expect(unavailable.roomUnavailable()).toBe(1);
     expect(unavailable.timers.size).toBe(0);
-
-    const removed = controllerHarness({
-      probeReconnect: async () => "removed",
-    });
-    removed.controller.start();
-    removed.sockets[0].closed(1006);
-    await Promise.resolve();
-    expect(removed.removed()).toBe(1);
-    expect(removed.timers.size).toBe(0);
   });
 
   it("bounds failed protected probes and reconnect attempts", async () => {

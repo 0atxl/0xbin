@@ -1454,11 +1454,13 @@ try {
       document.querySelector(".live-add-tab") instanceof HTMLButtonElement &&
       document.querySelector(".live-add-tab").disabled,
   );
-  await owner
-    .getByRole("button", { name: `Remove ${writerName}`, exact: true })
-    .click();
-  await expectVisible(writer, "You were removed from this room");
-  await writer.reload();
+  assert.equal(
+    await owner
+      .getByRole("button", { name: `Remove ${writerName}`, exact: true })
+      .count(),
+    0,
+    "live rooms must not expose participant-removal controls",
+  );
   await expectVisible(writer, "You’re watching this room");
 
   await ownerContext.close();

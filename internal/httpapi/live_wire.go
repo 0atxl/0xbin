@@ -18,23 +18,25 @@ var errLiveUnsupportedOperation = errors.New("unsupported live operation")
 // liveWireMessage is the canonical snake_case client-to-server envelope. The
 // type field selects which other fields are meaningful.
 type liveWireMessage struct {
-	Type              string                     `json:"type"`
-	SessionID         string                     `json:"session_id,omitempty"`
-	ConnectionID      *string                    `json:"connection_id,omitempty"`
-	ClientID          *string                    `json:"client_id,omitempty"`
-	PreferredName     *string                    `json:"preferred_name,omitempty"`
-	OperationID       string                     `json:"operation_id,omitempty"`
-	DocumentID        string                     `json:"document_id,omitempty"`
-	BaseVersion       int                        `json:"base_version,omitempty"`
-	Changes           json.RawMessage            `json:"changes,omitempty"`
-	Name              string                     `json:"name,omitempty"`
-	Language          string                     `json:"language,omitempty"`
-	Content           string                     `json:"content,omitempty"`
-	Order             []string                   `json:"order,omitempty"`
-	CurrentTab        string                     `json:"current_tab,omitempty"`
-	Revision          int                        `json:"revision,omitempty"`
-	Anchor            int                        `json:"anchor,omitempty"`
-	Head              int                        `json:"head,omitempty"`
+	Type          string          `json:"type"`
+	SessionID     string          `json:"session_id,omitempty"`
+	ConnectionID  *string         `json:"connection_id,omitempty"`
+	ClientID      *string         `json:"client_id,omitempty"`
+	PreferredName *string         `json:"preferred_name,omitempty"`
+	OperationID   string          `json:"operation_id,omitempty"`
+	DocumentID    string          `json:"document_id,omitempty"`
+	BaseVersion   int             `json:"base_version,omitempty"`
+	Changes       json.RawMessage `json:"changes,omitempty"`
+	Name          string          `json:"name,omitempty"`
+	Language      string          `json:"language,omitempty"`
+	Content       string          `json:"content,omitempty"`
+	Order         []string        `json:"order,omitempty"`
+	CurrentTab    string          `json:"current_tab,omitempty"`
+	Revision      int             `json:"revision,omitempty"`
+	Anchor        int             `json:"anchor,omitempty"`
+	Head          int             `json:"head,omitempty"`
+	// ParticipantID remains only to decode the removed participant_remove
+	// operation during its compatibility window. It has no active authority path.
 	ParticipantID     string                     `json:"participant_id,omitempty"`
 	WatchOnly         bool                       `json:"watch_only,omitempty"`
 	MetadataRevision  int                        `json:"metadata_revision,omitempty"`
@@ -65,11 +67,6 @@ type liveRoomModeEvent struct {
 	WatchOnly    bool                      `json:"watch_only"`
 	Locked       bool                      `json:"locked"`
 	Participants []liveParticipantResponse `json:"participants"`
-}
-
-type liveParticipantRemovedEvent struct {
-	Type          string `json:"type"`
-	ParticipantID string `json:"participant_id"`
 }
 
 type liveChangesEvent struct {
