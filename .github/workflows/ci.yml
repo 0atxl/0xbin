@@ -30,6 +30,7 @@ jobs:
       - run: make test-race
       - run: make test-e2e
       - run: make build
+
   deploy:
       name: Deploy production
       needs: verify
@@ -41,10 +42,13 @@ jobs:
         group: 0xbin-production
         cancel-in-progress: false
       timeout-minutes: 20
+
       steps:
         - name: Deploy verified commit
           env:
             DEPLOY_SHA: ${{ github.sha }}
+          run: |
+            set -euo pipefail
 
             cd /home/mineazure/0xbin
 
