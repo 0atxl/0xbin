@@ -30,3 +30,41 @@ jobs:
       - run: make test-race
       - run: make test-e2e
       - run: make build
+  deploy:
+      name: Deploy production
+      needs: verify
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      runs-on: [self-hosted, linux, x64, 0xbin-prod]
+      environment:
+        name: prod
+      concurrency:
+        group: 0xbin-production
+        cancel-in-progress: false
+      timeout-minutes: 20
+      steps:
+        - name: Deploy verified commit
+          env:
+            DEPLOY_SHA: ${{ github.sha }}
+
+            cd /home/mineazure/0xbin
+
+            git diff --quiet
+            git diff --cached --quiet
+
+            git fetch --no-tags origin main
+            test "$(git rev-parse origin/main)" = "$DEPLOY_SHA"
+            git checkout --detach "$DEPLOY_SHA"
+
+            docker compose config --quiet
+            docker compose up --build -d --remove-orphans
+
+            for attempt in $(seq 1 30); do
+              if curl --fail --silent http://127.0.0.1:8080/health/live \
+                && curl --fail --silent http://127.0.0.1:8080/health/ready; then
+                exit 0
+              fi
+              sleep 2
+            done
+
+            docker compose ps
+            exit 1
