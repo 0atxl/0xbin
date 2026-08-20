@@ -17,6 +17,7 @@ internal/webassets/dist/*
 .env
 .env.*
 !.env.example
+compose.override.yaml
 
 # Editor and operating-system files
 .DS_Store
