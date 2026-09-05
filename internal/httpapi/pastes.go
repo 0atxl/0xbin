@@ -40,11 +40,6 @@ type pasteAPI struct {
 	limits          *ratelimit.Registry
 }
 
-type readAdmission struct {
-	identity string
-	missCost int
-}
-
 type createPasteRequest struct {
 	Mode          string          `json:"mode"`
 	Payload       json.RawMessage `json:"payload"`
@@ -133,24 +128,22 @@ func (api pasteAPI) get(w http.ResponseWriter, r *http.Request) {
 		api.writeMiss(w, r)
 		return
 	}
-	admission, ok := api.admitRead(w, r)
-	if !ok {
+	if !api.admitRead(w, r) {
 		return
 	}
 	result, err := api.pastes.GetActive(r.Context(), slug)
 	if err != nil {
 		if errors.Is(err, paste.ErrNotFound) {
-			if !api.finishReadMiss(w, r, admission) {
+			if !api.finishReadMiss(w, r) {
 				return
 			}
 			api.writeNotFound(w, r)
 			return
 		}
-		api.cancelRead(admission)
 		api.writeGetError(w, r, err)
 		return
 	}
-	api.finishReadSuccess(admission)
+	api.finishReadSuccess(r)
 	setPasteHeaders(w.Header())
 	if result.BurnAfterRead {
 		writeJSON(w, http.StatusOK, burnConfirmationResponse{BurnAfterRead: true, IsEncrypted: result.IsEncrypted})
@@ -187,29 +180,26 @@ func (api pasteAPI) raw(w http.ResponseWriter, r *http.Request) {
 		api.writeMiss(w, r)
 		return
 	}
-	admission, ok := api.admitRead(w, r)
-	if !ok {
+	if !api.admitRead(w, r) {
 		return
 	}
 	result, err := api.pastes.GetActive(r.Context(), slug)
 	if err != nil {
 		if errors.Is(err, paste.ErrNotFound) {
-			if !api.finishReadMiss(w, r, admission) {
+			if !api.finishReadMiss(w, r) {
 				return
 			}
 			api.writeNotFound(w, r)
 			return
 		}
-		api.cancelRead(admission)
 		api.writeGetError(w, r, err)
 		return
 	}
 	if result.IsEncrypted || result.BurnAfterRead {
-		api.cancelRead(admission)
 		api.writeNotFound(w, r)
 		return
 	}
-	api.finishReadSuccess(admission)
+	api.finishReadSuccess(r)
 	setPasteHeaders(w.Header())
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
@@ -277,45 +267,26 @@ func (api pasteAPI) writeMiss(w http.ResponseWriter, r *http.Request) {
 	api.writeNotFound(w, r)
 }
 
-func (api pasteAPI) admitRead(w http.ResponseWriter, r *http.Request) (readAdmission, bool) {
+func (api pasteAPI) admitRead(w http.ResponseWriter, r *http.Request) bool {
 	identity := clientIPFromContext(r.Context())
+	nextMissCost := api.limits.NextMissCost(identity)
+	if !api.checkIdentity(w, r, ratelimit.Miss, identity, nextMissCost) {
+		return false
+	}
 	if !api.allowIdentity(w, r, ratelimit.Read, identity, 1) {
-		return readAdmission{}, false
-	}
-	missCost := api.limits.NextMissCost(identity)
-	if missCost > 0 && !api.allowIdentity(w, r, ratelimit.Miss, identity, missCost) {
-		api.limits.Refund(ratelimit.Read, identity, 1)
-		return readAdmission{}, false
-	}
-	return readAdmission{identity: identity, missCost: missCost}, true
-}
-
-func (api pasteAPI) finishReadMiss(w http.ResponseWriter, r *http.Request, admission readAdmission) bool {
-	api.limits.Refund(ratelimit.Read, admission.identity, 1)
-	cost := api.limits.RecordMiss(admission.identity)
-	if admission.missCost == 0 {
-		return api.allowIdentity(w, r, ratelimit.Miss, admission.identity, cost)
-	}
-	if cost < admission.missCost {
-		api.limits.Refund(ratelimit.Miss, admission.identity, admission.missCost-cost)
-	} else if cost > admission.missCost && !api.allowIdentity(w, r, ratelimit.Miss, admission.identity, cost-admission.missCost) {
 		return false
 	}
 	return true
 }
 
-func (api pasteAPI) finishReadSuccess(admission readAdmission) {
-	if admission.missCost > 0 {
-		api.limits.Refund(ratelimit.Miss, admission.identity, admission.missCost)
-	}
-	api.limits.RecordSuccess(admission.identity)
+func (api pasteAPI) finishReadMiss(w http.ResponseWriter, r *http.Request) bool {
+	identity := clientIPFromContext(r.Context())
+	cost := api.limits.RecordMiss(identity)
+	return api.allowIdentity(w, r, ratelimit.Miss, identity, cost)
 }
 
-func (api pasteAPI) cancelRead(admission readAdmission) {
-	api.limits.Refund(ratelimit.Read, admission.identity, 1)
-	if admission.missCost > 0 {
-		api.limits.Refund(ratelimit.Miss, admission.identity, admission.missCost)
-	}
+func (api pasteAPI) finishReadSuccess(r *http.Request) {
+	api.limits.RecordSuccess(clientIPFromContext(r.Context()))
 }
 
 func (api pasteAPI) writeNotFound(w http.ResponseWriter, r *http.Request) {
@@ -329,6 +300,15 @@ func (api pasteAPI) allow(w http.ResponseWriter, r *http.Request, category ratel
 
 func (api pasteAPI) allowIdentity(w http.ResponseWriter, r *http.Request, category ratelimit.Category, identity string, cost int) bool {
 	allowed, retryAfter := api.limits.Allow(category, identity, cost)
+	if allowed {
+		return true
+	}
+	api.writeRateLimited(w, r, retryAfter)
+	return false
+}
+
+func (api pasteAPI) checkIdentity(w http.ResponseWriter, r *http.Request, category ratelimit.Category, identity string, cost int) bool {
+	allowed, retryAfter := api.limits.Check(category, identity, cost)
 	if allowed {
 		return true
 	}

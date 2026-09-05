@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -180,6 +182,196 @@ func TestExhaustedMissPenaltyDeniesBeforeRetrieval(t *testing.T) {
 	assertError(t, recorder, http.StatusTooManyRequests, "rate_limited")
 	if service.getCalls != 5 {
 		t.Fatalf("penalized hit GetActive calls = %d, want 5", service.getCalls)
+	}
+}
+
+func TestMissBucketDeniesGETAndRawBeforeStorage(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.ReadRate.Count = 100
+	cfg.MissRate.Count = 3
+	cfg.MissRate.Window = time.Hour
+	service := &fakePasteService{getErr: paste.ErrNotFound}
+	handler := NewHandler(cfg, service)
+
+	for range 3 {
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/pastes/missingbrightotter", nil))
+		assertError(t, recorder, http.StatusNotFound, "not_found")
+	}
+
+	for _, path := range []string{
+		"/api/v1/pastes/missingbrightotter",
+		"/api/v1/pastes/missingbrightotter/raw",
+	} {
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
+		assertError(t, recorder, http.StatusTooManyRequests, "rate_limited")
+		if recorder.Header().Get("Retry-After") == "" {
+			t.Fatal("rate-limited response is missing Retry-After")
+		}
+	}
+	if service.getCalls != 3 {
+		t.Fatalf("GetActive calls = %d, want 3", service.getCalls)
+	}
+}
+
+func TestExhaustedMissBucketDeniesHitUntilRefill(t *testing.T) {
+	now := time.Unix(0, 0)
+	cfg := testConfig(t)
+	cfg.ReadRate.Count = 100
+	cfg.MissRate.Count = 3
+	cfg.MissRate.Window = time.Hour
+	service := &fakePasteService{getErr: paste.ErrNotFound}
+	handler := newHandlerWithAPIClock(cfg, service, nil, nil, nil, func() time.Time { return now })
+
+	for range 3 {
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/pastes/missingbrightotter", nil))
+		assertError(t, recorder, http.StatusNotFound, "not_found")
+	}
+	service.getErr = nil
+	service.result = testPaste()
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/pastes/quietbrightotter", nil))
+	assertError(t, recorder, http.StatusTooManyRequests, "rate_limited")
+	if service.getCalls != 3 {
+		t.Fatalf("exhausted hit GetActive calls = %d, want 3", service.getCalls)
+	}
+
+	now = now.Add(time.Hour)
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/pastes/quietbrightotter", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("refilled hit status = %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if service.getCalls != 4 {
+		t.Fatalf("refilled hit GetActive calls = %d, want 4", service.getCalls)
+	}
+}
+
+func TestFifthConsecutiveMissConsumesTwoMissTokens(t *testing.T) {
+	now := time.Unix(0, 0)
+	cfg := testConfig(t)
+	cfg.ReadRate.Count = 100
+	cfg.MissRate.Count = 6
+	cfg.MissRate.Window = time.Hour
+	service := &fakePasteService{getErr: paste.ErrNotFound}
+	handler := newHandlerWithAPIClock(cfg, service, nil, nil, nil, func() time.Time { return now })
+
+	for range 5 {
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/pastes/missingbrightotter", nil))
+		assertError(t, recorder, http.StatusNotFound, "not_found")
+	}
+
+	now = now.Add(10 * time.Minute)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/pastes/missingbrightotter", nil))
+	assertError(t, recorder, http.StatusTooManyRequests, "rate_limited")
+	if service.getCalls != 5 {
+		t.Fatalf("sixth miss GetActive calls = %d, want 5", service.getCalls)
+	}
+}
+
+func TestEachStorageLookupConsumesOneReadToken(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.ReadRate.Count = 3
+	cfg.ReadRate.Window = time.Hour
+	cfg.MissRate.Count = 100
+	service := &fakePasteService{getErr: errors.New("database unavailable")}
+	handler := NewHandler(cfg, service)
+
+	for range 3 {
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/pastes/quietbrightotter", nil))
+		assertError(t, recorder, http.StatusServiceUnavailable, "service_unavailable")
+	}
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/pastes/quietbrightotter", nil))
+	assertError(t, recorder, http.StatusTooManyRequests, "rate_limited")
+	if service.getCalls != 3 {
+		t.Fatalf("GetActive calls = %d, want 3", service.getCalls)
+	}
+}
+
+func TestInvalidSlugDoesNotConsumeReadToken(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.ReadRate.Count = 1
+	cfg.ReadRate.Window = time.Hour
+	service := &fakePasteService{result: testPaste()}
+	handler := NewHandler(cfg, service)
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/pastes/INVALID", nil))
+	assertError(t, recorder, http.StatusNotFound, "not_found")
+
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/pastes/quietbrightotter", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("valid read status = %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if service.getCalls != 1 {
+		t.Fatalf("GetActive calls = %d, want 1", service.getCalls)
+	}
+}
+
+func TestStorageFailuresAndForbiddenRawResultsDoNotCreateReadCredits(t *testing.T) {
+	tests := []struct {
+		name   string
+		result paste.Paste
+		status int
+		code   string
+		path   string
+	}{
+		{name: "storage failure", status: http.StatusServiceUnavailable, code: "service_unavailable", path: "/api/v1/pastes/quietbrightotter"},
+		{name: "forbidden encrypted raw", result: testEncryptedPaste(), status: http.StatusNotFound, code: "not_found", path: "/api/v1/pastes/quietbrightotter/raw"},
+		{name: "forbidden burn raw", result: func() paste.Paste { result := testPaste(); result.BurnAfterRead = true; return result }(), status: http.StatusNotFound, code: "not_found", path: "/api/v1/pastes/quietbrightotter/raw"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := testConfig(t)
+			cfg.ReadRate.Count = 1
+			cfg.ReadRate.Window = time.Hour
+			service := &fakePasteService{result: test.result}
+			if test.name == "storage failure" {
+				service.getErr = errors.New("database unavailable")
+			}
+			handler := NewHandler(cfg, service)
+
+			recorder := httptest.NewRecorder()
+			handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, test.path, nil))
+			assertError(t, recorder, test.status, test.code)
+			recorder = httptest.NewRecorder()
+			handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, test.path, nil))
+			assertError(t, recorder, http.StatusTooManyRequests, "rate_limited")
+			if service.getCalls != 1 {
+				t.Fatalf("GetActive calls = %d, want 1", service.getCalls)
+			}
+		})
+	}
+}
+
+func TestConcurrentPasteReadsAreRaceSafe(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.ReadRate.Count = 100
+	cfg.MissRate.Count = 100
+	service := &concurrentPasteService{}
+	handler := NewHandler(cfg, service)
+
+	var group sync.WaitGroup
+	for range 32 {
+		group.Go(func() {
+			recorder := httptest.NewRecorder()
+			handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/pastes/missingbrightotter", nil))
+			if recorder.Code != http.StatusNotFound {
+				t.Errorf("concurrent read status = %d", recorder.Code)
+			}
+		})
+	}
+	group.Wait()
+	if got := service.getCalls.Load(); got != 32 {
+		t.Fatalf("GetActive calls = %d, want 32", got)
 	}
 }
 
@@ -405,6 +597,16 @@ type fakePasteService struct {
 	createCalls          int
 	encryptedCreateCalls int
 	getCalls             int
+}
+
+type concurrentPasteService struct {
+	fakePasteService
+	getCalls atomic.Int64
+}
+
+func (s *concurrentPasteService) GetActive(context.Context, string) (paste.Paste, error) {
+	s.getCalls.Add(1)
+	return paste.Paste{}, paste.ErrNotFound
 }
 
 func (s *fakePasteService) CreateEncrypted(_ context.Context, input paste.CreateEncryptedInput) (paste.Paste, error) {
