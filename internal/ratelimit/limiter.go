@@ -105,6 +105,48 @@ func (r *Registry) Allow(category Category, identity string, cost int) (allowed 
 	return false, retryAfter.Round(time.Second)
 }
 
+// NextMissCost reports the cost of the next missing lookup when the miss
+// bucket is configured. Zero means no miss reservation is needed for read
+// admission.
+func (r *Registry) NextMissCost(identity string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	state := r.misses[identity]
+	if _, ok := r.rates[Miss]; !ok || state.consecutive < consecutiveMissThreshold-1 {
+		return 0
+	}
+	return 2
+}
+
+// Refund returns a previously consumed token to a bucket.
+func (r *Registry) Refund(category Category, identity string, cost int) {
+	if cost < 1 {
+		return
+	}
+	now := r.now()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.evict(now)
+	rate, ok := r.rates[category]
+	if !ok {
+		return
+	}
+	key := key{category: category, identity: identity}
+	state, exists := r.buckets[key]
+	if !exists {
+		return
+	}
+	elapsed := now.Sub(state.seen)
+	state.tokens = min(float64(rate.Count), state.tokens+elapsed.Seconds()*float64(rate.Count)/rate.Window.Seconds())
+	state.tokens = min(float64(rate.Count), state.tokens+float64(cost))
+	state.seen = now
+	if state.tokens >= float64(rate.Count) {
+		delete(r.buckets, key)
+		return
+	}
+	r.buckets[key] = state
+}
+
 // RecordMiss increments the identity's miss streak and returns its next miss
 // cost. Successful reads must call RecordSuccess to reset that streak.
 func (r *Registry) RecordMiss(identity string) int {

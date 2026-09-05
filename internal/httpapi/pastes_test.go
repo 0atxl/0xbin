@@ -92,6 +92,73 @@ func TestPlaintextGetAndRawContract(t *testing.T) {
 	})
 }
 
+func TestRateLimitedPasteReadsDoNotRetrieve(t *testing.T) {
+	for _, route := range []struct {
+		name   string
+		suffix string
+	}{
+		{name: "get", suffix: ""},
+		{name: "raw", suffix: "/raw"},
+	} {
+		for _, test := range []struct {
+			name   string
+			slug   string
+			getErr error
+		}{
+			{name: "existing slug", slug: "quietbrightotter"},
+			{name: "missing slug", slug: "missingbrightotter", getErr: paste.ErrNotFound},
+		} {
+			t.Run(route.name+"/"+test.name, func(t *testing.T) {
+				cfg := testConfig(t)
+				cfg.ReadRate.Count = 1
+				cfg.ReadRate.Window = time.Hour
+				service := &fakePasteService{result: testPaste()}
+				handler := NewHandler(cfg, service)
+
+				recorder := httptest.NewRecorder()
+				handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/pastes/quietbrightotter"+route.suffix, nil))
+				if recorder.Code != http.StatusOK {
+					t.Fatalf("first read status = %d: %s", recorder.Code, recorder.Body.String())
+				}
+				service.getErr = test.getErr
+
+				recorder = httptest.NewRecorder()
+				handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/pastes/"+test.slug+route.suffix, nil))
+				assertError(t, recorder, http.StatusTooManyRequests, "rate_limited")
+				if service.getCalls != 1 {
+					t.Fatalf("GetActive calls = %d, want 1", service.getCalls)
+				}
+			})
+		}
+	}
+}
+
+func TestExhaustedMissPenaltyDeniesBeforeRetrieval(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.ReadRate.Count = 100
+	cfg.MissRate.Count = 6
+	cfg.MissRate.Window = time.Hour
+	service := &fakePasteService{getErr: paste.ErrNotFound}
+	handler := NewHandler(cfg, service)
+	for range 5 {
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/pastes/missingbrightotter", nil))
+		assertError(t, recorder, http.StatusNotFound, "not_found")
+	}
+	if service.getCalls != 5 {
+		t.Fatalf("miss GetActive calls = %d, want 5", service.getCalls)
+	}
+
+	service.getErr = nil
+	service.result = testPaste()
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/pastes/quietbrightotter", nil))
+	assertError(t, recorder, http.StatusTooManyRequests, "rate_limited")
+	if service.getCalls != 5 {
+		t.Fatalf("penalized hit GetActive calls = %d, want 5", service.getCalls)
+	}
+}
+
 func TestEncryptedCreateAndRetrieveContract(t *testing.T) {
 	created := testEncryptedPaste()
 	service := &fakePasteService{encryptedCreated: created, result: created}
@@ -303,6 +370,7 @@ type fakePasteService struct {
 	consumeCalls         int
 	createCalls          int
 	encryptedCreateCalls int
+	getCalls             int
 }
 
 func (s *fakePasteService) CreateEncrypted(_ context.Context, input paste.CreateEncryptedInput) (paste.Paste, error) {
@@ -323,6 +391,7 @@ func (s *fakePasteService) CreatePlaintext(_ context.Context, input paste.Create
 }
 
 func (s *fakePasteService) GetActive(context.Context, string) (paste.Paste, error) {
+	s.getCalls++
 	if s.getErr != nil {
 		return paste.Paste{}, s.getErr
 	}

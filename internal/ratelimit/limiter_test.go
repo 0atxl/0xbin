@@ -45,6 +45,23 @@ func TestMissEscalationAndSuccessfulReadReset(t *testing.T) {
 	}
 }
 
+func TestReadBucketRefillsWhenTheLimitPermitsIt(t *testing.T) {
+	now := time.Unix(0, 0)
+	registry := testRegistry(t, &now, 1, time.Hour)
+
+	if ok, retry := registry.Allow(Read, "192.0.2.1", 1); !ok || retry != 0 {
+		t.Fatalf("first admission = %v, %v; want allowed", ok, retry)
+	}
+	if ok, _ := registry.Allow(Read, "192.0.2.1", 1); ok {
+		t.Fatal("read admission unexpectedly allowed an exhausted bucket")
+	}
+
+	now = now.Add(time.Hour)
+	if ok, _ := registry.Allow(Read, "192.0.2.1", 1); !ok {
+		t.Fatal("read admission did not recover after refill")
+	}
+}
+
 func TestRegistryEvictsInactiveEntries(t *testing.T) {
 	now := time.Unix(0, 0)
 	registry := testRegistry(t, &now, 10, time.Minute)
