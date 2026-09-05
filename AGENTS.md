@@ -50,6 +50,32 @@ tests/              Cross-component fixtures where needed
 
 Follow the actual repository if it evolves; update this section when the structure becomes stable.
 
+## Anti Over-Engineering
+
+Core rule: Deliver the smallest solution that fully solves the current task.
+If a design or test cannot be proven necessary right now, do not add it.
+
+### Workflow
+
+1. First restate: real goal, scope, non-goals, and clear acceptance criteria.
+2. Planning can be thorough. Execution must stay light and direct.
+3. Prefer reading the actual code over searching or guessing.
+4. Change only the minimum files needed.
+5. No new abstractions, frameworks, compatibility layers, dual implementations, or future-proofing unless strictly required for this task.
+6. Tests: only add what is needed to verify this specific change. Prefer existing tests. Never expand test scope or add test infrastructure.
+7. Keep the diff small. No leftover debug code or extra files.
+8. Any irreversible action requires explicit user confirmation first.
+9. Git operations (rollback, branch switch, etc.) are allowed without confirmation.
+10. Do not work blind. If required context or access details are missing, ask the user before investigating broadly.
+11. Perform full research only after the user explicitly authorizes it.
+
+### Before finishing checklist
+
+- Is this the minimal solution?
+- Did I only touch what was required?
+- Are there zero unnecessary abstractions or tests?
+- Does the change fully meet the acceptance criteria?
+
 ## Engineering Rules
 
 - Prefer standard-library Go and small, justified dependencies.
