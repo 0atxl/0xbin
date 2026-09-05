@@ -31,17 +31,49 @@ func TestCategoriesUseIndependentBuckets(t *testing.T) {
 func TestMissEscalationAndSuccessfulReadReset(t *testing.T) {
 	now := time.Unix(0, 0)
 	registry := testRegistry(t, &now, 20, time.Hour)
-	for range consecutiveMissThreshold - 1 {
-		if cost := registry.RecordMiss("192.0.2.1"); cost != 1 {
-			t.Fatalf("miss cost = %d, want 1", cost)
+	for index, want := range []int{1, 1, 1, 1, 2} {
+		if cost := registry.NextMissCost("192.0.2.1"); cost != want {
+			t.Fatalf("predicted miss %d cost = %d, want %d", index+1, cost, want)
+		}
+		if cost := registry.RecordMiss("192.0.2.1"); cost != want {
+			t.Fatalf("miss %d cost = %d, want %d", index+1, cost, want)
 		}
 	}
-	if cost := registry.RecordMiss("192.0.2.1"); cost != 2 {
-		t.Fatalf("escalated miss cost = %d, want 2", cost)
-	}
 	registry.RecordSuccess("192.0.2.1")
+	if cost := registry.NextMissCost("192.0.2.1"); cost != 1 {
+		t.Fatalf("predicted miss cost after success = %d, want 1", cost)
+	}
 	if cost := registry.RecordMiss("192.0.2.1"); cost != 1 {
 		t.Fatalf("miss cost after success = %d, want 1", cost)
+	}
+}
+
+func TestCheckDoesNotConsumeTokens(t *testing.T) {
+	now := time.Unix(0, 0)
+	registry := testRegistry(t, &now, 1, time.Hour)
+
+	if ok, retry := registry.Check(Read, "192.0.2.1", 1); !ok || retry != 0 {
+		t.Fatalf("check = %v, %v; want allowed", ok, retry)
+	}
+	if ok, retry := registry.Allow(Read, "192.0.2.1", 1); !ok || retry != 0 {
+		t.Fatalf("allow after check = %v, %v; want allowed", ok, retry)
+	}
+}
+
+func TestReadBucketRefillsWhenTheLimitPermitsIt(t *testing.T) {
+	now := time.Unix(0, 0)
+	registry := testRegistry(t, &now, 1, time.Hour)
+
+	if ok, retry := registry.Allow(Read, "192.0.2.1", 1); !ok || retry != 0 {
+		t.Fatalf("first admission = %v, %v; want allowed", ok, retry)
+	}
+	if ok, _ := registry.Allow(Read, "192.0.2.1", 1); ok {
+		t.Fatal("read admission unexpectedly allowed an exhausted bucket")
+	}
+
+	now = now.Add(time.Hour)
+	if ok, _ := registry.Allow(Read, "192.0.2.1", 1); !ok {
+		t.Fatal("read admission did not recover after refill")
 	}
 }
 

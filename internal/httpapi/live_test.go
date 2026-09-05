@@ -240,6 +240,25 @@ func TestLiveCreationDisabledRejectsBeforeParsing(t *testing.T) {
 	}
 }
 
+func TestLiveCreateAcceptsEscapedContentAtConfiguredLimit(t *testing.T) {
+	const maxBytes = int64(16 << 10)
+	handler, store, hub := newLiveTestHandlerWithConfig(t, "http://localhost:8080", func(cfg *config.Config) {
+		cfg.LiveMaxBytes = maxBytes
+		cfg.LiveMaxMessageBytes = int(maxBytes)
+	})
+	defer store.Close()
+	defer hub.Shutdown(context.Background(), time.Now().UTC())
+	body, err := json.Marshal(liveCreateRequest{Documents: []liveCreateDocument{{Name: "main", Language: "plaintext", Content: strings.Repeat("\x00", int(maxBytes))}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/live", strings.NewReader(string(body))))
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("status = %d: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestLiveBootstrapReturnsAcceptedOperationsForHTTPReconciliation(t *testing.T) {
 	handler, store, hub := newLiveTestHandler(t, "http://localhost:8080")
 	defer store.Close()

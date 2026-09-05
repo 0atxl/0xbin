@@ -71,6 +71,15 @@ func NewRegistry(rates map[Category]config.Rate, maxEntries int, staleAfter time
 // Allow consumes cost tokens for an identity/category. retryAfter is nonzero
 // only when the request is denied.
 func (r *Registry) Allow(category Category, identity string, cost int) (allowed bool, retryAfter time.Duration) {
+	return r.allow(category, identity, cost, true)
+}
+
+// Check reports whether cost tokens are available without consuming them.
+func (r *Registry) Check(category Category, identity string, cost int) (allowed bool, retryAfter time.Duration) {
+	return r.allow(category, identity, cost, false)
+}
+
+func (r *Registry) allow(category Category, identity string, cost int, consume bool) (allowed bool, retryAfter time.Duration) {
 	if cost < 1 {
 		cost = 1
 	}
@@ -92,7 +101,9 @@ func (r *Registry) Allow(category Category, identity string, cost int) (allowed 
 		state.seen = now
 	}
 	if state.tokens >= float64(cost) {
-		state.tokens -= float64(cost)
+		if consume {
+			state.tokens -= float64(cost)
+		}
 		r.buckets[key] = state
 		return true, 0
 	}
@@ -105,7 +116,17 @@ func (r *Registry) Allow(category Category, identity string, cost int) (allowed 
 	return false, retryAfter.Round(time.Second)
 }
 
-// RecordMiss increments the identity's miss streak and returns its next miss
+// NextMissCost reports the cost of the next missing lookup.
+func (r *Registry) NextMissCost(identity string) int {
+	now := r.now()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.evict(now)
+	state := r.misses[identity]
+	return missCostForStreak(state.consecutive + 1)
+}
+
+// RecordMiss increments the identity's miss streak and returns this miss's
 // cost. Successful reads must call RecordSuccess to reset that streak.
 func (r *Registry) RecordMiss(identity string) int {
 	now := r.now()
@@ -116,7 +137,11 @@ func (r *Registry) RecordMiss(identity string) int {
 	state.consecutive++
 	state.seen = now
 	r.misses[identity] = state
-	if state.consecutive >= consecutiveMissThreshold {
+	return missCostForStreak(state.consecutive)
+}
+
+func missCostForStreak(streak int) int {
+	if streak >= consecutiveMissThreshold {
 		return 2
 	}
 	return 1

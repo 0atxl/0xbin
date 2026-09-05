@@ -177,6 +177,10 @@ func newHandlerWithLive(cfg config.Config, pastes PasteService, frontend fs.FS, 
 }
 
 func newHandlerWithAPI(cfg config.Config, pastes PasteService, frontend fs.FS, ready func(context.Context) error, liveAPI *liveAPI) http.Handler {
+	return newHandlerWithAPIClock(cfg, pastes, frontend, ready, liveAPI, time.Now)
+}
+
+func newHandlerWithAPIClock(cfg config.Config, pastes PasteService, frontend fs.FS, ready func(context.Context) error, liveAPI *liveAPI, now func() time.Time) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health/live", liveness)
 	mux.HandleFunc("GET /health/ready", func(w http.ResponseWriter, r *http.Request) { notReady(w, r, ready) })
@@ -195,7 +199,7 @@ func newHandlerWithAPI(cfg config.Config, pastes PasteService, frontend fs.FS, r
 			rateConfig[ratelimit.LiveMessageRoom] = scaledLiveRate(cfg.LiveMessageRate, cfg.LiveMaxWriters+max(1, cfg.LiveMaxViewers/20))
 			rateConfig[ratelimit.LiveMessageIP] = scaledLiveRate(rateConfig[ratelimit.LiveMessageRoom], 2)
 		}
-		limits, err := ratelimit.NewRegistry(rateConfig, 10_000, 2*time.Hour, time.Now)
+		limits, err := ratelimit.NewRegistry(rateConfig, 10_000, 2*time.Hour, now)
 		if err != nil {
 			panic("validated rate limit configuration is invalid: " + err.Error())
 		}

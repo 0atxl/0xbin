@@ -17,7 +17,10 @@ import (
 	"github.com/0atxl/0xbin/internal/ratelimit"
 )
 
-const requestMetadataAllowance = 4 << 10
+const (
+	requestMetadataAllowance      = 4 << 10
+	jsonEscapeExpansionUpperBound = 6
+)
 
 var slugPattern = regexp.MustCompile(`^[a-z]{1,128}$`)
 
@@ -76,7 +79,7 @@ func (api pasteAPI) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var request createPasteRequest
-	if err := decodeJSON(w, r, &request, encryptedRequestLimit(api.maxContentBytes)); err != nil {
+	if err := decodeJSON(w, r, &request, requestLimitForDecodedContent(api.maxContentBytes, requestMetadataAllowance)); err != nil {
 		api.writeRequestError(w, r, err)
 		return
 	}
@@ -96,9 +99,6 @@ func (api pasteAPI) create(w http.ResponseWriter, r *http.Request) {
 func (api pasteAPI) createPaste(ctx context.Context, request createPasteRequest) (paste.Paste, error) {
 	switch request.Mode {
 	case "plaintext":
-		if int64(len(request.Payload)) > api.maxContentBytes+requestMetadataAllowance {
-			return paste.Paste{}, paste.ErrPayloadTooLarge
-		}
 		var payload paste.PlaintextPayload
 		if err := decodePayload(request.Payload, &payload); err != nil {
 			return paste.Paste{}, fmt.Errorf("%w: malformed plaintext payload", paste.ErrInvalidPayload)
@@ -128,15 +128,22 @@ func (api pasteAPI) get(w http.ResponseWriter, r *http.Request) {
 		api.writeMiss(w, r)
 		return
 	}
+	if !api.admitRead(w, r) {
+		return
+	}
 	result, err := api.pastes.GetActive(r.Context(), slug)
 	if err != nil {
+		if errors.Is(err, paste.ErrNotFound) {
+			if !api.finishReadMiss(w, r) {
+				return
+			}
+			api.writeNotFound(w, r)
+			return
+		}
 		api.writeGetError(w, r, err)
 		return
 	}
-	if !api.allow(w, r, ratelimit.Read, 1) {
-		return
-	}
-	api.limits.RecordSuccess(clientIPFromContext(r.Context()))
+	api.finishReadSuccess(r)
 	setPasteHeaders(w.Header())
 	if result.BurnAfterRead {
 		writeJSON(w, http.StatusOK, burnConfirmationResponse{BurnAfterRead: true, IsEncrypted: result.IsEncrypted})
@@ -173,8 +180,18 @@ func (api pasteAPI) raw(w http.ResponseWriter, r *http.Request) {
 		api.writeMiss(w, r)
 		return
 	}
+	if !api.admitRead(w, r) {
+		return
+	}
 	result, err := api.pastes.GetActive(r.Context(), slug)
 	if err != nil {
+		if errors.Is(err, paste.ErrNotFound) {
+			if !api.finishReadMiss(w, r) {
+				return
+			}
+			api.writeNotFound(w, r)
+			return
+		}
 		api.writeGetError(w, r, err)
 		return
 	}
@@ -182,10 +199,7 @@ func (api pasteAPI) raw(w http.ResponseWriter, r *http.Request) {
 		api.writeNotFound(w, r)
 		return
 	}
-	if !api.allow(w, r, ratelimit.Read, 1) {
-		return
-	}
-	api.limits.RecordSuccess(clientIPFromContext(r.Context()))
+	api.finishReadSuccess(r)
 	setPasteHeaders(w.Header())
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
@@ -204,14 +218,10 @@ func responseForPaste(result paste.Paste) pasteResponse {
 	return response
 }
 
-func encryptedRequestLimit(maxContentBytes int64) int64 {
-	// Base64url expands opaque ciphertext by up to 4/3; allowance covers the
-	// IV, envelope fields, and JSON request metadata.
-	limit, err := paste.EncryptedPayloadLimit(maxContentBytes)
-	if err != nil {
-		panic(err)
-	}
-	return ((limit+2)/3)*4 + requestMetadataAllowance
+func requestLimitForDecodedContent(maxContentBytes, metadataAllowance int64) int64 {
+	// JSON can encode a valid control byte as six ASCII bytes, so the request
+	// bound must cover escaped content before decoded validation applies.
+	return maxContentBytes*jsonEscapeExpansionUpperBound + metadataAllowance
 }
 
 func decodePayload(raw json.RawMessage, target any) error {
@@ -257,6 +267,28 @@ func (api pasteAPI) writeMiss(w http.ResponseWriter, r *http.Request) {
 	api.writeNotFound(w, r)
 }
 
+func (api pasteAPI) admitRead(w http.ResponseWriter, r *http.Request) bool {
+	identity := clientIPFromContext(r.Context())
+	nextMissCost := api.limits.NextMissCost(identity)
+	if !api.checkIdentity(w, r, ratelimit.Miss, identity, nextMissCost) {
+		return false
+	}
+	if !api.allowIdentity(w, r, ratelimit.Read, identity, 1) {
+		return false
+	}
+	return true
+}
+
+func (api pasteAPI) finishReadMiss(w http.ResponseWriter, r *http.Request) bool {
+	identity := clientIPFromContext(r.Context())
+	cost := api.limits.RecordMiss(identity)
+	return api.allowIdentity(w, r, ratelimit.Miss, identity, cost)
+}
+
+func (api pasteAPI) finishReadSuccess(r *http.Request) {
+	api.limits.RecordSuccess(clientIPFromContext(r.Context()))
+}
+
 func (api pasteAPI) writeNotFound(w http.ResponseWriter, r *http.Request) {
 	setPasteHeaders(w.Header())
 	writeError(w, http.StatusNotFound, "not_found", "Not found", requestIDFromContext(r.Context()))
@@ -271,10 +303,23 @@ func (api pasteAPI) allowIdentity(w http.ResponseWriter, r *http.Request, catego
 	if allowed {
 		return true
 	}
+	api.writeRateLimited(w, r, retryAfter)
+	return false
+}
+
+func (api pasteAPI) checkIdentity(w http.ResponseWriter, r *http.Request, category ratelimit.Category, identity string, cost int) bool {
+	allowed, retryAfter := api.limits.Check(category, identity, cost)
+	if allowed {
+		return true
+	}
+	api.writeRateLimited(w, r, retryAfter)
+	return false
+}
+
+func (api pasteAPI) writeRateLimited(w http.ResponseWriter, r *http.Request, retryAfter time.Duration) {
 	seconds := max(1, int(retryAfter.Seconds()))
 	w.Header().Set("Retry-After", strconv.Itoa(seconds))
 	writeError(w, http.StatusTooManyRequests, "rate_limited", "Too many requests", requestIDFromContext(r.Context()))
-	return false
 }
 
 func setPasteHeaders(header http.Header) {
