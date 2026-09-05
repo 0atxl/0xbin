@@ -3,9 +3,10 @@
 **Status:** Living specification  
 **Domain:** `0xbin.app`  
 **Product model:** Public hosted service and open-source self-hosted software  
-**Last updated:** 2026-07-29
-
-This file defines the settled product and architecture boundaries. Product requirements live in `docs/PRD.md`; agent-facing implementation design and sequencing live in `agent_docs/`; repository instructions live in `AGENTS.md`.
+This file defines the settled product and architecture boundaries. Product
+requirements live in `docs/PRD.md`; repository instructions live in
+`AGENTS.md`. Agent-facing implementation notes are local supplements when the
+ignored `agent_docs/` directory is available.
 
 ## 1. Product
 
@@ -31,14 +32,14 @@ Do not describe the entire service as zero-knowledge or private. Those propertie
 | Path suffix, digits, separators | None |
 | Database | SQLite for hosted and self-hosted deployments initially |
 | Backend | Go |
-| Frontend | React + TypeScript + Vite; MVP design baseline in `agent_docs/FRONTEND.md` |
+| Frontend | React + TypeScript + Vite; required behaviour is defined in this specification and the PRD |
 | Packaging | One Go service with embedded frontend and one SQLite volume |
 | Expiry | 1 hour, 1 day, 3 days, or burn after one deliberate read; unopened burn pastes expire after 3 days |
 | Redis/PostgreSQL | Not part of the initial design |
 | Maximum paste size | 1 MiB initially; raise only after benchmarks |
 | Public paste index | None |
 | Accounts | Not included; live rooms use room-scoped browser identities without accounts |
-| Live sharing | Approved post-MVP extension under `/live`, separate from paste semantics |
+| Live sharing | Optional LiveBin feature under `/live`, separate from paste semantics |
 
 ## 3. URL and Slug Model
 
@@ -202,10 +203,10 @@ Go application
 
 The hosted deployment and self-hosted distribution use the same binary and migrations. Differences are configuration only: base URL, trusted proxies, rate limits, storage path, allowed expiry values, and administrative controls.
 
-The approved live-sharing extension uses the same binary and SQLite volume with
+The optional LiveBin feature uses the same binary and SQLite volume with
 a process-local room hub and WebSocket transport. It does not require Redis,
 PostgreSQL, a broker, or a second service. Multiple application instances are
-not supported for live rooms in this phase.
+not supported for LiveBin rooms.
 
 SQLite requirements:
 
@@ -239,10 +240,9 @@ from the configured hosted origin and remain absent from self-hosted navigation.
 
 ## 8. Frontend Behaviour
 
-The MVP interaction and visual baseline is defined in
-[`agent_docs/FRONTEND.md`](agent_docs/FRONTEND.md). That document may refine
-implementation detail without changing the security and lifecycle behaviour
-settled here.
+The MVP frontend behaviour is defined here and in the PRD. Local design notes
+may refine implementation detail without changing the security and lifecycle
+behaviour settled here.
 
 Required behaviours:
 
@@ -261,11 +261,10 @@ Required behaviours:
 
 Use CodeMirror 6 for editing and, after benchmarking, potentially for read-only viewing. Automatic language detection and hand-written virtualization are not MVP requirements.
 
-### 8.1 Live-sharing extension
+### 8.1 LiveBin
 
-Live sharing is an optional post-MVP mode. It is a separate room namespace and
-does not change paste creation, retrieval, encryption, expiry, burn, or URL
-semantics.
+LiveBin is an optional feature. It is a separate room namespace and does not
+change paste creation, retrieval, encryption, expiry, burn, or URL semantics.
 
 - LiveBin is part of the same one-service deployment but can be disabled by a
   self-hosted operator, leaving the bare paste service available without live
@@ -307,7 +306,7 @@ semantics.
 - Participants can save either the current tab or every tab as one normal
   paste; the normal paste flow then controls expiry, encryption, and burn.
 - The server is the collaboration authority over WebSockets. P2P/WebRTC is
-  not part of the live extension.
+  not part of LiveBin.
 - Live room documents, bounded synchronization history, the creator-capability
   hash, and lock state use separate tables and routes from `pastes`. Browser
   credentials, participant records, active connections, cursors, selections,
@@ -365,8 +364,9 @@ GET    /health/ready
 All API errors use a stable JSON shape and request ID. Raw access applies to
 plaintext pastes; encrypted clients fetch the envelope and decrypt locally.
 Live bootstrap/unlock responses use `no-store` and no-index headers. The live
-WebSocket message contract is maintained in the live-sharing implementation
-plan and does not alter the paste API contract.
+WebSocket message contract is maintained in
+[`docs/live-sharing-websocket.md`](docs/live-sharing-websocket.md) and does not
+alter the paste API contract.
 
 ## 11. Security Baseline
 
@@ -405,9 +405,9 @@ Deferred:
 - Automatic language detection if it delays the core flow
 - Custom virtual-scroll implementation
 
-The initial paste MVP remains the scope described above. The approved live
-sharing extension is delivered as a separate post-MVP phase and must pass its
-own collaboration, security, expiry, accessibility, and self-hosting gates.
+The paste flow remains usable when LiveBin is disabled. LiveBin must preserve
+the same security, expiry, accessibility, and self-hosting guarantees while
+remaining within the separate room requirements below.
 
 ## 13. Acceptance Summary
 
@@ -423,11 +423,10 @@ The MVP is ready for public beta when:
 - A self-hoster can run one documented container with one persistent volume.
 - Backup restore and upgrade migrations have been tested.
 
-The live-sharing extension is ready for release only when its separate
-implementation plan passes: concurrent editing converges, reconnect and
+LiveBin is ready to enable only when concurrent editing converges, reconnect and
 resynchronization preserve acknowledged work, cursors and selections map
 correctly, optional password gates protect every access path, rooms expire and
 clean up at their configured lifetime (never longer than 24 hours), browser
 identity and creator authority follow the settled restart behavior, active
 presence remains process-local, and the existing paste journeys remain
-unchanged apart from the approved loading-bar visual update.
+unchanged apart from the loading-bar visual update.

@@ -4,13 +4,15 @@
 
 Build 0xbin as specified in `spec.md`: an ephemeral hosted and self-hosted paste service with clean three-word slugs, optional browser-side AES-GCM encryption, SQLite storage, and one-service deployment.
 
-Read these documents before planning substantial work:
+Read these tracked documents before planning substantial work:
 
 1. `spec.md` — settled product and architecture decisions
 2. `docs/PRD.md` — user-facing requirements and acceptance criteria
-3. `agent_docs/TECHNICAL_DESIGN.md` — component and data design
-4. `agent_docs/IMPLEMENTATION_PLAN.md` — ordered tasks and verification gates
-5. `agent_docs/PHASES.md` — scope boundaries and release phases
+
+When the ignored `agent_docs/` directory is available locally, read its current
+remediation plan, technical design, and frontend baseline as supplemental
+maintainer guidance. A clean public checkout must remain usable without those
+files.
 
 If documents conflict, `spec.md` wins. Do not silently change a settled decision; identify the conflict and ask before implementing a materially different design.
 
@@ -31,7 +33,9 @@ CLI library; do not add MCP runtime dependencies to this service.
 - SQLite is the only initial database for hosted and self-hosted deployments.
 - Expiry is enforced in read/consume queries; the cleanup worker only reclaims storage.
 - Burn-after-read requires explicit reveal and atomic consume; a GET never burns content.
-- Follow `agent_docs/FRONTEND.md` for the MVP visual and interaction baseline; do not change the settled behaviour or security semantics it records.
+- Follow the settled frontend behaviour in `spec.md` and `docs/PRD.md`. When
+  present, `agent_docs/FRONTEND.md` provides local visual and interaction
+  guidance; it must not change those behaviour or security decisions.
 - Keep the initial deployment to one Go service, one SQLite database, and an embedded frontend.
 - Do not introduce Redis, PostgreSQL, Kubernetes, accounts, or file uploads unless the relevant specification changes first.
 
@@ -44,11 +48,37 @@ web/                React + TypeScript frontend
 db/migrations/      Ordered SQLite migrations
 wordlists/          Reviewed adjective and noun sources
 docs/               Official project documentation
-agent_docs/         Agent-facing implementation guidance
+agent_docs/         Optional ignored local agent guidance
 tests/              Cross-component fixtures where needed
 ```
 
 Follow the actual repository if it evolves; update this section when the structure becomes stable.
+
+## Anti Over-Engineering
+
+Core rule: Deliver the smallest solution that fully solves the current task.
+If a design or test cannot be proven necessary right now, do not add it.
+
+### Workflow
+
+1. First restate: real goal, scope, non-goals, and clear acceptance criteria.
+2. Planning can be thorough. Execution must stay light and direct.
+3. Prefer reading the actual code over searching or guessing.
+4. Change only the minimum files needed.
+5. No new abstractions, frameworks, compatibility layers, dual implementations, or future-proofing unless strictly required for this task.
+6. Tests: only add what is needed to verify this specific change. Prefer existing tests. Never expand test scope or add test infrastructure.
+7. Keep the diff small. No leftover debug code or extra files.
+8. Any irreversible action requires explicit user confirmation first.
+9. Git operations (rollback, branch switch, etc.) are allowed without confirmation.
+10. Do not work blind. If required context or access details are missing, ask the user before investigating broadly.
+11. Perform full research only after the user explicitly authorizes it.
+
+### Before finishing checklist
+
+- Is this the minimal solution?
+- Did I only touch what was required?
+- Are there zero unnecessary abstractions or tests?
+- Does the change fully meet the acceptance criteria?
 
 ## Engineering Rules
 
@@ -122,6 +152,7 @@ Security-critical changes require negative tests, including wrong keys, malforme
 
 - Update `spec.md` only when a product or architecture decision changes.
 - Update `docs/PRD.md` when observable requirements or acceptance criteria change.
-- Update `agent_docs/TECHNICAL_DESIGN.md` when APIs, schema, components, or security boundaries change.
-- Update `agent_docs/IMPLEMENTATION_PLAN.md` and `agent_docs/PHASES.md` when sequencing or scope changes.
+- Update the relevant ignored local agent documents when APIs, schema,
+  components, security boundaries, sequencing, or scope change. Do not make
+  an ignored document a prerequisite for a clean public checkout.
 - Keep this file concise and focused on durable agent behaviour. Do not duplicate the full specification here.

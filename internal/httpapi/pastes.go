@@ -33,6 +33,7 @@ type pasteAPI struct {
 	pastes          PasteService
 	baseURL         *url.URL
 	maxContentBytes int64
+	creationEnabled bool
 	limits          *ratelimit.Registry
 }
 
@@ -66,6 +67,11 @@ type pasteResponse struct {
 }
 
 func (api pasteAPI) create(w http.ResponseWriter, r *http.Request) {
+	if !api.creationEnabled {
+		setPasteHeaders(w.Header())
+		writeError(w, http.StatusServiceUnavailable, "service_unavailable", "Service is temporarily unavailable", requestIDFromContext(r.Context()))
+		return
+	}
 	if !api.allow(w, r, ratelimit.Create, 1) {
 		return
 	}

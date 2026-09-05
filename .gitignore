@@ -19,6 +19,9 @@ internal/webassets/dist/*
 !.env.example
 compose.override.yaml
 
+# Agent working documents
+/agent_docs/
+
 # Editor and operating-system files
 .DS_Store
 .idea/

@@ -171,18 +171,15 @@ access class; it is not an account. Ordinary password unlock grants room access
 but not creator authority. LiveBin intentionally provides no participant kick,
 ban, promotion, demotion, or per-user role-management messages.
 
-## Pre-release compatibility closure
+## Compatibility
 
-No browser/client version of the identity-and-authority protocol has been
-publicly released, and the development database baseline is explicitly fresh
-start only. The first public release therefore does not ship transitional
-support for an omitted `connection_id`, the derived `role` response alias, or
-the removed `participant_remove` request. Phase 7A removed all three paths and
-their compatibility-only tests before the release candidate audit.
+The identity-and-authority protocol requires `connection_id`, the current
+`role` response field, and no `participant_remove` request. Clients and servers
+must use this contract; compatibility aliases and participant-management
+messages are outside the protocol.
 
 The application shell uses `Cache-Control: no-store` and references
 content-hashed JavaScript and CSS. A reload after deployment therefore selects
 the frontend embedded in the running binary rather than retaining an old
 application entry point indefinitely. Future changes to a published WebSocket
-version must use an explicit additive or versioned rollout policy; this
-pre-release removal decision is not precedent for breaking deployed clients.
+version must use an explicit additive or versioned rollout policy.
