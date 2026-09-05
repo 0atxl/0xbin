@@ -17,7 +17,10 @@ import (
 	"github.com/0atxl/0xbin/internal/ratelimit"
 )
 
-const requestMetadataAllowance = 4 << 10
+const (
+	requestMetadataAllowance      = 4 << 10
+	jsonEscapeExpansionUpperBound = 6
+)
 
 var slugPattern = regexp.MustCompile(`^[a-z]{1,128}$`)
 
@@ -81,7 +84,7 @@ func (api pasteAPI) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var request createPasteRequest
-	if err := decodeJSON(w, r, &request, encryptedRequestLimit(api.maxContentBytes)); err != nil {
+	if err := decodeJSON(w, r, &request, requestLimitForDecodedContent(api.maxContentBytes, requestMetadataAllowance)); err != nil {
 		api.writeRequestError(w, r, err)
 		return
 	}
@@ -101,9 +104,6 @@ func (api pasteAPI) create(w http.ResponseWriter, r *http.Request) {
 func (api pasteAPI) createPaste(ctx context.Context, request createPasteRequest) (paste.Paste, error) {
 	switch request.Mode {
 	case "plaintext":
-		if int64(len(request.Payload)) > api.maxContentBytes+requestMetadataAllowance {
-			return paste.Paste{}, paste.ErrPayloadTooLarge
-		}
 		var payload paste.PlaintextPayload
 		if err := decodePayload(request.Payload, &payload); err != nil {
 			return paste.Paste{}, fmt.Errorf("%w: malformed plaintext payload", paste.ErrInvalidPayload)
@@ -228,14 +228,10 @@ func responseForPaste(result paste.Paste) pasteResponse {
 	return response
 }
 
-func encryptedRequestLimit(maxContentBytes int64) int64 {
-	// Base64url expands opaque ciphertext by up to 4/3; allowance covers the
-	// IV, envelope fields, and JSON request metadata.
-	limit, err := paste.EncryptedPayloadLimit(maxContentBytes)
-	if err != nil {
-		panic(err)
-	}
-	return ((limit+2)/3)*4 + requestMetadataAllowance
+func requestLimitForDecodedContent(maxContentBytes, metadataAllowance int64) int64 {
+	// JSON can encode a valid control byte as six ASCII bytes, so the request
+	// bound must cover escaped content before decoded validation applies.
+	return maxContentBytes*jsonEscapeExpansionUpperBound + metadataAllowance
 }
 
 func decodePayload(raw json.RawMessage, target any) error {

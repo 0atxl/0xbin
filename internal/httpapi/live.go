@@ -136,7 +136,7 @@ func (api *liveAPI) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var request liveCreateRequest
-	if err := decodeJSON(w, r, &request, api.cfg.LiveMaxBytes+64<<10); err != nil {
+	if err := decodeJSON(w, r, &request, requestLimitForDecodedContent(api.cfg.LiveMaxBytes, 64<<10)); err != nil {
 		api.writeRequestError(w, r, err)
 		return
 	}

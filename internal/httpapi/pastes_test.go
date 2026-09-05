@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -61,6 +62,29 @@ func TestPlaintextCreateErrors(t *testing.T) {
 			NewHandler(testConfig(t), service).ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/pastes", strings.NewReader(test.body)))
 			assertError(t, recorder, test.status, test.code)
 		})
+	}
+}
+
+func TestPlaintextCreateAcceptsEscapedContentAtDecodedLimit(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.MaxPasteBytes = 8 << 10
+	content := strings.Repeat("\x00", int(cfg.MaxPasteBytes))
+	payload, err := json.Marshal(paste.PlaintextPayload{Version: paste.PlaintextVersion, Content: content})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(createPasteRequest{Mode: "plaintext", Payload: payload, Expiry: "1h"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := &fakePasteService{created: testPaste()}
+	recorder := httptest.NewRecorder()
+	NewHandler(cfg, service).ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/pastes", strings.NewReader(string(body))))
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("status = %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if service.input.Payload.Content != content {
+		t.Fatal("escaped content was changed before validation")
 	}
 }
 
@@ -261,10 +285,20 @@ func TestPlaintextGetCollapsesInvalidMissingAndExpired(t *testing.T) {
 }
 
 func TestPlaintextCreateBoundsRequestBody(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.MaxPasteBytes = 8 << 10
 	service := &fakePasteService{}
 	recorder := httptest.NewRecorder()
-	body := `{"mode":"plaintext","payload":{"version":1,"content":"` + strings.Repeat("x", (1<<20)+(4<<10)+1) + `"},"expiry":"1h"}`
-	NewHandler(testConfig(t), service).ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/pastes", strings.NewReader(body)))
+	content := strings.Repeat("\x00", int(cfg.MaxPasteBytes)+requestMetadataAllowance)
+	payload, err := json.Marshal(paste.PlaintextPayload{Version: paste.PlaintextVersion, Content: content})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(createPasteRequest{Mode: "plaintext", Payload: payload, Expiry: "1h"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	NewHandler(cfg, service).ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/pastes", bytes.NewReader(body)))
 	assertError(t, recorder, http.StatusRequestEntityTooLarge, "payload_too_large")
 	if service.createCalls != 0 {
 		t.Fatalf("CreatePlaintext calls = %d, want 0", service.createCalls)
