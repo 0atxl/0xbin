@@ -204,6 +204,51 @@ func TestPlaintextCreateBoundsRequestBody(t *testing.T) {
 	}
 }
 
+func TestCreationDisabledRejectsPasteCreatesBeforeParsing(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.CreationEnabled = false
+	service := &fakePasteService{}
+	handler := NewHandler(cfg, service)
+	tests := []string{
+		`{`,
+		`{"mode":"plaintext","payload":{"version":1,"content":"` + strings.Repeat("x", (1<<20)+(4<<10)+1) + `"},"expiry":"1h"}`,
+		`{"mode":"encrypted","payload":{"version":1,"algorithm":"A256GCM","iv":"invalid","ciphertext":"invalid"},"expiry":"1h"}`,
+	}
+	for _, body := range tests {
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/pastes", strings.NewReader(body)))
+		assertError(t, recorder, http.StatusServiceUnavailable, "service_unavailable")
+		if recorder.Header().Get("Cache-Control") != "no-store" {
+			t.Error("disabled create response must not be cached")
+		}
+	}
+	if service.createCalls != 0 || service.encryptedCreateCalls != 0 {
+		t.Fatalf("create calls = plaintext %d, encrypted %d; want zero", service.createCalls, service.encryptedCreateCalls)
+	}
+}
+
+func TestCreationDisabledKeepsPasteReadsAndConsumesAvailable(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.CreationEnabled = false
+	result := testPaste()
+	service := &fakePasteService{result: result, consumed: result}
+	handler := NewHandler(cfg, service)
+
+	for _, request := range []*http.Request{
+		httptest.NewRequest(http.MethodGet, "/api/v1/pastes/quietbrightotter", nil),
+		httptest.NewRequest(http.MethodPost, "/api/v1/pastes/quietbrightotter/consume", nil),
+	} {
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("%s %s status = %d: %s", request.Method, request.URL.Path, recorder.Code, recorder.Body.String())
+		}
+	}
+	if service.consumeCalls != 1 {
+		t.Fatalf("consume calls = %d, want 1", service.consumeCalls)
+	}
+}
+
 func TestRateLimitReturnsRetryAfter(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.CreateRate.Count = 1

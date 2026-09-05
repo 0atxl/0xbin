@@ -90,6 +90,17 @@ Set `OXBIN_LIVE_ENABLED=false` before startup when the installation should
 serve only ordinary pastes. This omits the live routes, hub, and frontend entry
 point rather than running an unused collaboration service.
 
+Set `OXBIN_CREATION_ENABLED=false` and recreate the container to stop new paste
+and live-room creation during an incident. Existing paste reads, burn consumes,
+and live sessions remain available. Configuration changes in `.env` take effect
+after `docker compose up -d` recreates the container.
+
+Compose publishes port 8080 on host loopback by default. Set
+`OXBIN_HOST_BIND=0.0.0.0` only when the container should accept direct LAN or
+public-host connections. When a reverse proxy connects through Docker, set
+`OXBIN_TRUSTED_PROXIES` to that exact bridge gateway CIDR so rate limits use the
+forwarded client address. Leave it empty for direct access.
+
 ### Reverse proxying live rooms
 
 The live editor uses `GET /api/v1/live/{slug}/ws`. A reverse proxy must pass
@@ -123,10 +134,10 @@ Browser
 The application container is published only on `127.0.0.1:8080`; Tailscale
 is used for administration rather than public application ingress. Cloudflare
 Tunnel is outbound-only, so the laptop does not need a public inbound port.
-The current container uses `OXBIN_BASE_URL=https://0xbin.app` and
-`OXBIN_TRUSTED_PROXIES=172.18.0.1/32`, the Docker gateway through which the
-host's `cloudflared` process reaches the container. Do not broaden that value
-to arbitrary networks. Keep the tunnel token outside the repository.
+The hosted container should use `OXBIN_BASE_URL=https://0xbin.app` and
+`OXBIN_TRUSTED_PROXIES=172.18.0.1/32`, the verified Docker gateway through which
+the host's `cloudflared` process reaches the container. Do not broaden that
+value to arbitrary networks. Keep the tunnel token outside the repository.
 
 Cloudflare rate limiting is an edge safety layer; the application's own
 bounded rate limits remain enabled because Cloudflare rules do not replace

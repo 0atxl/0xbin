@@ -200,7 +200,7 @@ func newHandlerWithAPI(cfg config.Config, pastes PasteService, frontend fs.FS, r
 			panic("validated rate limit configuration is invalid: " + err.Error())
 		}
 		if pastes != nil {
-			api := pasteAPI{pastes: pastes, baseURL: cfg.BaseURL, maxContentBytes: cfg.MaxPasteBytes, limits: limits}
+			api := pasteAPI{pastes: pastes, baseURL: cfg.BaseURL, maxContentBytes: cfg.MaxPasteBytes, creationEnabled: cfg.CreationEnabled, limits: limits}
 			mux.HandleFunc("POST /api/v1/pastes", api.create)
 			mux.HandleFunc("GET /api/v1/pastes/{slug}", api.get)
 			mux.HandleFunc("POST /api/v1/pastes/{slug}/consume", api.consume)

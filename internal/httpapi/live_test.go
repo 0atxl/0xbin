@@ -215,6 +215,31 @@ func TestLiveCreateBootstrapAndPasswordGate(t *testing.T) {
 	}
 }
 
+func TestLiveCreationDisabledRejectsBeforeParsing(t *testing.T) {
+	handler, store, hub := newLiveTestHandlerWithConfig(t, "http://localhost:8080", func(cfg *config.Config) {
+		cfg.CreationEnabled = false
+	})
+	defer store.Close()
+	defer hub.Shutdown(context.Background(), time.Now().UTC())
+
+	tests := []string{
+		`{`,
+		`{"password":"secret","documents":[{"name":"main","language":"plaintext","content":"` + strings.Repeat("x", (1<<20)+(64<<10)+1) + `"}]}`,
+		`{"password":"secret","documents":[{"name":"main","language":"plaintext","content":"shared text"}]}`,
+	}
+	for _, body := range tests {
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/live", strings.NewReader(body)))
+		assertError(t, recorder, http.StatusServiceUnavailable, "service_unavailable")
+		if recorder.Header().Get("Cache-Control") != "no-store" {
+			t.Error("disabled live create response must not be cached")
+		}
+	}
+	if _, err := store.GetRoomSnapshot(context.Background(), "calmbrightotter", time.Now().UTC()); !errors.Is(err, live.ErrRoomNotFound) {
+		t.Fatalf("disabled create stored a room: %v", err)
+	}
+}
+
 func TestLiveBootstrapReturnsAcceptedOperationsForHTTPReconciliation(t *testing.T) {
 	handler, store, hub := newLiveTestHandler(t, "http://localhost:8080")
 	defer store.Close()

@@ -128,16 +128,16 @@ type liveConfigResponse struct {
 }
 
 func (api *liveAPI) create(w http.ResponseWriter, r *http.Request) {
+	if !api.cfg.CreationEnabled {
+		writeLiveError(w, r, http.StatusServiceUnavailable, "service_unavailable", "Live sharing is temporarily unavailable")
+		return
+	}
 	if !api.allowHTTP(w, r, ratelimit.LiveCreate, clientIPFromContext(r.Context()), 1) {
 		return
 	}
 	var request liveCreateRequest
 	if err := decodeJSON(w, r, &request, api.cfg.LiveMaxBytes+64<<10); err != nil {
 		api.writeRequestError(w, r, err)
-		return
-	}
-	if !api.cfg.CreationEnabled {
-		writeLiveError(w, r, http.StatusServiceUnavailable, "service_unavailable", "Live sharing is temporarily unavailable")
 		return
 	}
 	if len(request.Password) > livePasswordMaxBytes || !utf8.ValidString(request.Password) {
