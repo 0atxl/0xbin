@@ -5,15 +5,15 @@ and optional client-side encryption. It is intended for hosted use and simple
 self-hosting from the same codebase.
 
 The product requirements and architecture are defined in [spec.md](spec.md)
-and [docs/](docs/). Agent-specific guidance and implementation notes are
-grouped in [agent_docs/](agent_docs/); the root
-[AGENTS.md](AGENTS.md) remains the repository instruction entry point.
+and [docs/](docs/). The root [AGENTS.md](AGENTS.md) contains repository
+instructions. Maintainer-only planning notes may exist locally under the
+ignored `agent_docs/` directory.
 
 ## Development
 
 Prerequisites:
 
-- Go 1.26 (the current stable Go release when this baseline was created)
+- Go 1.26
 - Node.js 24 or newer and npm
 - GNU Make
 
@@ -29,11 +29,12 @@ make test-e2e
 make build
 ```
 
-## Implementation status
+## Included behavior
 
-Steps 0–16 are implemented. The production React bundle is embedded in the Go
-binary, and the repository includes self-hosted container packaging. See the
-[implementation plan](agent_docs/IMPLEMENTATION_PLAN.md) for the verification gates.
+The MVP paste flow, embedded React frontend, self-hosted container packaging,
+and optional LiveBin feature are included in the repository. The
+supported product behaviour is defined in [spec.md](spec.md) and
+[docs/PRD.md](docs/PRD.md).
 
 ## Command-line client
 

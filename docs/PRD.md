@@ -21,9 +21,9 @@ Developers and technical users frequently need to share a block of text, code, l
 - Keep deployment and maintenance understandable for a student maintainer.
 - Remain usable for large developer-oriented text up to the validated limit.
 
-The approved post-MVP live-sharing extension adds temporary collaborative rooms
-without changing these paste goals or guarantees. It is tracked separately
-from the initial paste MVP.
+LiveBin is an optional feature that adds temporary collaborative rooms without
+changing these paste goals or guarantees. It is tracked separately from the
+default paste flow.
 
 ## 3. Non-Goals
 
@@ -37,8 +37,8 @@ from the initial paste MVP.
 - Guaranteed anonymity
 - Custom URL slugs
 - Visual design definition in this document
-- Real-time live rooms in the initial paste MVP; live sharing is an approved
-  post-MVP extension with its own requirements and exit criteria
+- Real-time collaboration is outside the default paste flow; LiveBin has its
+  own requirements and remains optional
 
 ## 4. Users and Jobs
 
@@ -120,7 +120,7 @@ from the initial paste MVP.
 3. Application applies migrations, validates configuration, and starts.
 4. Operator can back up, restore, upgrade, and inspect health using documented procedures.
 
-### 6.6 Create and use a live room (post-MVP extension)
+### 6.6 Create and use a LiveBin room
 
 1. User selects `LiveBin` from the existing header.
 2. From the create editor, the current unsaved title, language, and content are
@@ -226,9 +226,9 @@ Requirements use `FR-<area>-<number>` identifiers.
 - **FR-HOST-04:** Migrations are ordered and repeatable.
 - **FR-HOST-05:** Backup, restore, and upgrade procedures are documented and tested.
 
-### 7.9 Live sharing extension
+### 7.9 LiveBin
 
-These requirements apply to the approved post-MVP live mode and do not modify
+These requirements apply to the optional LiveBin mode and do not modify
 the paste requirements above.
 
 - **FR-LIVE-01:** A user can create and join a live room without an account.
@@ -306,8 +306,9 @@ the paste requirements above.
 
 ## 8. Frontend Behaviour Requirements
 
-This section defines behaviour, not visual design. The visual and interaction
-baseline is documented in [`FRONTEND.md`](../agent_docs/FRONTEND.md).
+This section defines behaviour, not visual design. The settled product and
+architecture baseline is in [`spec.md`](../spec.md); local visual notes may
+refine implementation detail when they are available.
 
 ### 8.1 Creation state
 
@@ -348,9 +349,9 @@ baseline is documented in [`FRONTEND.md`](../agent_docs/FRONTEND.md).
 - Full keyboard use
 - Visible focus indicators
 - Status announcements for asynchronous actions
-- Sufficient contrast in the eventual design
+- Sufficient contrast
 - Reduced-motion support
-- Mobile-compatible content viewing and horizontal scrolling
+- Mobile-compatible content viewing with permanent line wrapping
 - Live participant popovers, tab operations, cursor/selection state, and
   reconnect status are keyboard and screen-reader usable
 
@@ -365,7 +366,7 @@ baseline is documented in [`FRONTEND.md`](../agent_docs/FRONTEND.md).
 - **NFR-REL-02:** Expiry remains correct when the cleanup worker is delayed or fails.
 - **NFR-PORT-01:** Official container runs on common amd64 and arm64 Linux hosts where supported by CI.
 - **NFR-MAINT-01:** Core behaviour has unit, integration, concurrency, and browser tests.
-- **NFR-LIVE-01:** The live extension remains supported as one Go process, one
+- **NFR-LIVE-01:** LiveBin remains supported as one Go process, one
   SQLite database, and one embedded frontend instance.
 - **NFR-LIVE-02:** Live collaboration, presence, reconnect, cursor mapping,
   expiry, password, accessibility, and abuse limits have negative tests.
@@ -397,9 +398,9 @@ Do not record paste bodies, titles, encryption keys, or user-level behavioural p
 - Policies and security contact are published.
 - One-command self-host instructions work on a clean environment.
 
-The live-sharing extension has a separate release gate: its dedicated
-implementation plan and browser journeys pass without changing the existing
-paste API, encryption, burn, expiry, or rendering semantics.
+LiveBin must pass its collaboration, security, expiry, accessibility, and
+self-hosting checks without changing the existing paste API, encryption, burn,
+expiry, or rendering semantics.
 
 ## 12. Open Product Questions
 
