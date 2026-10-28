@@ -2717,11 +2717,11 @@ async function checkSplitWorkspace(browser) {
     await owner.waitForFunction(
       () =>
         document.querySelector(
-          '[data-pane-index="3"] select.live-pane-document',
-        )?.selectedOptions[0]?.textContent === "tab1",
+          '[data-pane-index="3"] .live-pane-document > span',
+        )?.textContent === "tab1",
     );
     assert.equal(
-      await pane(0).locator(".live-pane-document").inputValue(),
+      await pane(0).locator(".live-pane-document").getAttribute("data-value"),
       await pane(0).getAttribute("data-document-id"),
     );
     await pane(3).locator(".cm-content").click();

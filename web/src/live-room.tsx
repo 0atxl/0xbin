@@ -122,6 +122,21 @@ export function LiveRoomWorkspace({
   );
   const activeDocumentRef = useRef(activeDocumentID);
   const [splitEnabled, setSplitEnabled] = useState(false);
+  const documentsMenuRef = useRef<HTMLDetailsElement>(null);
+  useEffect(() => {
+    const dismiss = (event: globalThis.PointerEvent) => {
+      const menu = documentsMenuRef.current;
+      if (
+        menu?.open &&
+        event.target instanceof Node &&
+        !menu.contains(event.target)
+      )
+        menu.open = false;
+    };
+    document.addEventListener("pointerdown", dismiss, true);
+    return () => document.removeEventListener("pointerdown", dismiss, true);
+  }, []);
+  const [layoutReset, setLayoutReset] = useState(0);
   const [panelLayout, setPanelLayout] = useState<LivePanelLayout>("columns");
   const [paneDocumentIDs, setPaneDocumentIDs] = useState<string[]>(() =>
     Array.from(
@@ -1792,6 +1807,22 @@ export function LiveRoomWorkspace({
     roomFull ||
     !!recovery;
   const tabLimitReached = documents.length >= initialRoom.maxTabs;
+  const addTabButton = (
+    <button
+      className="live-add-tab"
+      type="button"
+      aria-label="Add tab"
+      disabled={structuralDisabled || tabLimitReached}
+      title={
+        tabLimitReached
+          ? `This room is limited to ${initialRoom.maxTabs} tabs`
+          : undefined
+      }
+      onClick={() => addDocument()}
+    >
+      +
+    </button>
+  );
   const tabStrip = (
     <nav
       className={`live-tab-strip${tabDrag ? " is-reordering" : ""}`}
@@ -1885,20 +1916,7 @@ export function LiveRoomWorkspace({
           </div>
         );
       })}
-      <button
-        className="live-add-tab"
-        type="button"
-        aria-label="Add tab"
-        disabled={structuralDisabled || tabLimitReached}
-        title={
-          tabLimitReached
-            ? `This room is limited to ${initialRoom.maxTabs} tabs`
-            : undefined
-        }
-        onClick={() => addDocument()}
-      >
-        +
-      </button>
+      {!split ? addTabButton : null}
     </nav>
   );
   return (
@@ -2086,6 +2104,7 @@ export function LiveRoomWorkspace({
         {split ? (
           <div className="live-split-navigation">
             <details
+              ref={documentsMenuRef}
               className="live-documents-menu"
               onBlur={(event) => {
                 if (
@@ -2103,9 +2122,21 @@ export function LiveRoomWorkspace({
             >
               <summary>
                 Documents <span>{documents.length}</span>
+                <svg
+                  width="12"
+                  height="12"
+                  viewBox="0 0 16 16"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                  aria-hidden="true"
+                >
+                  <path d="m4 6 4 4 4-4" />
+                </svg>
               </summary>
               {tabStrip}
             </details>
+            {addTabButton}
             <div
               className="live-layout-presets"
               role="group"
@@ -2130,6 +2161,41 @@ export function LiveRoomWorkspace({
                   </span>
                 </button>
               ))}
+              <button
+                type="button"
+                aria-label="Reset layout"
+                title="Reset layout"
+                onClick={() => {
+                  const next = Array.from(
+                    { length: 4 },
+                    (_, index) => documents[index]?.id ?? "",
+                  );
+                  const active = activeDocumentRef.current;
+                  if (!next.slice(0, paneCount).includes(active)) {
+                    const index = next.indexOf(active);
+                    if (index >= 0)
+                      [next[0], next[index]] = [next[index], next[0]];
+                    else next[0] = active;
+                  }
+                  setPaneDocumentIDs(next);
+                  setLayoutReset((value) => value + 1);
+                  cancelTabRename();
+                }}
+              >
+                <svg
+                  width="17"
+                  height="17"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M3 10a9 9 0 1 1 2 8M3 4v6h6" />
+                </svg>
+              </button>
             </div>
           </div>
         ) : (
@@ -2154,6 +2220,7 @@ export function LiveRoomWorkspace({
       >
         <LivePanels
           layout={split ? panelLayout : "single"}
+          resetVersion={layoutReset}
           documents={documents}
           paneIDs={paneDocumentIDs}
           activeDocumentID={activeDocument?.id ?? ""}

@@ -346,9 +346,16 @@ refine implementation detail when they are available.
 - Desktop workspaces offer two-column, two-row, three-column, and four-pane
   grid presets. Dividers follow the pane boundaries and support pointer and
   keyboard resizing. Layout, pane assignment, and sizes stay local to the browser.
-- Split mode replaces the global tab strip with a Documents menu for creating,
-  renaming, deleting, and keyboard-reordering shared tabs. Each pane has its own
-  document and language selectors. Empty panes can create a new tab.
+- Split mode replaces the global tab strip with a compact Documents menu for
+  renaming, deleting, and keyboard-reordering shared tabs. A fixed + button in
+  the toolbar creates tabs. Each pane has compact, themed document and language
+  menus with keyboard navigation. Pane menus stay within their split boundaries;
+  all workspace dropdowns dismiss when clicking outside. Empty panes can create
+  a new tab.
+- Reset layout restores preset dimensions and shared document order locally,
+  keeping the focused document visible. Pane drags settle with spring motion;
+  dividers released within two percentage points of the preset ratio snap to it.
+  Reduced-motion preferences disable pane movement animations.
 - Dragging a pane handle onto another pane swaps their documents. Arrow keys
   on the handle also swap panes. Choosing a document already visible elsewhere
   swaps assignments instead of opening duplicate editor instances.
