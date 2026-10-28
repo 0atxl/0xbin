@@ -771,7 +771,7 @@ func (api *liveAPI) websocket(w http.ResponseWriter, r *http.Request) {
 		Participants:      state.Participants, Participant: responseForLiveParticipant(joined.Participant),
 		Creator: joined.Session.IsCreator(), WatchOnly: joined.State.WatchOnly,
 		Locked: joined.State.WatchOnly, ConnectionID: joinIdentity.ConnectionID,
-		Reconnected: joined.Reconnected,
+		Reconnected: joined.Reconnected, LayoutPreset: joined.State.LayoutPreset,
 	}))
 	if bridge.Resync {
 		peer.enqueue(encodeLiveWireEvent(liveStatusEvent{Type: "status", Status: "http_resync_required"}))
@@ -954,6 +954,17 @@ func (api *liveAPI) handleWireMessage(ctx context.Context, peer *livePeer, messa
 			api.broadcast(peer.slug, event, nil)
 		}
 		return nil
+	case "room_layout":
+		unlockPublication := api.publications.lock(peer.slug)
+		defer unlockPublication()
+		state, err := peer.session.SetLayoutPreset(ctx, message.LayoutPreset, now)
+		if err != nil {
+			return err
+		}
+		api.broadcast(peer.slug, encodeLiveWireEvent(liveRoomLayoutEvent{
+			Type: "room_layout_changed", LayoutPreset: state.LayoutPreset,
+		}), nil)
+		return nil
 	case "room_watch_only":
 		unlockPublication := api.publications.lock(peer.slug)
 		defer unlockPublication()
@@ -1015,7 +1026,7 @@ func classifyLiveOperationError(err error) (code, status string) {
 		return "room_limit_reached", "overloaded"
 	case errors.Is(err, live.ErrNameTaken):
 		return "name_taken", "validation"
-	case errors.Is(err, live.ErrInvalidParticipantCredential), errors.Is(err, live.ErrInvalidConnectionID), errors.Is(err, live.ErrInvalidClientID), errors.Is(err, live.ErrInvalidNickname), errors.Is(err, live.ErrDocumentNotFound), errors.Is(err, live.ErrDocumentDeleted), errors.Is(err, live.ErrLastDocument), errors.Is(err, live.ErrOperationConflict), errors.Is(err, live.ErrInvalidPresence), errors.Is(err, livecollab.ErrInvalidChangeSet), errors.Is(err, livecollab.ErrDuplicateOperation):
+	case errors.Is(err, live.ErrInvalidParticipantCredential), errors.Is(err, live.ErrInvalidConnectionID), errors.Is(err, live.ErrInvalidClientID), errors.Is(err, live.ErrInvalidNickname), errors.Is(err, live.ErrDocumentNotFound), errors.Is(err, live.ErrDocumentDeleted), errors.Is(err, live.ErrLastDocument), errors.Is(err, live.ErrOperationConflict), errors.Is(err, live.ErrInvalidPresence), errors.Is(err, live.ErrInvalidLayoutPreset), errors.Is(err, livecollab.ErrInvalidChangeSet), errors.Is(err, livecollab.ErrDuplicateOperation):
 		return "invalid_request", "validation"
 	default:
 		return "service_unavailable", "retryable"

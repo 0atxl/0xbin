@@ -2,6 +2,27 @@ import { describe, expect, it } from "vitest";
 import { decodeLiveWireEvent, liveJoinMessage } from "./live-wire";
 
 describe("live WebSocket wire decoder", () => {
+  it("accepts only discrete creator preset events", () => {
+    expect(
+      decodeLiveWireEvent({
+        type: "room_layout_changed",
+        layout_preset: "rows",
+      }),
+    ).toEqual({ type: "room_layout_changed", layoutPreset: "rows" });
+    expect(
+      decodeLiveWireEvent({
+        type: "room_layout_changed",
+        layout_preset: "diagonal",
+      }),
+    ).toBeUndefined();
+    expect(
+      decodeLiveWireEvent({
+        type: "room_layout_changed",
+        layout_preset: { width: 50 },
+      }),
+    ).toBeUndefined();
+  });
+
   it("builds a canonical snake_case join from the HTTP snapshot revisions", () => {
     expect(
       liveJoinMessage(
@@ -41,6 +62,7 @@ describe("live WebSocket wire decoder", () => {
         reconnected: false,
         creator: true,
         watch_only: false,
+        layout_preset: "grid",
         document_revisions: [{ document_id: "main", revision: 2 }],
         participants: [
           {
@@ -89,6 +111,7 @@ describe("live WebSocket wire decoder", () => {
       type: "joined",
       creator: true,
       watchOnly: false,
+      layoutPreset: "grid",
       expiresAt: "2026-08-08T12:00:00.000Z",
       documentRevisions: [{ documentID: "main", revision: 2 }],
       participants: [

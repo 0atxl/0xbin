@@ -297,6 +297,35 @@ func (session *RoomSession) SetWatchOnly(ctx context.Context, enabled bool, now 
 	return session.room.setWatchOnly(ctx, session.participant, session.connectionID, session.generation, session.creator, enabled, normalizedNow(now))
 }
 
+// SetLayoutPreset publishes only a discrete preset, never personal pane sizes.
+func (session *RoomSession) SetLayoutPreset(ctx context.Context, preset string, now time.Time) (RoomState, error) {
+	if session == nil || session.room == nil {
+		return RoomState{}, ErrParticipantNotFound
+	}
+	room := session.room
+	room.mu.Lock()
+	defer room.mu.Unlock()
+	now = normalizedNow(now)
+	actor, connection, err := room.ensureConnectionLocked(session.participant, session.connectionID, session.generation, now)
+	if err != nil {
+		return RoomState{}, err
+	}
+	if !session.creator {
+		return RoomState{}, ErrCreatorRequired
+	}
+	if !ValidLayoutPreset(preset) {
+		return RoomState{}, ErrInvalidLayoutPreset
+	}
+	room.markConnectionActivityLocked(actor, connection, now)
+	if room.snapshot.LayoutPreset != preset {
+		if err := room.store.SetRoomLayoutPreset(ctx, room.snapshot.Slug, preset, now); err != nil {
+			return RoomState{}, fmt.Errorf("%w: persist live layout: %v", ErrPersistence, err)
+		}
+		room.snapshot.LayoutPreset = preset
+	}
+	return room.stateLocked(), nil
+}
+
 type room struct {
 	mu                        sync.Mutex
 	store                     RoomStore
@@ -1323,6 +1352,7 @@ func (room *room) stateLocked() RoomState {
 	state := RoomState{
 		Slug: room.snapshot.Slug, ExpiresAt: room.snapshot.ExpiresAt,
 		WatchOnly:                room.watchOnly,
+		LayoutPreset:             room.snapshot.LayoutPreset,
 		MetadataRevision:         room.snapshot.MetadataRevision,
 		MetadataSnapshotRevision: room.snapshot.MetadataSnapshotRevision,
 		Documents:                make([]DocumentState, 0, len(room.order)),

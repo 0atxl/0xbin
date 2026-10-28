@@ -105,6 +105,7 @@ malformed change sets are rejected.
 | `presence` | `current_tab`, optional cursor selection | Send connection-specific tab/cursor state. |
 | `participant_rename` | `name` | Rename the browser participant for this room. |
 | `room_watch_only` | `watch_only` | Creator-only durable lock (`true`) or unlock (`false`). |
+| `room_layout` | `layout_preset` | Creator-only durable workspace preset. |
 
 The server bounds frame size, message rate, the operator-configured aggregate
 room-content budget, tab count, browser-participant capacity, and connections
@@ -117,8 +118,8 @@ WebSocket frames.
 
 `joined` contains `expires_at`, `metadata_revision`, `document_revisions`, the
 full transient participant roster, the caller's participant record, `creator`,
-`locked`, and `reconnected`. Each participant record includes its
-`access_class` (`creator`, `collaborator`, or `viewer`), effective `can_edit`,
+`locked`, `layout_preset`, and `reconnected`. Each participant record includes
+its `access_class` (`creator`, `collaborator`, or `viewer`), effective `can_edit`,
 connection count, and any connection-specific presence. Authority updates are
 one of `changes`, `document_created`, `document_updated`, `document_deleted`,
 or `document_reordered`; each includes the accepted operation ID and revision.
@@ -135,7 +136,15 @@ aggregate participant record when that participant remains in reconnect state;
 consumers must use its status and connection count rather than assuming every
 socket close disconnects the browser participant.
 `room_mode_changed` supplies the durable `locked` state and authoritative
-roster. Locking never removes participants: the creator remains editable,
+roster. `room_layout_changed` supplies `layout_preset`, one of `single`,
+`columns`, `rows`, `three`, or `grid`. The creator alone can publish this
+preset, which is stored with the room until expiry and included in every
+`joined` response. Publication is ordered with joins and other room changes;
+it does not advance document or metadata revisions. Followers apply it by
+preset name. Manual divider sizes, document assignments, focus, and scroll
+positions are never included in this message. Participants may opt out into a
+personal preset and later resume following. Locking never removes participants:
+the creator remains editable,
 collaborators become temporarily read-only, and viewers remain read-only.
 
 `status` values are `http_resync_required`, `rate_limited`, `synchronized`,
@@ -166,8 +175,8 @@ The creator capability is a separate random 256-bit value in an HttpOnly,
 SameSite=Strict, room-scoped cookie. Only its domain-separated SHA-256 hash is
 stored with the room in SQLite, so creator authority survives reconnects and
 process restarts until room expiry without exposing the capability in JSON or
-URLs. It authorizes durable room lock/unlock and gives its holder the creator
-access class; it is not an account. Ordinary password unlock grants room access
+URLs. It authorizes durable room lock/unlock and preset changes and gives its
+holder the creator access class; it is not an account. Ordinary password unlock grants room access
 but not creator authority. LiveBin intentionally provides no participant kick,
 ban, promotion, demotion, or per-user role-management messages.
 

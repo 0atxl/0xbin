@@ -1,4 +1,5 @@
 import type { LiveRoomDocument } from "./live-api";
+import { isLiveLayoutPreset, type LiveLayoutPreset } from "./live-layout";
 
 type LiveCursor = {
   documentID: string;
@@ -42,6 +43,7 @@ export type LiveWireEvent =
       reconnected: boolean;
       creator: boolean;
       watchOnly: boolean;
+      layoutPreset: LiveLayoutPreset;
     }
   | {
       type: "changes";
@@ -96,6 +98,7 @@ export type LiveWireEvent =
       watchOnly: boolean;
       participants: LiveParticipant[];
     }
+  | { type: "room_layout_changed"; layoutPreset: LiveLayoutPreset }
   | { type: "participant_removed"; participantID: string }
   | {
       type: "status";
@@ -153,7 +156,8 @@ export function decodeLiveWireEvent(value: unknown): LiveWireEvent | undefined {
         !participant ||
         typeof event.reconnected !== "boolean" ||
         typeof event.creator !== "boolean" ||
-        typeof event.watch_only !== "boolean"
+        typeof event.watch_only !== "boolean" ||
+        !isLiveLayoutPreset(event.layout_preset ?? "single")
       ) {
         return undefined;
       }
@@ -167,6 +171,7 @@ export function decodeLiveWireEvent(value: unknown): LiveWireEvent | undefined {
         reconnected: event.reconnected,
         creator: event.creator,
         watchOnly: event.watch_only,
+        layoutPreset: (event.layout_preset ?? "single") as LiveLayoutPreset,
       };
     }
     case "changes":
@@ -262,6 +267,10 @@ export function decodeLiveWireEvent(value: unknown): LiveWireEvent | undefined {
             ...(participant ? { participant } : {}),
           };
     }
+    case "room_layout_changed":
+      return isLiveLayoutPreset(event.layout_preset)
+        ? { type: "room_layout_changed", layoutPreset: event.layout_preset }
+        : undefined;
     case "room_mode_changed": {
       const participants = array(event.participants)?.map(decodeParticipant);
       return typeof event.watch_only === "boolean" &&

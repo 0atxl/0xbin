@@ -31,7 +31,7 @@ func TestOpenMigratesAndReopens(t *testing.T) {
 	if err := store.DB().QueryRowContext(ctx, "SELECT count(*) FROM schema_migrations").Scan(&count); err != nil {
 		t.Fatal(err)
 	}
-	if count != 3 {
+	if count != 4 {
 		t.Fatalf("migrations = %d", count)
 	}
 	if err := store.Close(); err != nil {
@@ -105,7 +105,7 @@ func TestOpenMigratesExistingPasteDatabaseWithoutDataLoss(t *testing.T) {
 	).Scan(&liveTables); err != nil {
 		t.Fatal(err)
 	}
-	if migrationsApplied != 3 || liveTables != 4 {
+	if migrationsApplied != 4 || liveTables != 4 {
 		t.Fatalf("migrated schema = %d migrations, %d live tables", migrationsApplied, liveTables)
 	}
 }
@@ -397,6 +397,10 @@ func TestLiveRoomRoundTripAndReopen(t *testing.T) {
 	if storedPassword != want.PasswordHash {
 		t.Fatalf("stored password hash = %q, want %q", storedPassword, want.PasswordHash)
 	}
+	if err := store.SetRoomLayoutPreset(ctx, want.Slug, "grid", now); err != nil {
+		t.Fatal(err)
+	}
+	want.LayoutPreset = "grid"
 	if err := store.SetRoomLocked(ctx, want.Slug, true, now); err != nil {
 		t.Fatal(err)
 	}
@@ -802,6 +806,7 @@ func TestDeleteExpiredLiveRoomsCascades(t *testing.T) {
 
 func testLiveRoom(slug string, now time.Time) live.RoomSnapshot {
 	room := live.RoomSnapshot{
+		LayoutPreset:             "single",
 		Slug:                     slug,
 		PasswordHash:             "$argon2id$v=19$m=65536,t=3,p=1$test$hash",
 		CreatorTokenHash:         []byte("01234567890123456789012345678901"),
