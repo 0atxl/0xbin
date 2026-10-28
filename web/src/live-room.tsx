@@ -6,11 +6,14 @@ import {
   type KeyboardEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
+import { LivePanels } from "./live-panels";
 import {
-  LivePanels,
   livePanelLayouts,
+  readLiveLayoutPreference,
+  saveLiveLayoutPreference,
   type LivePanelLayout,
-} from "./live-panels";
+  type LiveLayoutPreset,
+} from "./live-layout";
 import { ChangeSet, EditorState } from "@codemirror/state";
 import {
   getSyncedVersion,
@@ -121,7 +124,20 @@ export function LiveRoomWorkspace({
     initialRoom.documents[0]?.id ?? "",
   );
   const activeDocumentRef = useRef(activeDocumentID);
-  const [splitEnabled, setSplitEnabled] = useState(false);
+  const [layoutPreference, setLayoutPreference] = useState(() =>
+    readLiveLayoutPreference(initialRoom.slug, initialRoom.expiresAt),
+  );
+  const [creatorPreset, setCreatorPreset] =
+    useState<LiveLayoutPreset>("single");
+  const [lastSplitLayout, setLastSplitLayout] =
+    useState<LivePanelLayout>("columns");
+  useEffect(() => {
+    saveLiveLayoutPreference(
+      initialRoom.slug,
+      initialRoom.expiresAt,
+      layoutPreference,
+    );
+  }, [initialRoom.slug, initialRoom.expiresAt, layoutPreference]);
   const documentsMenuRef = useRef<HTMLDetailsElement>(null);
   useEffect(() => {
     const dismiss = (event: globalThis.PointerEvent) => {
@@ -137,7 +153,7 @@ export function LiveRoomWorkspace({
     return () => document.removeEventListener("pointerdown", dismiss, true);
   }, []);
   const [layoutReset, setLayoutReset] = useState(0);
-  const [panelLayout, setPanelLayout] = useState<LivePanelLayout>("columns");
+
   const [paneDocumentIDs, setPaneDocumentIDs] = useState<string[]>(() =>
     Array.from(
       { length: 4 },
@@ -162,6 +178,17 @@ export function LiveRoomWorkspace({
   const [localAccessClass, setLocalAccessClass] =
     useState<LiveParticipant["accessClass"]>("collaborator");
   const [creator, setCreator] = useState(false);
+  const currentPreset =
+    creator || layoutPreference.followCreator
+      ? creatorPreset
+      : layoutPreference.preset;
+  const splitEnabled = currentPreset !== "single";
+  const panelLayout =
+    currentPreset === "single" ? lastSplitLayout : currentPreset;
+  useEffect(() => {
+    if (currentPreset !== "single") setLastSplitLayout(currentPreset);
+  }, [currentPreset]);
+
   const [roomWatchOnly, setRoomWatchOnly] = useState(false);
   const [roomFull, setRoomFull] = useState(false);
   const [connection, setConnection] = useState<LiveConnection>("connecting");
@@ -733,6 +760,7 @@ export function LiveRoomWorkspace({
           event.participant.nickname,
         );
         setCreator(event.creator);
+        setCreatorPreset(event.layoutPreset);
         setRoomWatchOnly(event.watchOnly);
         setRoomFull(false);
         const pendingMetadata = operationTrackerRef.current.get(
@@ -796,6 +824,9 @@ export function LiveRoomWorkspace({
         }
         return;
       }
+      case "room_layout_changed":
+        setCreatorPreset(event.layoutPreset);
+        return;
       case "room_mode_changed": {
         setParticipants(event.participants);
         setRoomWatchOnly(event.watchOnly);
@@ -1690,19 +1721,18 @@ export function LiveRoomWorkspace({
     });
   }, [documents]);
 
-  function chooseLayout(layout: LivePanelLayout) {
-    const count = livePanelLayouts.find((item) => item.id === layout)!.count;
-    if (!paneDocumentIDs.slice(0, count).includes(activeDocumentRef.current))
-      assignPaneDocument(0, activeDocumentRef.current);
-    setPanelLayout(layout);
-    setSplitEnabled(true);
+  function chooseLayout(preset: LiveLayoutPreset) {
+    if (creator) {
+      if (!send({ type: "room_layout", layout_preset: preset }))
+        onStatus("Could not change room layout");
+    } else {
+      setLayoutPreference({ followCreator: false, preset });
+    }
     cancelTabRename();
   }
 
   function toggleSplit() {
-    if (split) setSplitEnabled(false);
-    else chooseLayout(panelLayout);
-    cancelTabRename();
+    chooseLayout(split ? "single" : panelLayout);
   }
 
   useEffect(() => {
@@ -1927,14 +1957,40 @@ export function LiveRoomWorkspace({
       <div className="live-room-topbar">
         <header className="live-room-toolbar live-room-actions-bar">
           <div className="live-room-actions">
+            {!creator ? (
+              <button
+                type="button"
+                className="live-follow-creator"
+                aria-pressed={layoutPreference.followCreator}
+                title={
+                  layoutPreference.followCreator
+                    ? "Following the creator's preset"
+                    : "Follow the creator's preset"
+                }
+                onClick={() =>
+                  setLayoutPreference({
+                    followCreator: !layoutPreference.followCreator,
+                    preset: currentPreset,
+                  })
+                }
+              >
+                Follow creator
+              </button>
+            ) : null}
             <button
               className="action-button live-split-toggle"
               type="button"
               aria-label={split ? "Close split view" : "Split view"}
               title={split ? "Close split view" : "Split view"}
               aria-pressed={split}
-              disabled={narrowWorkspace}
               onClick={toggleSplit}
+              disabled={
+                narrowWorkspace ||
+                (creator &&
+                  (connection !== "connected" ||
+                    authenticationRequired ||
+                    resyncing))
+              }
             >
               <svg
                 viewBox="0 0 24 24"
@@ -2150,6 +2206,12 @@ export function LiveRoomWorkspace({
                   title={layout.label}
                   aria-pressed={panelLayout === layout.id}
                   onClick={() => chooseLayout(layout.id)}
+                  disabled={
+                    creator &&
+                    (connection !== "connected" ||
+                      authenticationRequired ||
+                      resyncing)
+                  }
                 >
                   <span
                     className={`live-layout-icon is-${layout.id}`}

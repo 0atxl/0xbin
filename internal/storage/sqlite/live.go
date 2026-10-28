@@ -85,11 +85,11 @@ func getRoomSnapshot(ctx context.Context, tx *sql.Tx, slug string, now time.Time
 	var locked int
 	var expiresAt, createdAt int64
 	if err := tx.QueryRowContext(ctx, `
-		SELECT slug, password_hash, creator_token_hash, locked, content_size, metadata_revision,
+		SELECT slug, password_hash, creator_token_hash, locked, layout_preset, content_size, metadata_revision,
 		       metadata_snapshot_revision, expires_at, created_at
 		FROM live_rooms
 		WHERE slug = ? AND expires_at > ?`, slug, unixSeconds(now)).Scan(
-		&snapshot.Slug, &passwordHash, &creatorTokenHash, &locked, &snapshot.ContentSize,
+		&snapshot.Slug, &passwordHash, &creatorTokenHash, &locked, &snapshot.LayoutPreset, &snapshot.ContentSize,
 		&snapshot.MetadataRevision, &snapshot.MetadataSnapshotRevision,
 		&expiresAt, &createdAt,
 	); errors.Is(err, sql.ErrNoRows) {
@@ -147,6 +147,24 @@ func (s *Store) SetRoomLocked(ctx context.Context, slug string, locked bool, now
 	updated, err := result.RowsAffected()
 	if err != nil {
 		return fmt.Errorf("count live room lock update: %w", err)
+	}
+	if updated != 1 {
+		return live.ErrRoomNotFound
+	}
+	return nil
+}
+
+func (s *Store) SetRoomLayoutPreset(ctx context.Context, slug, preset string, now time.Time) error {
+	if !live.ValidLayoutPreset(preset) {
+		return live.ErrInvalidLayoutPreset
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE live_rooms SET layout_preset = ? WHERE slug = ? AND expires_at > ?`, preset, slug, unixSeconds(now))
+	if err != nil {
+		return fmt.Errorf("update live room layout: %w", err)
+	}
+	updated, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("count live room layout update: %w", err)
 	}
 	if updated != 1 {
 		return live.ErrRoomNotFound
@@ -788,10 +806,10 @@ func insertRoom(ctx context.Context, tx *sql.Tx, snapshot live.RoomSnapshot) err
 	}
 	_, err := tx.ExecContext(ctx, `
 		INSERT INTO live_rooms(
-			slug, password_hash, creator_token_hash, locked, content_size, metadata_revision,
+			slug, password_hash, creator_token_hash, locked, layout_preset, content_size, metadata_revision,
 			metadata_snapshot_revision, expires_at, created_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, snapshot.Slug, passwordHash,
-		creatorTokenHash, boolToInt(snapshot.Locked), snapshot.ContentSize, snapshot.MetadataRevision,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, snapshot.Slug, passwordHash,
+		creatorTokenHash, boolToInt(snapshot.Locked), snapshot.LayoutPreset, snapshot.ContentSize, snapshot.MetadataRevision,
 		snapshot.MetadataSnapshotRevision, unixSeconds(snapshot.ExpiresAt),
 		unixSeconds(snapshot.CreatedAt))
 	if err != nil {
@@ -820,6 +838,12 @@ func insertDocuments(ctx context.Context, tx *sql.Tx, snapshot live.RoomSnapshot
 }
 
 func prepareRoomSnapshot(snapshot live.RoomSnapshot) (live.RoomSnapshot, error) {
+	if snapshot.LayoutPreset == "" {
+		snapshot.LayoutPreset = "single"
+	}
+	if !live.ValidLayoutPreset(snapshot.LayoutPreset) {
+		return live.RoomSnapshot{}, live.ErrInvalidSnapshot
+	}
 	if snapshot.Slug == "" || strings.TrimSpace(snapshot.Slug) != snapshot.Slug {
 		return live.RoomSnapshot{}, live.ErrInvalidSnapshot
 	}

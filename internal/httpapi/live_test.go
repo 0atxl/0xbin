@@ -1332,6 +1332,21 @@ func TestLiveCreatorControlsRequireCreatorSession(t *testing.T) {
 		t.Fatalf("creator authority after password reauthentication = %#v", creatorAfterUnlockJoined)
 	}
 
+	writeLiveMessage(t, writer, `{"type":"room_layout","layout_preset":"grid"}`)
+	if event := readLiveEvent(t, writer, "error"); event["code"] != "unauthorized" {
+		t.Fatalf("non-creator layout response = %#v", event)
+	}
+	writeLiveMessage(t, creator, `{"type":"room_layout","layout_preset":"diagonal"}`)
+	if event := readLiveEvent(t, creator, "error"); event["code"] != "invalid_request" {
+		t.Fatalf("invalid layout response = %#v", event)
+	}
+	writeLiveMessage(t, creator, `{"type":"room_layout","layout_preset":"grid"}`)
+	for name, connection := range map[string]*websocket.Conn{"creator-one": creator, "creator-two": creatorAfterUnlock, "collaborator": writer} {
+		event := readLiveEvent(t, connection, "room_layout_changed")
+		if event["layout_preset"] != "grid" {
+			t.Fatalf("%s layout = %#v", name, event)
+		}
+	}
 	writeLiveMessage(t, writer, `{"type":"room_watch_only","watch_only":true}`)
 	if event := readLiveEvent(t, writer, "error"); event["code"] != "unauthorized" {
 		t.Fatalf("non-creator room mode response = %#v", event)

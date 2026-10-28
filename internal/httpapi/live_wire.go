@@ -36,6 +36,7 @@ type liveWireMessage struct {
 	Anchor            int                        `json:"anchor,omitempty"`
 	Head              int                        `json:"head,omitempty"`
 	WatchOnly         bool                       `json:"watch_only,omitempty"`
+	LayoutPreset      string                     `json:"layout_preset,omitempty"`
 	MetadataRevision  int                        `json:"metadata_revision,omitempty"`
 	DocumentRevisions []liveWireDocumentRevision `json:"document_revisions,omitempty"`
 }
@@ -54,6 +55,7 @@ type liveJoinedEvent struct {
 	Participant       liveParticipantResponse    `json:"participant"`
 	Creator           bool                       `json:"creator"`
 	WatchOnly         bool                       `json:"watch_only"`
+	LayoutPreset      string                     `json:"layout_preset"`
 	Locked            bool                       `json:"locked"`
 	ConnectionID      string                     `json:"connection_id"`
 	Reconnected       bool                       `json:"reconnected"`
@@ -64,6 +66,11 @@ type liveRoomModeEvent struct {
 	WatchOnly    bool                      `json:"watch_only"`
 	Locked       bool                      `json:"locked"`
 	Participants []liveParticipantResponse `json:"participants"`
+}
+
+type liveRoomLayoutEvent struct {
+	Type         string `json:"type"`
+	LayoutPreset string `json:"layout_preset"`
 }
 
 type liveChangesEvent struct {
@@ -109,7 +116,7 @@ func decodeLiveWireMessage(data []byte) (liveWireMessage, error) {
 		return liveWireMessage{}, errors.New("live wire message type is required")
 	}
 	switch message.Type {
-	case "join", "heartbeat", "ack", "push_changes", "document_create", "document_update", "document_delete", "document_reorder", "room_watch_only", "presence", "participant_rename":
+	case "join", "heartbeat", "ack", "push_changes", "document_create", "document_update", "document_delete", "document_reorder", "room_watch_only", "room_layout", "presence", "participant_rename":
 	default:
 		return liveWireMessage{}, fmt.Errorf("%w: %s", errLiveUnsupportedOperation, message.Type)
 	}

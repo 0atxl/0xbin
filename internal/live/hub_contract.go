@@ -41,6 +41,7 @@ var (
 	ErrMetadataResync      = errors.New("live metadata resynchronization required")
 	ErrDocumentResync      = errors.New("live document resynchronization required")
 	ErrNameTaken           = errors.New("live participant name is already in use")
+	ErrInvalidLayoutPreset = errors.New("invalid live layout preset")
 	ErrInvalidPresence     = errors.New("invalid live presence update")
 	ErrPersistence         = errors.New("live room persistence failed")
 	ErrOperationConflict   = errors.New("live operation conflicts with current room state")
@@ -160,6 +161,7 @@ type RoomState struct {
 	Slug                     string
 	ExpiresAt                time.Time
 	WatchOnly                bool
+	LayoutPreset             string
 	MetadataRevision         int
 	MetadataSnapshotRevision int
 	Documents                []DocumentState
@@ -253,3 +255,13 @@ type DocumentResyncError struct {
 
 func (err *DocumentResyncError) Error() string { return ErrDocumentResync.Error() }
 func (err *DocumentResyncError) Unwrap() error { return ErrDocumentResync }
+
+// ValidLayoutPreset allows only the room's discrete workspace presets.
+func ValidLayoutPreset(preset string) bool {
+	switch preset {
+	case "single", "columns", "rows", "three", "grid":
+		return true
+	default:
+		return false
+	}
+}

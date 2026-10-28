@@ -13,13 +13,7 @@ import { Group, Panel, Separator } from "motion-panels/react";
 import type { LiveRoomDocument } from "./live-api";
 import { languages } from "./languages";
 
-export const livePanelLayouts = [
-  { id: "columns", label: "Two columns", count: 2 },
-  { id: "rows", label: "Two rows", count: 2 },
-  { id: "three", label: "Three columns", count: 3 },
-  { id: "grid", label: "Four-pane grid", count: 4 },
-] as const;
-export type LivePanelLayout = (typeof livePanelLayouts)[number]["id"];
+import { livePanelLayouts, type LivePanelLayout } from "./live-layout";
 
 export function LivePanels({
   layout,

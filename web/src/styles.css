@@ -2727,3 +2727,26 @@ svg {
   scrollbar-width: thin;
   scrollbar-color: var(--border-subtle) transparent;
 }
+
+.live-follow-creator {
+  height: 28px;
+  padding: 0 7px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-muted);
+  font: 12px var(--font-ui);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.live-follow-creator:hover,
+.live-follow-creator[aria-pressed="true"] {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.live-layout-presets button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

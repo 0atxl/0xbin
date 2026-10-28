@@ -296,6 +296,11 @@ change paste creation, retrieval, encryption, expiry, burn, or URL semantics.
   cookie, not an account. SQLite stores only its hash so creator authority
   survives service restart through room expiry; losing site data has no
   recovery path.
+- The creator’s selected workspace preset is the default for participants.
+  Participants can choose a personal preset and later follow the creator again.
+  Only preset choices are shared; divider sizes, document assignments, focus,
+  and scrolling stay personal. The last creator preset is durable through room
+  expiry and remains available when the creator disconnects.
 - The creator can lock and unlock collaboration. The creator remains editable;
   collaborators retain their category but become temporarily read-only while
   locked; viewers remain read-only. There is no participant kick, ban,
@@ -308,8 +313,8 @@ change paste creation, retrieval, encryption, expiry, burn, or URL semantics.
 - The server is the collaboration authority over WebSockets. P2P/WebRTC is
   not part of LiveBin.
 - Live room documents, bounded synchronization history, the creator-capability
-  hash, and lock state use separate tables and routes from `pastes`. Browser
-  credentials, participant records, active connections, cursors, selections,
+  hash, lock state, and creator preset use separate tables and routes from
+  `pastes`. Browser credentials, participant records, active connections, cursors, selections,
   joined time, and connection state are not stored in SQLite.
 - The live UI keeps the existing editor-first visual baseline and notification
   treatment. Technical descriptions do not become unnecessary frontend copy.

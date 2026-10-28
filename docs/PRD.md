@@ -345,7 +345,13 @@ refine implementation detail when they are available.
 
 - Desktop workspaces offer two-column, two-row, three-column, and four-pane
   grid presets. Dividers follow the pane boundaries and support pointer and
-  keyboard resizing. Layout, pane assignment, and sizes stay local to the browser.
+  keyboard resizing. New participants follow the creator’s preset by default.
+  Creator preset changes, including returning to one editor, reach followers.
+  Selecting a personal preset leaves follow mode; Follow creator rejoins it.
+  The per-room preference survives browser reloads. Manual resizing keeps follow
+  mode enabled and never changes another participant’s sizes. Pane assignments,
+  focus, scrolling, and divider sizes remain personal. The last creator preset
+  survives the creator leaving, reconnects, and service restarts through expiry.
 - Split mode replaces the global tab strip with a compact Documents menu for
   renaming, deleting, and keyboard-reordering shared tabs. A fixed + button in
   the toolbar creates tabs. Each pane has compact, themed document and language

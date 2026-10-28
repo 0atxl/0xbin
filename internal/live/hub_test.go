@@ -1646,6 +1646,15 @@ func TestHubCreatorCapabilityAndLockSurviveRestartWhilePresenceDoesNot(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := collaborator.Session.SetLayoutPreset(ctx, "grid", now); !errors.Is(err, live.ErrCreatorRequired) {
+		t.Fatalf("collaborator changed creator preset: %v", err)
+	}
+	if _, err := creator.Session.SetLayoutPreset(ctx, "diagonal", now); !errors.Is(err, live.ErrInvalidLayoutPreset) {
+		t.Fatalf("unknown layout accepted: %v", err)
+	}
+	if state, err := creator.Session.SetLayoutPreset(ctx, "grid", now); err != nil || state.LayoutPreset != "grid" {
+		t.Fatalf("creator layout = %#v, %v", state, err)
+	}
 	if _, err := collaborator.Session.UpdatePresence(live.PresenceUpdate{
 		CurrentTab: "notes", DocumentID: "notes", Revision: 0, Anchor: 1, Head: 3,
 	}, now); err != nil {
@@ -1698,8 +1707,11 @@ func TestHubCreatorCapabilityAndLockSurviveRestartWhilePresenceDoesNot(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !joined.Session.IsCreator() || !joined.State.WatchOnly || len(joined.State.Participants) != 1 || joined.Participant.AccessClass != live.ParticipantCreator || !joined.Participant.CanEdit {
+	if !joined.Session.IsCreator() || joined.State.LayoutPreset != "grid" || !joined.State.WatchOnly || len(joined.State.Participants) != 1 || joined.Participant.AccessClass != live.ParticipantCreator || !joined.Participant.CanEdit {
 		t.Fatalf("durable creator/lock or transient presence after restart = %#v", joined)
+	}
+	if _, err := joined.Session.SetLayoutPreset(ctx, "rows", now.Add(25*time.Hour)); !errors.Is(err, live.ErrRoomExpired) {
+		t.Fatalf("expired layout update = %v", err)
 	}
 }
 
@@ -1757,6 +1769,13 @@ func TestHubLockPersistenceFailureDoesNotChangeAuthorityState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := joined.Session.SetLayoutPreset(ctx, "grid", now); !errors.Is(err, live.ErrPersistence) {
+		t.Fatalf("layout persistence error = %v", err)
+	}
+	stateBeforeLock, err := joined.Session.State()
+	if err != nil || stateBeforeLock.LayoutPreset != "single" {
+		t.Fatalf("failed layout changed authority: %#v, %v", stateBeforeLock, err)
+	}
 	if _, err := joined.Session.SetWatchOnly(ctx, true, now); !errors.Is(err, live.ErrPersistence) {
 		t.Fatalf("lock persistence error = %v", err)
 	}
@@ -1771,7 +1790,7 @@ func TestHubLockPersistenceFailureDoesNotChangeAuthorityState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if persisted.Locked {
+	if persisted.Locked || persisted.LayoutPreset != "single" {
 		t.Fatal("failed lock persistence changed SQLite state")
 	}
 }
@@ -1856,6 +1875,10 @@ func TestHubSerializesConcurrentCreatorConnectionLockTransitions(t *testing.T) {
 
 type failLockStore struct {
 	live.RoomStore
+}
+
+func (store *failLockStore) SetRoomLayoutPreset(context.Context, string, string, time.Time) error {
+	return errors.New("forced layout persistence failure")
 }
 
 func (store *failLockStore) SetRoomLocked(context.Context, string, bool, time.Time) error {
