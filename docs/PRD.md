@@ -343,6 +343,25 @@ refine implementation detail when they are available.
 - Live screens contain functional labels and concise state copy only; no
   architecture, maturity, encryption, or collaboration slogans are added
 
+- Desktop workspaces offer two-column, two-row, three-column, and four-pane
+  grid presets. Dividers follow the pane boundaries and support pointer and
+  keyboard resizing. Layout, pane assignment, and sizes stay local to the browser.
+- Split mode replaces the global tab strip with a Documents menu for creating,
+  renaming, deleting, and keyboard-reordering shared tabs. Each pane has its own
+  document and language selectors. Empty panes can create a new tab.
+- Dragging a pane handle onto another pane swaps their documents. Arrow keys
+  on the handle also swap panes. Choosing a document already visible elsewhere
+  swaps assignments instead of opening duplicate editor instances.
+- The focused pane determines current-tab export and outgoing presence. Remote
+  cursors appear only in their document's pane. Changing layout preserves edits,
+  undo history, selection, and scroll position.
+- Closing split mode shows the focused document in the normal tabbed editor.
+  Reopening restores the preset, assignments, and sizes, keeping the active
+  document visible. Below 800px the workspace temporarily uses the single editor.
+- Deleting a displayed tab replaces it with an undisplayed document where one
+  exists, otherwise leaving an empty pane. Deleting a tab remains a shared action;
+  changing a layout never deletes documents. The last tab cannot be deleted.
+
 ### 8.4 Accessibility
 
 - Semantic labels and headings

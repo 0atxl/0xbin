@@ -6,6 +6,11 @@ import {
   type KeyboardEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
+import {
+  LivePanels,
+  livePanelLayouts,
+  type LivePanelLayout,
+} from "./live-panels";
 import { ChangeSet, EditorState } from "@codemirror/state";
 import {
   getSyncedVersion,
@@ -116,6 +121,25 @@ export function LiveRoomWorkspace({
     initialRoom.documents[0]?.id ?? "",
   );
   const activeDocumentRef = useRef(activeDocumentID);
+  const [splitEnabled, setSplitEnabled] = useState(false);
+  const [panelLayout, setPanelLayout] = useState<LivePanelLayout>("columns");
+  const [paneDocumentIDs, setPaneDocumentIDs] = useState<string[]>(() =>
+    Array.from(
+      { length: 4 },
+      (_, index) => initialRoom.documents[index]?.id ?? "",
+    ),
+  );
+  const newDocumentPaneRef = useRef<number | undefined>(undefined);
+  const editorScrollRef = useRef(new Map<string, number>());
+  const [narrowWorkspace, setNarrowWorkspace] = useState(
+    () => window.matchMedia("(max-width: 799px)").matches,
+  );
+  useEffect(() => {
+    const query = window.matchMedia("(max-width: 799px)");
+    const update = () => setNarrowWorkspace(query.matches);
+    query.addEventListener("change", update);
+    return () => query.removeEventListener("change", update);
+  }, []);
   const [participants, setParticipants] = useState<LiveParticipant[]>([]);
   const [cursorActivityNow, setCursorActivityNow] = useState(() => Date.now());
   const [localParticipantID, setLocalParticipantID] = useState("");
@@ -401,6 +425,15 @@ export function LiveRoomWorkspace({
           ];
           getEditorState(event.document);
         }
+        if (
+          event.operationID === metadataOperationRef.current &&
+          newDocumentPaneRef.current !== undefined
+        ) {
+          assignPaneDocument(newDocumentPaneRef.current, event.document.id);
+          newDocumentPaneRef.current = undefined;
+          activeDocumentRef.current = event.document.id;
+          setActiveDocumentID(event.document.id);
+        }
         setPendingTabOrder(undefined);
         break;
       case "document_updated":
@@ -411,6 +444,7 @@ export function LiveRoomWorkspace({
         );
         break;
       case "document_deleted":
+        editorScrollRef.current.delete(event.documentID);
         editorStatesRef.current.delete(event.documentID);
         editorViewsRef.current.delete(event.documentID);
         syncedContentsRef.current.delete(event.documentID);
@@ -577,6 +611,7 @@ export function LiveRoomWorkspace({
           });
           setConnectionState("recovery");
         }
+        editorScrollRef.current.delete(documentID);
         editorStatesRef.current.delete(documentID);
         editorViewsRef.current.delete(documentID);
         syncedContentsRef.current.delete(documentID);
@@ -843,9 +878,11 @@ export function LiveRoomWorkspace({
     }
   }
 
-  function sendPresence(state: EditorState) {
-    const documentID = activeDocumentRef.current;
-    if (!documentID) return;
+  function sendPresence(
+    state: EditorState,
+    documentID = activeDocumentRef.current,
+  ) {
+    if (!documentID || documentID !== activeDocumentRef.current) return;
     const selection = livePresenceSelection(state);
     send({
       type: "presence",
@@ -857,16 +894,32 @@ export function LiveRoomWorkspace({
     });
   }
 
-  function selectDocument(documentID: string) {
+  function selectDocument(documentID: string, focusEditor = true) {
     if (!documentsRef.current.some((document) => document.id === documentID))
       return;
-    setTabRenameOpen(false);
+    if (documentID !== activeDocumentRef.current) setTabRenameOpen(false);
+    if (split && !paneDocumentIDs.slice(0, paneCount).includes(documentID)) {
+      const focused = paneDocumentIDs.indexOf(activeDocumentRef.current);
+      assignPaneDocument(
+        focused >= 0 && focused < paneCount ? focused : 0,
+        documentID,
+      );
+    }
     activeDocumentRef.current = documentID;
     setActiveDocumentID(documentID);
     const state = editorStatesRef.current.get(documentID);
-    if (state) {
-      sendPresence(state);
-    }
+    if (state) sendPresence(state, documentID);
+    if (focusEditor) editorViewsRef.current.get(documentID)?.focus();
+  }
+
+  function assignPaneDocument(index: number, documentID: string) {
+    setPaneDocumentIDs((previous) => {
+      const next = [...previous];
+      const other = next.indexOf(documentID);
+      if (other >= 0) next[other] = next[index];
+      next[index] = documentID;
+      return next;
+    });
   }
 
   function sendMetadata(
@@ -915,16 +968,19 @@ export function LiveRoomWorkspace({
     return true;
   }
 
-  function addDocument() {
+  function addDocument(pane?: number) {
     if (documentsRef.current.length >= initialRoom.maxTabs) {
       onStatus(`This room is limited to ${initialRoom.maxTabs} tabs`);
       return;
     }
-    sendMetadata("document_create", {
-      name: nextLiveTabName(documentsRef.current),
-      language: "plaintext",
-      content: "",
-    });
+    if (
+      sendMetadata("document_create", {
+        name: nextLiveTabName(documentsRef.current),
+        language: "plaintext",
+        content: "",
+      })
+    )
+      newDocumentPaneRef.current = pane;
   }
 
   function renameDocument() {
@@ -967,13 +1023,16 @@ export function LiveRoomWorkspace({
     cancelTabRename();
   }
 
-  function updateLanguage(language: string) {
+  function updateLanguage(
+    language: string,
+    documentID = activeDocumentRef.current,
+  ) {
     const document = documentsRef.current.find(
-      (candidate) => candidate.id === activeDocumentRef.current,
+      (candidate) => candidate.id === documentID,
     );
     if (!document) return;
     sendMetadata("document_update", {
-      document_id: activeDocumentRef.current,
+      document_id: documentID,
       name: document.name,
       language,
     });
@@ -1020,6 +1079,7 @@ export function LiveRoomWorkspace({
     documentID: string,
   ) {
     if (
+      split ||
       structuralDisabled ||
       tabRenameOpen ||
       event.button !== 0 ||
@@ -1593,40 +1653,129 @@ export function LiveRoomWorkspace({
     });
     return ordered.length === documents.length ? ordered : documents;
   }, [documents, pendingTabOrder]);
-  const activeState = activeDocument
-    ? getEditorState(activeDocument)
-    : undefined;
+  const paneCount = livePanelLayouts.find(
+    (layout) => layout.id === panelLayout,
+  )!.count;
+  const split = splitEnabled && !narrowWorkspace;
+  // Reconcile deleted/new documents without changing shared ordering or duplicating views.
+  useEffect(() => {
+    setPaneDocumentIDs((previous) => {
+      const next = previous.map((id) =>
+        documents.some((document) => document.id === id) ? id : "",
+      );
+      const available = documents.filter(
+        (document) => !next.includes(document.id),
+      );
+      for (let index = 0; index < next.length; index += 1) {
+        if (!next[index]) next[index] = available.shift()?.id ?? "";
+      }
+      return next.every((id, index) => id === previous[index])
+        ? previous
+        : next;
+    });
+  }, [documents]);
+
+  function chooseLayout(layout: LivePanelLayout) {
+    const count = livePanelLayouts.find((item) => item.id === layout)!.count;
+    if (!paneDocumentIDs.slice(0, count).includes(activeDocumentRef.current))
+      assignPaneDocument(0, activeDocumentRef.current);
+    setPanelLayout(layout);
+    setSplitEnabled(true);
+    cancelTabRename();
+  }
+
+  function toggleSplit() {
+    if (split) setSplitEnabled(false);
+    else chooseLayout(panelLayout);
+    cancelTabRename();
+  }
+
+  useEffect(() => {
+    if (
+      !split ||
+      paneDocumentIDs.slice(0, paneCount).includes(activeDocumentID)
+    )
+      return;
+    const next = paneDocumentIDs
+      .slice(0, paneCount)
+      .find((id) => documents.some((document) => document.id === id));
+    if (documents.some((document) => document.id === activeDocumentID)) {
+      assignPaneDocument(0, activeDocumentID);
+    } else if (next) {
+      activeDocumentRef.current = next;
+      setActiveDocumentID(next);
+    }
+  }, [split, paneDocumentIDs, paneCount, activeDocumentID, documents]);
+
+  const visibleDocumentIDs = split
+    ? paneDocumentIDs.slice(0, paneCount).join(",")
+    : (activeDocument?.id ?? "");
   useEffect(() => {
     setCursorActivityNow(Date.now());
-  }, [activeDocument?.id, localParticipantID, participants]);
+  }, [visibleDocumentIDs, localParticipantID, participants]);
   useEffect(() => {
-    if (!activeDocument) return;
     const now = Date.now();
-    const expiresAt = nextLiveRemoteCursorLabelExpiry(
-      participants,
-      localParticipantID,
-      activeDocument.id,
-      now,
-    );
-    if (expiresAt === undefined) return;
+    const expiries = visibleDocumentIDs.split(",").flatMap((id) => {
+      const expiry = nextLiveRemoteCursorLabelExpiry(
+        participants,
+        localParticipantID,
+        id,
+        now,
+      );
+      return expiry === undefined ? [] : [expiry];
+    });
+    if (!expiries.length) return;
     const timer = window.setTimeout(
       () => setCursorActivityNow(Date.now()),
-      Math.max(0, expiresAt - now) + 1,
+      Math.max(0, Math.min(...expiries) - now) + 1,
     );
     return () => window.clearTimeout(timer);
-  }, [activeDocument?.id, cursorActivityNow, localParticipantID, participants]);
-  const remoteCursors = useMemo(
-    () =>
-      activeDocument && activeState
-        ? liveRemoteCursors(
-            participants,
-            localParticipantID,
-            activeDocument.id,
-            cursorActivityNow,
-          )
-        : [],
-    [activeDocument?.id, cursorActivityNow, localParticipantID, participants],
-  );
+  }, [visibleDocumentIDs, cursorActivityNow, localParticipantID, participants]);
+
+  function renderEditor(document: LiveRoomDocument) {
+    return (
+      <WorkspaceEditor
+        key={document.id}
+        state={getEditorState(document)}
+        language={document.language}
+        readOnly={readOnly}
+        remoteCursors={liveRemoteCursors(
+          participants,
+          localParticipantID,
+          document.id,
+          cursorActivityNow,
+        )}
+        onStateChange={(state) => {
+          if (documentsRef.current.some((item) => item.id === document.id))
+            updateEditorState(document.id, state);
+        }}
+        onSelectionChange={(state) => sendPresence(state, document.id)}
+        onViewReady={(view) => {
+          if (view) {
+            editorViewsRef.current.set(document.id, view);
+            const scrollTop = editorScrollRef.current.get(document.id) ?? 0;
+            view.requestMeasure({
+              read: () => scrollTop,
+              write: (top) => {
+                view.scrollDOM.scrollTop = top;
+              },
+            });
+          } else {
+            const previous = editorViewsRef.current.get(document.id);
+            if (
+              previous &&
+              documentsRef.current.some((item) => item.id === document.id)
+            )
+              editorScrollRef.current.set(
+                document.id,
+                previous.scrollDOM.scrollTop,
+              );
+            editorViewsRef.current.delete(document.id);
+          }
+        }}
+      />
+    );
+  }
 
   const readOnly =
     authenticationRequired ||
@@ -1643,6 +1792,115 @@ export function LiveRoomWorkspace({
     roomFull ||
     !!recovery;
   const tabLimitReached = documents.length >= initialRoom.maxTabs;
+  const tabStrip = (
+    <nav
+      className={`live-tab-strip${tabDrag ? " is-reordering" : ""}`}
+      ref={tabStripRef}
+      aria-label="Live room tabs"
+      onPointerMove={moveTabPointerDrag}
+      onPointerUp={(event) => finishTabPointerDrag(event, true)}
+      onPointerCancel={(event) => finishTabPointerDrag(event, false)}
+    >
+      <span className="sr-only" id="live-tab-reorder-help">
+        {split ? "" : "Drag tabs to reorder them. "}Keyboard users can press Alt
+        Shift Left or Alt Shift Right.
+      </span>
+      {renderedDocuments.map((document) => {
+        const active = document.id === activeDocument?.id;
+        const dragging = tabDrag?.sourceID === document.id;
+        const dropTarget =
+          tabDrag?.targetID === document.id && !dragging
+            ? ` is-drop-${tabDrag.placement}`
+            : "";
+        return (
+          <div
+            className={`live-tab-shell${active ? " is-active" : ""}${dragging ? " is-dragging" : ""}${dropTarget}`}
+            key={document.id}
+            data-document-id={document.id}
+            onPointerDown={(event) => beginTabPointerDrag(event, document.id)}
+          >
+            {active && tabRenameOpen ? (
+              <form
+                className="live-tab-item live-tab-name-form"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  submitRename();
+                }}
+              >
+                <input
+                  className="live-tab-name-input"
+                  ref={tabRenameInputRef}
+                  aria-label="Tab name"
+                  enterKeyHint="done"
+                  value={tabRenameValue}
+                  maxLength={64}
+                  style={{ width: liveInlineRenameWidth(tabRenameValue) }}
+                  onChange={(event) => setTabRenameValue(event.target.value)}
+                  onBlur={submitRename}
+                  onKeyDown={(event) => {
+                    if (event.key !== "Escape") return;
+                    event.preventDefault();
+                    event.stopPropagation();
+                    cancelTabRename();
+                  }}
+                />
+              </form>
+            ) : (
+              <button
+                className="live-tab-item"
+                type="button"
+                aria-current={active ? "page" : undefined}
+                aria-describedby="live-tab-reorder-help"
+                aria-keyshortcuts="Alt+Shift+ArrowLeft Alt+Shift+ArrowRight"
+                onKeyDown={(event) => handleTabKeyDown(event, document.id)}
+                onClick={(event) => {
+                  if (suppressTabClickRef.current) {
+                    event.preventDefault();
+                    return;
+                  }
+                  if (active && !structuralDisabled) renameDocument();
+                  else selectDocument(document.id);
+                }}
+              >
+                <span style={{ width: liveInlineRenameWidth(document.name) }}>
+                  {document.name}
+                </span>
+              </button>
+            )}
+            <button
+              className="live-tab-close"
+              type="button"
+              aria-label={`Delete ${document.name}`}
+              title="Delete tab"
+              disabled={structuralDisabled || documents.length <= 1}
+              onPointerDown={(event) => {
+                if (!active || !tabRenameOpen) return;
+                event.preventDefault();
+                cancelTabRename();
+              }}
+              onClick={() => deleteDocument(document.id)}
+            >
+              ×
+            </button>
+          </div>
+        );
+      })}
+      <button
+        className="live-add-tab"
+        type="button"
+        aria-label="Add tab"
+        disabled={structuralDisabled || tabLimitReached}
+        title={
+          tabLimitReached
+            ? `This room is limited to ${initialRoom.maxTabs} tabs`
+            : undefined
+        }
+        onClick={() => addDocument()}
+      >
+        +
+      </button>
+    </nav>
+  );
   return (
     <main className="live-room-canvas" aria-labelledby="live-room-heading">
       <h1 className="sr-only" id="live-room-heading">
@@ -1651,6 +1909,26 @@ export function LiveRoomWorkspace({
       <div className="live-room-topbar">
         <header className="live-room-toolbar live-room-actions-bar">
           <div className="live-room-actions">
+            <button
+              className="action-button live-split-toggle"
+              type="button"
+              aria-label={split ? "Close split view" : "Split view"}
+              title={split ? "Close split view" : "Split view"}
+              aria-pressed={split}
+              disabled={narrowWorkspace}
+              onClick={toggleSplit}
+            >
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                aria-hidden="true"
+              >
+                <rect x="4" y="4" width="16" height="16" rx="2" />
+                <path d="M12 4v16" />
+              </svg>
+            </button>
             <button
               className="action-button"
               type="button"
@@ -1805,151 +2083,104 @@ export function LiveRoomWorkspace({
           </div>
         </header>
 
-        <nav
-          className={`live-tab-strip${tabDrag ? " is-reordering" : ""}`}
-          ref={tabStripRef}
-          aria-label="Live room tabs"
-          onPointerMove={moveTabPointerDrag}
-          onPointerUp={(event) => finishTabPointerDrag(event, true)}
-          onPointerCancel={(event) => finishTabPointerDrag(event, false)}
-        >
-          <span className="sr-only" id="live-tab-reorder-help">
-            Drag tabs to reorder them. Keyboard users can press Alt Shift Left
-            or Alt Shift Right.
-          </span>
-          {renderedDocuments.map((document) => {
-            const active = document.id === activeDocument?.id;
-            const dragging = tabDrag?.sourceID === document.id;
-            const dropTarget =
-              tabDrag?.targetID === document.id && !dragging
-                ? ` is-drop-${tabDrag.placement}`
-                : "";
-            return (
-              <div
-                className={`live-tab-shell${active ? " is-active" : ""}${dragging ? " is-dragging" : ""}${dropTarget}`}
-                key={document.id}
-                data-document-id={document.id}
-                onPointerDown={(event) =>
-                  beginTabPointerDrag(event, document.id)
+        {split ? (
+          <div className="live-split-navigation">
+            <details
+              className="live-documents-menu"
+              onBlur={(event) => {
+                if (
+                  event.relatedTarget instanceof Node &&
+                  !event.currentTarget.contains(event.relatedTarget)
+                )
+                  event.currentTarget.open = false;
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Escape") {
+                  event.currentTarget.open = false;
+                  event.currentTarget.querySelector("summary")?.focus();
                 }
-              >
-                {active && tabRenameOpen ? (
-                  <form
-                    className="live-tab-item live-tab-name-form"
-                    onSubmit={(event) => {
-                      event.preventDefault();
-                      submitRename();
-                    }}
-                  >
-                    <input
-                      className="live-tab-name-input"
-                      ref={tabRenameInputRef}
-                      aria-label="Tab name"
-                      enterKeyHint="done"
-                      value={tabRenameValue}
-                      maxLength={64}
-                      style={{ width: liveInlineRenameWidth(tabRenameValue) }}
-                      onChange={(event) =>
-                        setTabRenameValue(event.target.value)
-                      }
-                      onBlur={submitRename}
-                      onKeyDown={(event) => {
-                        if (event.key !== "Escape") return;
-                        event.preventDefault();
-                        event.stopPropagation();
-                        cancelTabRename();
-                      }}
-                    />
-                  </form>
-                ) : (
-                  <button
-                    className="live-tab-item"
-                    type="button"
-                    aria-current={active ? "page" : undefined}
-                    aria-describedby="live-tab-reorder-help"
-                    aria-keyshortcuts="Alt+Shift+ArrowLeft Alt+Shift+ArrowRight"
-                    onKeyDown={(event) => handleTabKeyDown(event, document.id)}
-                    onClick={(event) => {
-                      if (suppressTabClickRef.current) {
-                        event.preventDefault();
-                        return;
-                      }
-                      if (active && !structuralDisabled) renameDocument();
-                      else selectDocument(document.id);
-                    }}
-                  >
-                    <span
-                      style={{ width: liveInlineRenameWidth(document.name) }}
-                    >
-                      {document.name}
-                    </span>
-                  </button>
-                )}
+              }}
+            >
+              <summary>
+                Documents <span>{documents.length}</span>
+              </summary>
+              {tabStrip}
+            </details>
+            <div
+              className="live-layout-presets"
+              role="group"
+              aria-label="Workspace layout"
+            >
+              {livePanelLayouts.map((layout) => (
                 <button
-                  className="live-tab-close"
+                  key={layout.id}
                   type="button"
-                  aria-label={`Delete ${document.name}`}
-                  title="Delete tab"
-                  disabled={structuralDisabled || documents.length <= 1}
-                  onPointerDown={(event) => {
-                    if (!active || !tabRenameOpen) return;
-                    event.preventDefault();
-                    cancelTabRename();
-                  }}
-                  onClick={() => deleteDocument(document.id)}
+                  aria-label={layout.label}
+                  title={layout.label}
+                  aria-pressed={panelLayout === layout.id}
+                  onClick={() => chooseLayout(layout.id)}
                 >
-                  ×
+                  <span
+                    className={`live-layout-icon is-${layout.id}`}
+                    aria-hidden="true"
+                  >
+                    {Array.from({ length: layout.count }, (_, index) => (
+                      <span key={index} />
+                    ))}
+                  </span>
                 </button>
-              </div>
-            );
-          })}
-          <button
-            className="live-add-tab"
-            type="button"
-            aria-label="Add tab"
-            disabled={structuralDisabled || tabLimitReached}
-            title={
-              tabLimitReached
-                ? `This room is limited to ${initialRoom.maxTabs} tabs`
-                : undefined
-            }
-            onClick={addDocument}
-          >
-            +
-          </button>
-        </nav>
-        <div className="live-room-language-control">
-          {activeDocument ? (
-            <LanguageMenu
-              value={activeDocument.language}
-              onChange={updateLanguage}
-              disabled={structuralDisabled}
-            />
-          ) : null}
-        </div>
+              ))}
+            </div>
+          </div>
+        ) : (
+          tabStrip
+        )}
+        {!split ? (
+          <div className="live-room-language-control">
+            {activeDocument ? (
+              <LanguageMenu
+                value={activeDocument.language}
+                onChange={updateLanguage}
+                disabled={structuralDisabled}
+              />
+            ) : null}
+          </div>
+        ) : null}
       </div>
 
-      <section className="live-room-editor-frame">
-        {activeDocument && activeState ? (
-          <WorkspaceEditor
-            key={activeDocument.id}
-            state={activeState}
-            language={activeDocument.language}
-            readOnly={readOnly}
-            remoteCursors={remoteCursors}
-            onStateChange={(nextState) =>
-              updateEditorState(activeDocument.id, nextState)
-            }
-            onSelectionChange={(nextState) => {
-              updateEditorState(activeDocument.id, nextState);
-              sendPresence(nextState);
-            }}
-            onViewReady={(view) => {
-              if (view) editorViewsRef.current.set(activeDocument.id, view);
-              else editorViewsRef.current.delete(activeDocument.id);
-            }}
-          />
-        ) : null}
+      <section
+        className={`live-room-editor-frame${split ? " is-split" : ""}`}
+        aria-label="Room editors"
+      >
+        <LivePanels
+          layout={split ? panelLayout : "single"}
+          documents={documents}
+          paneIDs={paneDocumentIDs}
+          activeDocumentID={activeDocument?.id ?? ""}
+          structuralDisabled={structuralDisabled}
+          canAdd={!structuralDisabled && !tabLimitReached}
+          onSelect={(index, id) => {
+            assignPaneDocument(index, id);
+            activeDocumentRef.current = id;
+            setActiveDocumentID(id);
+            cancelTabRename();
+            const state = editorStatesRef.current.get(id);
+            if (state) sendPresence(state, id);
+          }}
+          onActivate={(id) => {
+            if (activeDocumentRef.current !== id) selectDocument(id, false);
+          }}
+          onSwap={(source, target) => {
+            setPaneDocumentIDs((previous) => {
+              const next = [...previous];
+              [next[source], next[target]] = [next[target], next[source]];
+              return next;
+            });
+          }}
+          onAdd={addDocument}
+          onLanguage={(id, language) => updateLanguage(language, id)}
+          renderEditor={renderEditor}
+        />
       </section>
 
       <footer className="live-room-toolbar live-room-bottom-toolbar">
