@@ -1403,7 +1403,7 @@ svg {
 
 .live-tab-shell,
 .live-tab-item,
-.live-tab-strip .live-add-tab {
+.live-add-tab {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -1547,7 +1547,7 @@ svg {
   opacity: 1;
 }
 
-.live-tab-strip .live-add-tab {
+.live-add-tab {
   position: sticky;
   z-index: 4;
   right: 0;
@@ -1563,12 +1563,12 @@ svg {
   font-weight: 750;
 }
 
-.live-tab-strip .live-add-tab:hover {
+.live-add-tab:hover {
   background: color-mix(in srgb, var(--accent) 17%, var(--surface));
   color: var(--accent);
 }
 
-.live-tab-strip .live-add-tab:disabled {
+.live-add-tab:disabled {
   background: var(--surface);
   color: var(--text-muted);
   opacity: 1;
@@ -1650,8 +1650,8 @@ svg {
   padding: 2px 4px;
   overflow: hidden;
   border-radius: 3px 3px 3px 0;
-  background: var(--remote-color);
-  color: var(--accent-contrast);
+  background: color-mix(in srgb, var(--remote-color) 75%, #000);
+  color: #fff;
   font: 10px/1.2 var(--font-ui);
   opacity: 0;
   text-overflow: ellipsis;
@@ -2333,4 +2333,397 @@ svg {
   .toast-timer {
     animation: none;
   }
+}
+
+.live-panel-workspace,
+.live-split-group,
+.live-editor-panels {
+  position: relative;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+}
+
+.live-split-group {
+  width: 100%;
+}
+
+.live-editor-pane {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--background);
+}
+
+.live-editor-pane > .live-code-editor {
+  flex: 1;
+  min-height: 0;
+  height: auto;
+}
+
+.live-pane-heading {
+  display: flex;
+  align-items: center;
+  flex: 0 0 36px;
+  min-width: 0;
+  gap: 6px;
+  padding: 0 10px 0 6px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--surface);
+}
+
+.live-editor-pane.is-focused > .live-pane-heading {
+  box-shadow: inset 0 -1px var(--accent);
+}
+
+.live-pane-select {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  min-width: 0;
+  height: 28px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-muted);
+  font: 12px var(--font-ui);
+  cursor: pointer;
+}
+
+.live-pane-select > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.live-pane-select svg {
+  flex-shrink: 0;
+}
+
+.live-pane-select:hover,
+.live-pane-select[aria-expanded="true"] {
+  background: var(--accent-soft);
+  color: var(--text-primary);
+}
+
+.live-pane-select:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.live-pane-document {
+  flex: 0 1 auto;
+  max-width: 180px;
+  color: var(--text-primary);
+}
+
+.live-pane-language {
+  flex: 0 1 auto;
+  max-width: 110px;
+  margin-left: auto;
+}
+
+.live-pane-menu {
+  position: fixed;
+  z-index: 60;
+  box-sizing: border-box;
+  width: 140px;
+  max-width: calc(100vw - 16px);
+  max-height: min(244px, calc(100dvh - 16px));
+  padding: 4px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  background: var(--surface-raised);
+  box-shadow: 0 8px 28px #0003;
+  color: var(--text-primary);
+  font: 12px var(--font-ui);
+}
+
+.live-pane-menu [role="option"] {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  min-height: 24px;
+  padding: 3px 6px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.live-pane-menu [role="option"] > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.live-pane-menu [role="option"]:hover,
+.live-pane-menu [role="option"]:focus-visible,
+.live-pane-menu [role="option"][aria-selected="true"] {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.live-pane-move {
+  display: grid;
+  flex: 0 0 24px;
+  width: 24px;
+  height: 28px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: grab;
+  touch-action: none;
+}
+
+.live-pane-move svg {
+  width: 16px;
+  height: 16px;
+}
+
+.live-pane-move:active,
+.is-moving-pane .live-pane-move {
+  cursor: grabbing;
+}
+
+.live-pane-move:hover {
+  color: var(--text-primary);
+  background: var(--surface-raised);
+}
+
+.live-editor-pane.is-moving {
+  opacity: 0.65;
+}
+
+.live-editor-pane.is-drop-target::after {
+  position: absolute;
+  z-index: 5;
+  inset: 2px;
+  border: 2px solid var(--accent);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  pointer-events: none;
+  content: "";
+}
+
+.live-empty-pane {
+  display: grid;
+  flex: 1;
+  align-content: center;
+  justify-items: center;
+  gap: 12px;
+  padding: 24px;
+  color: var(--text-muted);
+  text-align: center;
+  font-size: 12px;
+}
+
+.live-editor-separator {
+  position: relative;
+  z-index: 3;
+  width: 10px;
+}
+
+.live-editor-separator::after {
+  position: absolute;
+  inset: 0 auto 0 50%;
+  width: 1px;
+  background: var(--border-subtle);
+  content: "";
+}
+
+.live-editor-separator[aria-orientation="horizontal"] {
+  width: 100%;
+  height: 10px;
+}
+
+.live-editor-separator[aria-orientation="horizontal"]::after {
+  inset: 50% 0 auto;
+  width: 100%;
+  height: 1px;
+}
+
+.live-editor-separator:hover::after,
+.live-editor-separator[data-resizing]::after,
+.live-editor-separator:focus-visible::after {
+  background: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.live-editor-separator:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -4px;
+}
+
+.live-split-toggle[aria-pressed="true"] {
+  color: var(--accent);
+}
+
+.live-split-navigation {
+  display: flex;
+  flex: 1;
+  order: 1;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding-left: 20px;
+}
+
+.live-documents-menu {
+  position: relative;
+  z-index: 5;
+  font-size: 12px;
+}
+
+.live-documents-menu summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 6px;
+  border-radius: 4px;
+  list-style: none;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.live-documents-menu summary::-webkit-details-marker {
+  display: none;
+}
+
+.live-documents-menu summary:hover,
+.live-documents-menu[open] summary {
+  background: var(--accent-soft);
+  color: var(--text-primary);
+}
+
+.live-documents-menu summary span {
+  color: var(--text-primary);
+}
+
+.live-documents-menu .live-tab-strip {
+  position: absolute;
+  top: calc(100% + 5px);
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  width: 180px;
+  max-height: min(288px, 60vh);
+  gap: 1px;
+  padding: 4px;
+  overflow-y: auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  background: var(--surface-raised);
+  box-shadow: 0 8px 28px #0003;
+}
+
+.live-documents-menu .live-tab-shell {
+  max-width: none;
+  width: 100%;
+}
+
+.live-documents-menu .live-tab-shell,
+.live-documents-menu .live-tab-item,
+.live-documents-menu .live-tab-close {
+  min-height: 28px;
+}
+
+.live-documents-menu .live-tab-item {
+  padding: 0 7px;
+  flex: 1;
+  justify-content: flex-start;
+}
+
+.live-split-navigation > .live-add-tab {
+  position: static;
+  flex: 0 0 28px;
+  width: 28px;
+  min-height: 28px;
+  margin: 0 4px 0 0;
+  box-shadow: none;
+}
+
+.live-layout-presets {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.live-layout-presets button {
+  display: grid;
+  width: 32px;
+  height: 30px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.live-layout-presets button[aria-pressed="true"],
+.live-layout-presets button:hover {
+  color: var(--accent);
+  background: var(--surface-raised);
+}
+
+.live-layout-icon {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  width: 19px;
+  height: 16px;
+  gap: 2px;
+}
+
+.live-layout-icon > span {
+  border: 1px solid currentColor;
+  border-radius: 1px;
+}
+
+.live-layout-icon.is-rows {
+  grid-template-columns: 1fr;
+}
+
+.live-layout-icon.is-three {
+  grid-template-columns: repeat(3, 1fr);
+}
+
+.live-layout-icon.is-grid {
+  grid-template-rows: repeat(2, 1fr);
+}
+
+@media (max-width: 799px) {
+  .live-split-toggle {
+    display: none;
+  }
+}
+
+.live-room-editor-frame.is-split .cm-content {
+  padding-top: 20px;
+  padding-bottom: 40px;
+}
+
+.live-room-editor-frame.is-split .cm-scroller {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-subtle) transparent;
 }

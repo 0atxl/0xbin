@@ -2271,6 +2271,8 @@ try {
   await writerContext.close();
   await overflowContext.close();
 
+  await checkSplitWorkspace(browser);
+
   progress("checking plaintext paste and search");
   const plaintextURL = await createPaste(page, "package main\npackage docs\n", {
     title: "main.go",
@@ -2630,3 +2632,161 @@ async function createServerPaste(content, title) {
 }
 
 console.log("Browser journeys passed.");
+
+async function checkSplitWorkspace(browser) {
+  progress("checking LiveBin pane presets, resizing, and collaboration");
+  const ownerContext = await browser.newContext({
+    viewport: { width: 1280, height: 900 },
+    reducedMotion: "reduce",
+  });
+  const peerContext = await browser.newContext();
+  const owner = await ownerContext.newPage();
+  const peer = await peerContext.newPage();
+  try {
+    await owner.goto(`${webOrigin}/live`);
+    await owner.locator(".cm-content").fill("first document");
+    await owner.getByRole("button", { name: "Create", exact: true }).click();
+    await owner.waitForURL((url) => url.pathname.startsWith("/live/"));
+    await expectLiveConnected(owner);
+    await owner
+      .getByRole("button", { name: "Split view", exact: true })
+      .click();
+    const pane = (index) => owner.locator(`[data-pane-index="${index}"]`);
+    await pane(1).getByRole("button", { name: "New tab" }).click();
+    const first = pane(0).locator(".cm-content");
+    const second = pane(1).locator(".cm-content");
+    await second.fill("second document");
+    await peer.goto(owner.url());
+    await expectLiveConnected(peer);
+    assert.equal(
+      await peer.locator(".live-editor-pane").count(),
+      1,
+      "split view stays local",
+    );
+    await first.click();
+    await first.press("ControlOrMeta+A");
+    await first.pressSequentially("shared first");
+    await peer.getByText("shared first", { exact: true }).waitFor();
+    await peer.locator(".cm-content").press("End");
+    await peer.locator(".cm-content").pressSequentially(" peer");
+    await first.getByText("shared first peer", { exact: true }).waitFor();
+    await pane(0).locator(".live-remote-caret-line").first().waitFor();
+    assert.equal(
+      await pane(1).locator(".live-remote-caret-line").count(),
+      0,
+      "remote cursor stays in its document",
+    );
+
+    const divider = owner.getByRole("separator", { name: "Resize columns" });
+    const before = Number(await divider.getAttribute("aria-valuenow"));
+    await divider.focus();
+    await divider.press("ArrowRight");
+    await owner.waitForFunction(
+      (initial) =>
+        Number(
+          document
+            .querySelector('[aria-label="Resize columns"]')
+            .getAttribute("aria-valuenow"),
+        ) > initial,
+      before,
+    );
+    const dividerPosition = await divider.evaluate((element) => {
+      const line = getComputedStyle(element, "::after");
+      return {
+        lineOffset: parseFloat(line.left),
+        handleWidth: element.getBoundingClientRect().width,
+      };
+    });
+    assert.ok(
+      dividerPosition.lineOffset >= 0 &&
+        dividerPosition.lineOffset <= dividerPosition.handleWidth,
+      "divider line remains inside the moving handle",
+    );
+    const resized = await divider.getAttribute("aria-valuenow");
+    await owner.getByRole("button", { name: "Two rows" }).click();
+    await owner.getByRole("separator", { name: "Resize rows" }).waitFor();
+    await owner.getByRole("button", { name: "Three columns" }).click();
+    await pane(2).getByRole("button", { name: "New tab" }).click();
+    await pane(2).locator(".cm-content").fill("third document");
+    await owner.getByRole("button", { name: "Four-pane grid" }).click();
+    await pane(3).getByRole("button", { name: "New tab" }).click();
+    await pane(3).locator(".cm-content").fill("fourth document");
+    assert.equal(await owner.locator(".live-editor-pane").count(), 4);
+    await owner.getByRole("separator", { name: "Resize grid rows" }).waitFor();
+    await pane(0).getByRole("button", { name: "Move pane 1" }).dragTo(pane(3));
+    await owner.waitForFunction(
+      () =>
+        document.querySelector(
+          '[data-pane-index="3"] .live-pane-document > span',
+        )?.textContent === "tab1",
+    );
+    assert.equal(
+      await pane(0).locator(".live-pane-document").getAttribute("data-value"),
+      await pane(0).getAttribute("data-document-id"),
+    );
+    await pane(3).locator(".cm-content").click();
+    await owner.getByRole("button", { name: "Close split view" }).click();
+    assert.equal(await owner.locator(".live-editor-pane").count(), 1);
+    assert.equal(
+      await liveEditorText(owner.locator(".cm-content")),
+      "shared first peer",
+    );
+    await owner
+      .getByRole("button", { name: "Split view", exact: true })
+      .click();
+    assert.equal(
+      await owner.locator(".live-editor-pane").count(),
+      4,
+      "closing split preserves preset",
+    );
+    await owner.getByRole("button", { name: "Two columns" }).click();
+    await owner.getByRole("separator", { name: "Resize columns" }).waitFor();
+    assert.equal(
+      await divider.getAttribute("aria-valuenow"),
+      resized,
+      "preset sizes are remembered",
+    );
+    await assertNoSeriousAccessibilityIssues(owner, "split workspace");
+
+    await ownerContext.setOffline(true);
+    await expectLiveState(owner, "Offline");
+    const editors = owner.locator(".live-editor-pane .cm-content");
+    await editors.nth(0).press("End");
+    await editors.nth(0).pressSequentially(" offline");
+    await editors.nth(1).press("End");
+    await editors.nth(1).pressSequentially(" offline");
+    await ownerContext.setOffline(false);
+    await expectLiveConnected(owner);
+    await peer.waitForFunction(async () => {
+      const response = await fetch(
+        `/api/v1/live/${location.pathname.split("/").pop()}`,
+      );
+      const room = await response.json();
+      return (
+        room.documents.filter((document) =>
+          document.content.endsWith(" offline"),
+        ).length >= 2
+      );
+    });
+    await owner.setViewportSize({ width: 390, height: 844 });
+    await owner.waitForFunction(
+      () => document.querySelectorAll(".live-editor-pane").length === 1,
+    );
+    assert.equal(
+      await owner.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth,
+      ),
+      true,
+    );
+    await owner.setViewportSize({ width: 1280, height: 900 });
+    await owner.getByRole("separator", { name: "Resize columns" }).waitFor();
+    assert.equal(
+      await owner.locator(".live-editor-pane").count(),
+      2,
+      "desktop split returns after a narrow viewport",
+    );
+  } finally {
+    await ownerContext.close();
+    await peerContext.close();
+  }
+}

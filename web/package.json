@@ -28,6 +28,8 @@
     "@codemirror/state": "^6.7.1",
     "@codemirror/view": "^6.43.6",
     "@lezer/highlight": "^1.2.3",
+    "motion": "14.7.1",
+    "motion-panels": "0.6.1",
     "react": "latest",
     "react-dom": "latest",
     "topbar": "^3.0.1"
