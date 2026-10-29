@@ -361,6 +361,7 @@ refine implementation detail when they are available.
 - Reset layout restores preset dimensions and shared document order locally,
   keeping the focused document visible. Pane drags settle with spring motion;
   dividers released within two percentage points of the preset ratio snap to it.
+  While dragging a divider, a subtle grey guide marks its preset snap position.
   Reduced-motion preferences disable pane movement animations.
 - Dragging a pane handle onto another pane swaps their documents. Arrow keys
   on the handle also swap panes. Choosing a document already visible elsewhere

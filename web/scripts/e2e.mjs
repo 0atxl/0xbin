@@ -2649,6 +2649,49 @@ async function checkSplitWorkspace(browser) {
   });
   const owner = await ownerContext.newPage();
   const peer = await peerContext.newPage();
+  async function checkSnapGuide(divider, orientation) {
+    const group = owner
+      .locator(".live-split-group")
+      .filter({ has: divider })
+      .last();
+    const guide = group.locator(":scope > .live-snap-guide");
+    await guide.waitFor({ state: "hidden" });
+    const bounds = await divider.boundingBox();
+    const groupBounds = await group.boundingBox();
+    assert.ok(bounds && groupBounds, "resizable group is visible");
+    const x = bounds.x + bounds.width / 2;
+    const y = bounds.y + bounds.height / 2;
+    await owner.mouse.move(x, y);
+    await owner.mouse.down();
+    try {
+      await owner.mouse.move(
+        x + (orientation === "horizontal" ? 36 : 0),
+        y + (orientation === "vertical" ? 36 : 0),
+        { steps: 4 },
+      );
+      await guide.waitFor({ state: "visible" });
+      assert.equal(
+        await owner.locator(".live-snap-guide:visible").count(),
+        1,
+        "only the dragged divider shows a guide",
+      );
+      const line = await guide.boundingBox();
+      assert.ok(line);
+      const actual = orientation === "horizontal" ? line.x : line.y;
+      const expected =
+        orientation === "horizontal"
+          ? groupBounds.x + groupBounds.width / 2
+          : groupBounds.y + groupBounds.height / 2;
+      assert.ok(
+        Math.abs(actual - expected) <= 2,
+        "guide stays at the preset snap position while the divider moves",
+      );
+      await owner.mouse.move(x, y, { steps: 4 });
+    } finally {
+      await owner.mouse.up();
+    }
+    await guide.waitFor({ state: "hidden" });
+  }
   try {
     await owner.goto(`${webOrigin}/live`);
     await owner.locator(".cm-content").fill("first document");
@@ -2694,6 +2737,7 @@ async function checkSplitWorkspace(browser) {
     );
 
     const divider = owner.getByRole("separator", { name: "Resize columns" });
+    await checkSnapGuide(divider, "horizontal");
     const before = Number(await divider.getAttribute("aria-valuenow"));
     await divider.focus();
     await divider.press("ArrowRight");
@@ -2745,6 +2789,10 @@ async function checkSplitWorkspace(browser) {
     );
     await owner.getByRole("button", { name: "Two rows" }).click();
     await owner.getByRole("separator", { name: "Resize rows" }).waitFor();
+    await checkSnapGuide(
+      owner.getByRole("separator", { name: "Resize rows" }),
+      "vertical",
+    );
     await owner.getByRole("button", { name: "Three columns" }).click();
     await pane(2).getByRole("button", { name: "New tab" }).click();
     await pane(2).locator(".cm-content").fill("third document");
@@ -2753,6 +2801,10 @@ async function checkSplitWorkspace(browser) {
     await pane(3).locator(".cm-content").fill("fourth document");
     assert.equal(await owner.locator(".live-editor-pane").count(), 4);
     await owner.getByRole("separator", { name: "Resize grid rows" }).waitFor();
+    await checkSnapGuide(
+      owner.getByRole("separator", { name: "Resize top columns" }),
+      "horizontal",
+    );
     await pane(0).getByRole("button", { name: "Move pane 1" }).dragTo(pane(3));
     await owner.waitForFunction(
       () =>
