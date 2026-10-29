@@ -2348,6 +2348,33 @@ svg {
   width: 100%;
 }
 
+.live-snap-guide {
+  position: absolute;
+  z-index: 2;
+  visibility: hidden;
+  opacity: 0.65;
+  pointer-events: none;
+}
+
+.live-snap-guide[data-orientation="horizontal"] {
+  inset-block: 0;
+  border-inline-start: 1px dashed #888;
+}
+
+.live-snap-guide[data-orientation="vertical"] {
+  inset-inline: 0;
+  border-block-start: 1px dashed #888;
+}
+
+.live-split-group:has(
+    > .live-editor-panels
+      > [data-motion-panels-separator]
+      > .live-editor-separator[data-resizing]
+  )
+  > .live-snap-guide {
+  visibility: visible;
+}
+
 .live-editor-pane {
   position: relative;
   display: flex;

@@ -380,6 +380,16 @@ function SplitGroup({
           <Panel>{children[1]}</Panel>
         </Group>
       ) : null}
+      <span
+        className="live-snap-guide"
+        data-orientation={orientation}
+        aria-hidden="true"
+        style={
+          orientation === "horizontal"
+            ? { insetInlineStart: `${snapPercent}%` }
+            : { top: `${snapPercent}%` }
+        }
+      />
     </div>
   );
 }
